@@ -112,31 +112,43 @@ app.get("/movies/:id/ai-summary", async (req, res) => {
 
     // AI Request for Summary, Recommendations & Mood Tags
     const aiResponse = await axios.post(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        model: "gpt-4-turbo",
-        messages: [
-          { role: "system", content: `You are ${AI_NAME}, a movie AI expert that provides insights, recommendations, and mood-based tags.` },
-          { role: "user", content: `Hey ${AI_NAME}, analyze '${movie.title}' and provide:
-          - A brief summary of the movie keeping it vague but entertaining. Do not include "### Brief Summary of "Movie title" in your response.
-          - If someone liked '${movie.title}', suggest three similar movies.
+  "https://api.openai.com/v1/chat/completions",
+  {
+    model: "gpt-4-turbo",
+    messages: [
+      { role: "system", content: `You are ${AI_NAME}, a movie AI expert that provides insights, recommendations, and mood-based tags. Your responses should be well-formatted with proper paragraph breaks and bullet points for lists.` },
+      { 
+        role: "user", 
+        content: `Hey ${AI_NAME}, analyze '${movie.title}' and provide:
 
-          Movie Details:
-          - Genre: ${genres}
-          - Director: ${director}
-          - Best Review: ${topReview ? topReview.content : "No review available"}
-          - Worst Review: ${bottomReview ? bottomReview.content : "No review available"}
-          - Similar Movies: ${similarMovies}` }
-        ],
-        max_tokens: 350,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
+        - A **brief summary** of the movie. Keep it vague but entertaining. Use paragraph breaks for readability.
+        - If someone liked '${movie.title}', suggest three similar movies in **list format** with proper spacing between each.
+
+        **Movie Details:**
+        - **Genre:** ${genres}
+        - **Director:** ${director}
+        - **Best Review:** ${topReview ? topReview.content : "No review available"}
+        - **Worst Review:** ${bottomReview ? bottomReview.content : "No review available"}
+        - **Similar Movies:** ${similarMovies}
+
+        **Important Formatting Instructions:**
+        - Use paragraph breaks (`\n\n`) between sections.
+        - Present movie recommendations in **numbered list format** with a short description.
+        - Do **not** include "### Brief Summary of '${movie.title}'" in your response.
+        - Avoid unnecessary filler words. Keep it concise yet engaging.
+        `
       }
-    );
+    ],
+    max_tokens: 350,
+  },
+  {
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+  }
+);
+
 
     // Extract AI-generated Summary & Mood Tags Correctly
     const aiSummary = aiResponse.data.choices[0].message.content;
