@@ -4,7 +4,7 @@ const axios = require("axios");
 const cors = require("cors");
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 
 // ✅ Use environment variables for API keys
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -19,47 +19,117 @@ app.get("/", (req, res) => {
   res.send("Movie Review Backend is Running!");
 });
 
-// ✅ Fetch Latest Movies from TMDB
-app.get("/movies/latest", async (req, res) => {
+app.get("/movies/:id", async (req, res) => {
+  const movieId = req.params.id;
+
+  try {
+    console.log(`Fetching details for movie ID: ${movieId}`);
+
+    const response = await axios.get(
+      `https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}&language=en-US`
+    );
+
+    console.log("✅ Movie Data:", response.data);
+    res.json(response.data);
+  } catch (error) {
+    console.error("❌ Error fetching movie details:", error.response?.data || error.message);
+    res.status(500).json({ error: "Failed to fetch movie details" });
+  }
+});
+
+
+// ✅ Fetch Movies with Pagination & Type (Latest/Popular)
+app.get("/movies", async (req, res) => {
+  const { type = "latest", page = 1 } = req.query;
+  let tmdbEndpoint;
+
+  if (type === "popular") {
+    tmdbEndpoint = `https://api.themoviedb.org/3/movie/popular?api_key=${TMDB_API_KEY}&language=en-US&page=${page}`;
+  } else {
+    tmdbEndpoint = `https://api.themoviedb.org/3/movie/now_playing?api_key=${TMDB_API_KEY}&language=en-US&page=${page}`;
+  }
+
+  try {
+    const response = await axios.get(tmdbEndpoint);
+    res.json(response.data);
+  } catch (error) {
+    console.error(`❌ Error fetching ${type} movies:`, error);
+    res.status(500).json({ error: `Failed to fetch ${type} movies` });
+  }
+});
+
+// ✅ Search Movies
+app.get("/search", async (req, res) => {
+  const { query, page = 1 } = req.query;
+
+  if (!query) {
+    return res.status(400).json({ error: "Search query is required" });
+  }
+
   try {
     const response = await axios.get(
-      `https://api.themoviedb.org/3/movie/now_playing?api_key=${TMDB_API_KEY}&language=en-US&page=1`
+      `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&language=en-US&query=${query}&page=${page}`
     );
-    res.json(response.data.results);
+    res.json(response.data);
   } catch (error) {
-    console.error("Error fetching latest movies:", error);
-    res.status(500).json({ error: "Failed to fetch latest movies" });
+    console.error("❌ Error fetching search results:", error);
+    res.status(500).json({ error: "Failed to fetch search results" });
   }
 });
 
 // ✅ Fetch AI Summary from OpenAI
 app.get("/movies/:id/ai-summary", async (req, res) => {
   const movieId = req.params.id;
+  const AI_NAME = "ReelBot";
 
   try {
-    // Fetch reviews for the movie
+    // Fetch Movie Details
+    const movieResponse = await axios.get(
+      `https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}`
+    );
+    const movie = movieResponse.data;
+    const genres = movie.genres.map((g) => g.name).join(", ");
+
+    // Fetch Director
+    const directorResponse = await axios.get(
+      `https://api.themoviedb.org/3/movie/${movieId}/credits?api_key=${TMDB_API_KEY}`
+    );
+    const director = directorResponse.data.crew.find((crew) => crew.job === "Director")?.name || "Unknown";
+
+    // Fetch Reviews
     const reviewsResponse = await axios.get(
       `https://api.themoviedb.org/3/movie/${movieId}/reviews?api_key=${TMDB_API_KEY}`
     );
-
     const reviews = reviewsResponse.data.results;
-    if (reviews.length === 0) {
-      return res.status(404).json({ error: "No reviews found" });
-    }
+    const topReview = reviews.length > 0 ? reviews[0] : null;
+    const bottomReview = reviews.length > 1 ? reviews[reviews.length - 1] : null;
 
-    const topReview = reviews[0].content;
-    const bottomReview = reviews[reviews.length - 1].content;
+    // Fetch Similar Movies
+    const similarMoviesResponse = await axios.get(
+      `https://api.themoviedb.org/3/movie/${movieId}/similar?api_key=${TMDB_API_KEY}`
+    );
+    const similarMovies = similarMoviesResponse.data.results.slice(0, 3).map((m) => m.title).join(", ");
 
-    // Call OpenAI API for AI summary
+    // AI Request for Summary, Recommendations & Mood Tags
     const aiResponse = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
         model: "gpt-4-turbo",
         messages: [
-          { role: "system", content: "You are a movie review assistant." },
-          { role: "user", content: `Summarize this movie based on its best and worst reviews:\n\nTop Review: ${topReview}\n\nBottom Review: ${bottomReview}\n\nAlso, recommend it to people who liked X, Y, Z movies.` }
+          { role: "system", content: `You are ${AI_NAME}, a movie AI expert that provides insights, recommendations, and mood-based tags.` },
+          { role: "user", content: `Hey ${AI_NAME}, analyze '${movie.title}' and provide:
+          - A brief summary of the movie.
+          - Exactly three mood-based tags (ONE WORD each) that describe the film’s experience.
+          - If someone liked '${movie.title}', suggest three similar movies.
+
+          Movie Details:
+          - Genre: ${genres}
+          - Director: ${director}
+          - Best Review: ${topReview ? topReview.content : "No review available"}
+          - Worst Review: ${bottomReview ? bottomReview.content : "No review available"}
+          - Similar Movies: ${similarMovies}` }
         ],
-        max_tokens: 200,
+        max_tokens: 350,
       },
       {
         headers: {
@@ -69,10 +139,27 @@ app.get("/movies/:id/ai-summary", async (req, res) => {
       }
     );
 
+    // Extract AI-generated Summary & Mood Tags Correctly
+    const aiSummary = aiResponse.data.choices[0].message.content;
+
+    // ✅ Properly Extract Mood Tags (Ensure They're Three One-Word Tags)
+    const moodTagsMatch = aiSummary.match(/- (\w+)/g);
+    const moodTags = moodTagsMatch ? moodTagsMatch.map(tag => tag.replace("- ", "").trim()).slice(0, 3) : [];
+
+    // ✅ Send Final Response
     res.json({
-      summary: aiResponse.data.choices[0].message.content,
-      top_review: topReview,
-      bottom_review: bottomReview,
+      summary: aiSummary,
+      ai_name: AI_NAME,
+      genre: genres,
+      director: director,
+      mood_tags: moodTags,
+      top_review: topReview?.content ?? "No review available.",
+      top_review_author: topReview?.author ?? "Unknown",
+      top_review_url: topReview?.url ?? null,
+      bottom_review: bottomReview?.content ?? "No review available.",
+      bottom_review_author: bottomReview?.author ?? "Unknown",
+      bottom_review_url: bottomReview?.url ?? null,
+      recommendations: similarMovies,
     });
   } catch (error) {
     console.error("Error generating AI summary:", error.response?.data || error.message);
