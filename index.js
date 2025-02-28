@@ -118,8 +118,7 @@ app.get("/movies/:id/ai-summary", async (req, res) => {
         messages: [
           { role: "system", content: `You are ${AI_NAME}, a movie AI expert that provides insights, recommendations, and mood-based tags.` },
           { role: "user", content: `Hey ${AI_NAME}, analyze '${movie.title}' and provide:
-          - A brief summary of the movie.
-          - Exactly three mood-based tags (ONE WORD each) that describe the film’s experience.
+          - A brief summary of the movie keeping it vague but entertaining.
           - If someone liked '${movie.title}', suggest three similar movies.
 
           Movie Details:
