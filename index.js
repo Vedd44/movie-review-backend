@@ -38,7 +38,6 @@ app.get("/movies/:id", async (req, res) => {
 });
 
 
-// ✅ Fetch Movies with Pagination & Type (Latest/Popular/Upcoming)
 app.get("/movies", async (req, res) => {
   const { type = "latest", page = 1 } = req.query;
   let tmdbEndpoint;
@@ -46,37 +45,30 @@ app.get("/movies", async (req, res) => {
   if (type === "popular") {
     tmdbEndpoint = `https://api.themoviedb.org/3/movie/popular?api_key=${TMDB_API_KEY}&language=en-US&page=${page}`;
   } else if (type === "upcoming") {
-    tmdbEndpoint = `https://api.themoviedb.org/3/movie/upcoming?api_key=${TMDB_API_KEY}&language=en-US&page=${page}`;
+    // ✅ Ensure upcoming movies are truly future releases
+    const today = new Date().toISOString().split("T")[0]; // Get today's date in YYYY-MM-DD format
+    tmdbEndpoint = `https://api.themoviedb.org/3/movie/upcoming?api_key=${TMDB_API_KEY}&language=en-US&release_date.gte=${today}&page=${page}`;
   } else {
-    tmdbEndpoint = `https://api.themoviedb.org/3/movie/now_playing?api_key=${TMDB_API_KEY}&language=en-US&page=${page}`;
+    // ✅ Ensure "Latest" movies are from the past month
+    const today = new Date().toISOString().split("T")[0];
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+    const formattedOneMonthAgo = oneMonthAgo.toISOString().split("T")[0];
+
+    tmdbEndpoint = `https://api.themoviedb.org/3/discover/movie?api_key=${TMDB_API_KEY}&language=en-US&sort_by=release_date.desc&primary_release_date.gte=${formattedOneMonthAgo}&primary_release_date.lte=${today}&page=${page}`;
   }
 
   console.log(`Fetching movies from: ${tmdbEndpoint}`); // ✅ Debugging API request
 
   try {
     const response = await axios.get(tmdbEndpoint);
-    const today = new Date();
-
-    let filteredMovies = response.data.results;
-
-    // ✅ Ensure movies are sorted by release date (newest first)
-    if (type === "latest") {
-      filteredMovies = filteredMovies.sort((a, b) => 
-        new Date(b.release_date) - new Date(a.release_date)
-      );
-    }
-
-    // ✅ Only show future movies in "Coming Soon"
-    if (type === "upcoming") {
-      filteredMovies = filteredMovies.filter(movie => new Date(movie.release_date) > today);
-    }
-
-    res.json({ ...response.data, results: filteredMovies });
+    res.json(response.data);
   } catch (error) {
     console.error(`❌ Error fetching ${type} movies:`, error);
     res.status(500).json({ error: `Failed to fetch ${type} movies` });
   }
 });
+
 
 
 
