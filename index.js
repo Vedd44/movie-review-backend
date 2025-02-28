@@ -5,8 +5,6 @@ const cors = require("cors");
 
 const app = express();
 const PORT = process.env.PORT || 5001;
-console.log("All ENV variables:", process.env);
-console.log("TMDB API Key:", process.env.TMDB_API_KEY);
 
 // ✅ Use environment variables for API keys
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
