@@ -38,25 +38,37 @@ app.get("/movies/:id", async (req, res) => {
 });
 
 
-// ✅ Fetch Movies with Pagination & Type (Latest/Popular)
+// ✅ Fetch Movies with Pagination & Type (Latest/Popular/Upcoming)
 app.get("/movies", async (req, res) => {
   const { type = "latest", page = 1 } = req.query;
   let tmdbEndpoint;
 
   if (type === "popular") {
     tmdbEndpoint = `https://api.themoviedb.org/3/movie/popular?api_key=${TMDB_API_KEY}&language=en-US&page=${page}`;
+  } else if (type === "upcoming") {
+    tmdbEndpoint = `https://api.themoviedb.org/3/movie/upcoming?api_key=${TMDB_API_KEY}&language=en-US&page=${page}`;
   } else {
+    // ✅ Ensure "latest" movies are sorted by release date properly
     tmdbEndpoint = `https://api.themoviedb.org/3/movie/now_playing?api_key=${TMDB_API_KEY}&language=en-US&page=${page}`;
   }
 
+  console.log(`Fetching movies from: ${tmdbEndpoint}`); // ✅ Debugging API request
+
   try {
     const response = await axios.get(tmdbEndpoint);
-    res.json(response.data);
+
+    // ✅ Ensure movies are sorted by release date (newest first)
+    const sortedMovies = response.data.results.sort((a, b) => 
+      new Date(b.release_date) - new Date(a.release_date)
+    );
+
+    res.json({ ...response.data, results: sortedMovies });
   } catch (error) {
     console.error(`❌ Error fetching ${type} movies:`, error);
     res.status(500).json({ error: `Failed to fetch ${type} movies` });
   }
 });
+
 
 // ✅ Search Movies
 app.get("/search", async (req, res) => {
