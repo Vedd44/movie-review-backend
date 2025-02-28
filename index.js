@@ -132,7 +132,7 @@ app.get("/movies/:id/ai-summary", async (req, res) => {
         - **Similar Movies:** ${similarMovies}
 
         **Important Formatting Instructions:**
-        - Use paragraph breaks (`\n\n`) between sections.
+        - Use paragraph breaks (\n\n) between sections.
         - Present movie recommendations in **numbered list format** with a short description.
         - Do **not** include "### Brief Summary of '${movie.title}'" in your response.
         - Avoid unnecessary filler words. Keep it concise yet engaging.
