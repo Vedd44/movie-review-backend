@@ -48,7 +48,6 @@ app.get("/movies", async (req, res) => {
   } else if (type === "upcoming") {
     tmdbEndpoint = `https://api.themoviedb.org/3/movie/upcoming?api_key=${TMDB_API_KEY}&language=en-US&page=${page}`;
   } else {
-    // ✅ Ensure "latest" movies are sorted by release date properly
     tmdbEndpoint = `https://api.themoviedb.org/3/movie/now_playing?api_key=${TMDB_API_KEY}&language=en-US&page=${page}`;
   }
 
@@ -56,18 +55,29 @@ app.get("/movies", async (req, res) => {
 
   try {
     const response = await axios.get(tmdbEndpoint);
+    const today = new Date();
+
+    let filteredMovies = response.data.results;
 
     // ✅ Ensure movies are sorted by release date (newest first)
-    const sortedMovies = response.data.results.sort((a, b) => 
-      new Date(b.release_date) - new Date(a.release_date)
-    );
+    if (type === "latest") {
+      filteredMovies = filteredMovies.sort((a, b) => 
+        new Date(b.release_date) - new Date(a.release_date)
+      );
+    }
 
-    res.json({ ...response.data, results: sortedMovies });
+    // ✅ Only show future movies in "Coming Soon"
+    if (type === "upcoming") {
+      filteredMovies = filteredMovies.filter(movie => new Date(movie.release_date) > today);
+    }
+
+    res.json({ ...response.data, results: filteredMovies });
   } catch (error) {
     console.error(`❌ Error fetching ${type} movies:`, error);
     res.status(500).json({ error: `Failed to fetch ${type} movies` });
   }
 });
+
 
 
 // ✅ Search Movies
