@@ -42,20 +42,24 @@ app.get("/movies", async (req, res) => {
   const { type = "latest", page = 1 } = req.query;
   let tmdbEndpoint;
 
-  if (type === "popular") {
-    tmdbEndpoint = `https://api.themoviedb.org/3/movie/popular?api_key=${TMDB_API_KEY}&language=en-US&page=${page}`;
-  } else if (type === "upcoming") {
-    // ✅ Ensure upcoming movies are truly future releases
-    const today = new Date().toISOString().split("T")[0]; // Get today's date in YYYY-MM-DD format
-    tmdbEndpoint = `https://api.themoviedb.org/3/movie/upcoming?api_key=${TMDB_API_KEY}&language=en-US&release_date.gte=${today}&page=${page}`;
-  } else {
-    // ✅ Ensure "Latest" movies are from the past month
-    const today = new Date().toISOString().split("T")[0];
-    const oneMonthAgo = new Date();
-    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-    const formattedOneMonthAgo = oneMonthAgo.toISOString().split("T")[0];
+  const today = new Date().toISOString().split("T")[0]; // Get today's date in YYYY-MM-DD format
+  const oneMonthAgo = new Date();
+  oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+  const formattedOneMonthAgo = oneMonthAgo.toISOString().split("T")[0];
 
-    tmdbEndpoint = `https://api.themoviedb.org/3/discover/movie?api_key=${TMDB_API_KEY}&language=en-US&sort_by=release_date.desc&primary_release_date.gte=${formattedOneMonthAgo}&primary_release_date.lte=${today}&page=${page}`;
+  if (type === "popular") {
+    // ✅ Fetch popular movies
+    tmdbEndpoint = `https://api.themoviedb.org/3/movie/popular?api_key=${TMDB_API_KEY}&language=en-US&region=US&page=${page}`;
+  } else if (type === "upcoming") {
+    // ✅ Fetch only future US-based releases (starting tomorrow)
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const formattedTomorrow = tomorrow.toISOString().split("T")[0];
+
+    tmdbEndpoint = `https://api.themoviedb.org/3/movie/upcoming?api_key=${TMDB_API_KEY}&language=en-US&region=US&primary_release_date.gte=${formattedTomorrow}&page=${page}`;
+  } else {
+    // ✅ Fetch only US-based latest movies from the past month
+    tmdbEndpoint = `https://api.themoviedb.org/3/discover/movie?api_key=${TMDB_API_KEY}&language=en-US&region=US&sort_by=release_date.desc&primary_release_date.gte=${formattedOneMonthAgo}&primary_release_date.lte=${today}&page=${page}`;
   }
 
   console.log(`Fetching movies from: ${tmdbEndpoint}`); // ✅ Debugging API request
