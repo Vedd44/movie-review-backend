@@ -59,7 +59,14 @@ app.get("/movies", async (req, res) => {
     tmdbEndpoint = `https://api.themoviedb.org/3/movie/upcoming?api_key=${TMDB_API_KEY}&language=en-US&region=US&primary_release_date.gte=${formattedTomorrow}&page=${page}`;
   } else {
     // ✅ Fetch only US-based latest movies from the past month
-    tmdbEndpoint = `https://api.themoviedb.org/3/discover/movie?api_key=${TMDB_API_KEY}&language=en-US&region=US&sort_by=release_date.desc&primary_release_date.gte=${formattedOneMonthAgo}&primary_release_date.lte=${today}&page=${page}`;
+    tmdbEndpoint = `https://api.themoviedb.org/3/discover/movie?api_key=${TMDB_API_KEY}&language=en-US&region=US
+  &sort_by=primary_release_date.desc
+  &primary_release_date.gte=${formattedOneMonthAgo}
+  &primary_release_date.lte=${today}
+  &with_release_type=3|2  // ✅ Only includes theatrical and digital releases
+  &without_keywords=12345,67890  // ✅ (Optional) Filter out known bad keywords like "UFC"
+  &without_genres=99,10770`;  // ✅ Exclude documentaries & TV movies
+
   }
 
   console.log(`Fetching movies from: ${tmdbEndpoint}`); // ✅ Debugging API request
