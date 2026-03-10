@@ -63,6 +63,89 @@ const REELBOT_ACTIONS = {
   },
 };
 
+const VALID_DISCOVERY_VIEWS = new Set(["latest", "popular", "upcoming"]);
+
+const PICK_MOOD_CONFIG = {
+  all: {
+    label: "Any mood",
+    genreIds: [],
+  },
+  easy_watch: {
+    label: "Easy Watch",
+    genreIds: [35, 10751, 16, 10749, 12],
+  },
+  mind_bending: {
+    label: "Smart / Twisty",
+    genreIds: [878, 9648, 53],
+  },
+  dark: {
+    label: "Dark",
+    genreIds: [27, 53, 80],
+  },
+  funny: {
+    label: "Funny",
+    genreIds: [35],
+  },
+  feel_something: {
+    label: "Emotional",
+    genreIds: [18, 10749, 10402, 16],
+  },
+};
+
+const PICK_RUNTIME_CONFIG = {
+  any: {
+    label: "Any length",
+  },
+  under_two_hours: {
+    label: "Under 2 hours",
+    max: 120,
+  },
+  over_two_hours: {
+    label: "2+ hours",
+    min: 121,
+  },
+};
+
+const PICK_COMPANY_CONFIG = {
+  any: {
+    label: "Any setup",
+    genreIds: [],
+  },
+  solo: {
+    label: "Solo watch",
+    genreIds: [18, 9648, 878, 53, 36, 99],
+  },
+  pair: {
+    label: "Date night",
+    genreIds: [10749, 35, 18, 10402],
+  },
+  friends: {
+    label: "With friends",
+    genreIds: [28, 12, 27, 35, 878],
+  },
+};
+
+const TMDB_MOVIE_GENRE_LOOKUP = {
+  12: "Adventure",
+  14: "Fantasy",
+  16: "Animation",
+  18: "Drama",
+  27: "Horror",
+  28: "Action",
+  35: "Comedy",
+  36: "History",
+  37: "Western",
+  53: "Thriller",
+  80: "Crime",
+  878: "Sci-Fi",
+  9648: "Mystery",
+  99: "Documentary",
+  10402: "Music",
+  10749: "Romance",
+  10751: "Family",
+  10752: "War",
+};
+
 console.log(`OpenAI model configured: ${OPENAI_MODEL}`);
 console.log(`OpenAI API key present: ${OPENAI_API_KEY ? "yes" : "no"}`);
 console.log(`TMDB API key present: ${TMDB_API_KEY ? "yes" : "no"}`);
@@ -122,45 +205,428 @@ const getDirector = (credits) => {
   return director?.name || "Unknown";
 };
 
-const normalizeMovieDetails = (movie) => ({
+const isUpcomingMovie = (movie) => {
+  const releaseDate = movie?.release_date ? new Date(movie.release_date) : null;
+  const hasFutureRelease = releaseDate instanceof Date && !Number.isNaN(releaseDate.getTime()) && releaseDate > new Date();
+  return (movie?.status && movie.status !== "Released") || hasFutureRelease;
+};
+
+const getReviewRating = (review) => {
+  const rawRating = review?.author_details?.rating;
+  if (rawRating === null || rawRating === undefined || rawRating === "") {
+    return null;
+  }
+
+  const parsedRating = Number(rawRating);
+  return Number.isFinite(parsedRating) ? parsedRating : null;
+};
+
+const normalizeReviewHighlight = (review, sourceLabel) => {
+  if (!review?.content) {
+    return null;
+  }
+
+  const rating = getReviewRating(review);
+
+  return {
+    author: review.author || "TMDB reviewer",
+    source: sourceLabel,
+    rating,
+    content: truncateText(review.content, 420),
+    url: review.url || "",
+    updated_at: review.updated_at || review.created_at || "",
+  };
+};
+
+const getReviewHighlights = (reviews = []) => {
+  const validReviews = Array.isArray(reviews) ? reviews.filter((review) => review?.content) : [];
+
+  if (!validReviews.length) {
+    return {
+      positive: null,
+      negative: null,
+      count: 0,
+      source: "TMDB user reviews",
+    };
+  }
+
+  const ratedReviews = validReviews.filter((review) => getReviewRating(review) !== null);
+  const source = "TMDB user reviews";
+
+  if (ratedReviews.length >= 2) {
+    const sortedByRating = [...ratedReviews].sort((left, right) => getReviewRating(right) - getReviewRating(left));
+    const positiveReview = sortedByRating[0];
+    const negativeReview = [...sortedByRating].reverse().find((review) => review.url !== positiveReview.url) || sortedByRating[sortedByRating.length - 1];
+
+    return {
+      positive: normalizeReviewHighlight(positiveReview, source),
+      negative: normalizeReviewHighlight(negativeReview, source),
+      count: validReviews.length,
+      source,
+    };
+  }
+
+  const positiveReview = validReviews[0];
+  const negativeReview = validReviews.length > 1 ? validReviews[validReviews.length - 1] : null;
+
+  return {
+    positive: normalizeReviewHighlight(positiveReview, source),
+    negative: normalizeReviewHighlight(negativeReview, source),
+    count: validReviews.length,
+    source,
+  };
+};
+
+const normalizeDiscoveryView = (view) => (VALID_DISCOVERY_VIEWS.has(view) ? view : "latest");
+
+const VALID_PICK_SOURCES = new Set(["feed", "library"]);
+
+const normalizePreferenceKey = (value, config, fallback) => (config[value] ? value : fallback);
+const normalizePickSource = (value) => (VALID_PICK_SOURCES.has(value) ? value : "feed");
+
+const getPromptSignals = (prompt = "") => {
+  const normalizedPrompt = String(prompt || "").toLowerCase();
+
+  const mood = normalizedPrompt.match(/mind|twist|weird|sci-?fi|smart/)
+    ? "mind_bending"
+    : normalizedPrompt.match(/dark|intense|grim|creepy|thriller|horror/)
+      ? "dark"
+      : normalizedPrompt.match(/funny|comedy|laugh|light|comfort|easy/)
+        ? "funny"
+        : normalizedPrompt.match(/emotional|romance|feel|moving|heart/)
+          ? "feel_something"
+          : null;
+
+  const runtime = normalizedPrompt.match(/under\s*2\s*hours|under\s*two\s*hours|short|quick|tight/)
+    ? "under_two_hours"
+    : normalizedPrompt.match(/over\s*2\s*hours|over\s*two\s*hours|epic|long|immersive|sweep/)
+      ? "over_two_hours"
+      : null;
+
+  const company = normalizedPrompt.match(/date|partner|together|romantic/)
+    ? "pair"
+    : normalizedPrompt.match(/friends|group|crowd|party/)
+      ? "friends"
+      : normalizedPrompt.match(/solo|alone|myself/)
+        ? "solo"
+        : null;
+
+  return { mood, runtime, company };
+};
+
+const resolvePickPreferences = (preferences = {}) => {
+  const prompt = String(preferences.prompt || "").trim();
+  const promptSignals = getPromptSignals(prompt);
+
+  const view = normalizeDiscoveryView(preferences.view);
+  const source = normalizePickSource(preferences.source);
+  const mood = normalizePreferenceKey(preferences.mood, PICK_MOOD_CONFIG, promptSignals.mood || "all");
+  const runtime = normalizePreferenceKey(preferences.runtime, PICK_RUNTIME_CONFIG, promptSignals.runtime || "any");
+  const company = normalizePreferenceKey(preferences.company, PICK_COMPANY_CONFIG, promptSignals.company || "any");
+
+  return {
+    view,
+    source,
+    mood,
+    runtime,
+    company,
+    prompt,
+  };
+};
+
+const buildPickPreferenceSummary = (preferences) => {
+  const fragments = [
+    preferences.source === "library"
+      ? "across the full library"
+      : normalizeDiscoveryView(preferences.view) === "popular"
+        ? "from the popular feed"
+        : normalizeDiscoveryView(preferences.view) === "upcoming"
+          ? "from the coming-soon feed"
+          : "from the latest feed",
+  ];
+
+  if (preferences.mood !== "all") {
+    fragments.push(`for a ${PICK_MOOD_CONFIG[preferences.mood].label.toLowerCase()} night`);
+  }
+
+  if (preferences.runtime !== "any") {
+    fragments.push(`with a ${PICK_RUNTIME_CONFIG[preferences.runtime].label.toLowerCase()} lean`);
+  }
+
+  if (preferences.company !== "any") {
+    fragments.push(`best suited to a ${PICK_COMPANY_CONFIG[preferences.company].label.toLowerCase()}`);
+  }
+
+  return fragments.join(" ");
+};
+
+const buildDiscoverParams = (type = "latest", pageNumber = 1, options = {}) => {
+  const normalizedType = normalizeDiscoveryView(type);
+  const runtime = normalizePreferenceKey(options.runtime, PICK_RUNTIME_CONFIG, "any");
+
+  const todayDate = new Date();
+  const today = formatDate(todayDate);
+  const threeMonthsAgo = new Date(todayDate);
+  threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+  const formattedThreeMonthsAgo = formatDate(threeMonthsAgo);
+  const tomorrow = new Date(todayDate);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const formattedTomorrow = formatDate(tomorrow);
+  const sixMonthsOut = new Date(todayDate);
+  sixMonthsOut.setMonth(sixMonthsOut.getMonth() + 6);
+  const formattedSixMonthsOut = formatDate(sixMonthsOut);
+
+  const params = {
+    region: "US",
+    include_adult: "false",
+    with_release_type: "2|3",
+    with_original_language: "en",
+    without_genres: "99,10770",
+    page: pageNumber,
+  };
+
+  if (options.genre) {
+    params.with_genres = String(options.genre);
+  }
+
+  if (runtime !== "any") {
+    const runtimeConfig = PICK_RUNTIME_CONFIG[runtime];
+    if (runtimeConfig.min) {
+      params["with_runtime.gte"] = runtimeConfig.min;
+    }
+    if (runtimeConfig.max) {
+      params["with_runtime.lte"] = runtimeConfig.max;
+    }
+  }
+
+  if (normalizedType === "popular") {
+    return {
+      ...params,
+      sort_by: "popularity.desc",
+      "primary_release_date.lte": today,
+      "release_date.lte": today,
+      "vote_count.gte": 120,
+      "vote_average.gte": 5.5,
+    };
+  }
+
+  if (normalizedType === "upcoming") {
+    return {
+      ...params,
+      sort_by: "popularity.desc",
+      "primary_release_date.gte": formattedTomorrow,
+      "primary_release_date.lte": formattedSixMonthsOut,
+      "release_date.gte": formattedTomorrow,
+      "release_date.lte": formattedSixMonthsOut,
+    };
+  }
+
+  return {
+    ...params,
+    sort_by: "primary_release_date.desc",
+    "primary_release_date.gte": formattedThreeMonthsAgo,
+    "primary_release_date.lte": today,
+    "release_date.gte": formattedThreeMonthsAgo,
+    "release_date.lte": today,
+    "vote_count.gte": 5,
+    "vote_average.gte": 5,
+  };
+};
+
+const matchesAnyGenre = (genreIds = [], preferredGenreIds = []) => preferredGenreIds.some((genreId) => genreIds.includes(genreId));
+
+const scorePickCandidate = (movie, preferences) => {
+  let score = (movie.vote_average || 0) * 12;
+  score += Math.min(movie.vote_count || 0, 1500) / 35;
+  score += Math.min(movie.popularity || 0, 600) / 40;
+
+  if (preferences.mood !== "all" && matchesAnyGenre(movie.genre_ids || [], PICK_MOOD_CONFIG[preferences.mood].genreIds)) {
+    score += 18;
+  }
+
+  if (preferences.company !== "any" && matchesAnyGenre(movie.genre_ids || [], PICK_COMPANY_CONFIG[preferences.company].genreIds)) {
+    score += 12;
+  }
+
+  if (preferences.prompt) {
+    const promptSignals = getPromptSignals(preferences.prompt);
+
+    if (promptSignals.mood && matchesAnyGenre(movie.genre_ids || [], PICK_MOOD_CONFIG[promptSignals.mood].genreIds)) {
+      score += 10;
+    }
+
+    if (promptSignals.company && matchesAnyGenre(movie.genre_ids || [], PICK_COMPANY_CONFIG[promptSignals.company].genreIds)) {
+      score += 8;
+    }
+  }
+
+  if (preferences.view === "latest") {
+    score += movie.release_date ? new Date(movie.release_date).getTime() / 1000000000000 : 0;
+  }
+
+  return score;
+};
+
+const buildPickReason = (movie, preferences) => {
+  const genreNames = (movie.genre_ids || []).map((genreId) => TMDB_MOVIE_GENRE_LOOKUP[genreId]).filter(Boolean);
+  const leadingGenres = genreNames.slice(0, 2).join(" / ");
+  const fragments = [];
+
+  if (preferences.mood !== "all") {
+    fragments.push(`hits the ${PICK_MOOD_CONFIG[preferences.mood].label.toLowerCase()} lane`);
+  }
+
+  if (preferences.company !== "any") {
+    fragments.push(`plays well as a ${PICK_COMPANY_CONFIG[preferences.company].label.toLowerCase()}`);
+  }
+
+  if (!fragments.length && leadingGenres) {
+    fragments.push(`brings a ${leadingGenres.toLowerCase()} mix with strong audience pull`);
+  }
+
+  return `${movie.title} rose to the top because it ${fragments.join(" and ") || "looks like the cleanest fit for tonight"}.`;
+};
+
+const normalizePickMovie = (movie, preferences) => ({
   id: movie.id,
   title: movie.title,
-  tagline: movie.tagline || "",
-  description: movie.overview || "No description available.",
+  overview: truncateText(movie.overview || "No description available.", 220),
   release_date: movie.release_date || "",
-  release_year: movie.release_date ? new Date(movie.release_date).getFullYear() : null,
-  runtime: movie.runtime || null,
-  status: movie.status || "",
-  director: getDirector(movie.credits),
-  rating: movie.vote_average || 0,
-  vote_count: movie.vote_count || 0,
-  genres: Array.isArray(movie.genres) ? movie.genres : [],
-  genre_names: Array.isArray(movie.genres) ? movie.genres.map((genre) => genre.name) : [],
-  original_language: movie.original_language || "",
-  spoken_languages: Array.isArray(movie.spoken_languages)
-    ? movie.spoken_languages.map((language) => language.english_name)
-    : [],
-  production_countries: Array.isArray(movie.production_countries)
-    ? movie.production_countries.map((country) => country.name)
-    : [],
-  top_cast: Array.isArray(movie.credits?.cast)
-    ? movie.credits.cast.slice(0, 5).map((castMember) => castMember.name)
-    : [],
+  vote_average: movie.vote_average || 0,
   poster_path: movie.poster_path || null,
-  backdrop_path: movie.backdrop_path || null,
-  similar: Array.isArray(movie.similar?.results)
-    ? movie.similar.results
-        .filter((similarMovie) => similarMovie.poster_path)
-        .sort((left, right) => (right.vote_count || 0) - (left.vote_count || 0) || (right.popularity || 0) - (left.popularity || 0))
-        .slice(0, 6)
-        .map((similarMovie) => ({
-          id: similarMovie.id,
-          title: similarMovie.title,
-          release_date: similarMovie.release_date || "",
-          poster_path: similarMovie.poster_path || null,
-        }))
-    : [],
+  reason: buildPickReason(movie, preferences),
 });
+
+const getPickCandidatePool = async (preferences) => {
+  if (preferences.source !== "library") {
+    const discoverParams = buildDiscoverParams(preferences.view, 1, {
+      runtime: preferences.runtime,
+      genre: preferences.mood !== "all" ? PICK_MOOD_CONFIG[preferences.mood].genreIds.join(",") : undefined,
+    });
+
+    const response = await fetchTmdb("/discover/movie", discoverParams);
+    const filteredResults = normalizeDiscoveryView(preferences.view) === "popular"
+      ? filterPopularResults(response.results)
+      : normalizeDiscoveryView(preferences.view) === "upcoming"
+        ? filterUpcomingResults(response.results)
+        : filterLatestResults(response.results);
+
+    return filteredResults;
+  }
+
+  const genre = preferences.mood !== "all" ? PICK_MOOD_CONFIG[preferences.mood].genreIds.join(",") : undefined;
+  const [popularResponse, latestResponse] = await Promise.allSettled([
+    fetchTmdb("/discover/movie", buildDiscoverParams("popular", 1, { runtime: preferences.runtime, genre })),
+    fetchTmdb("/discover/movie", buildDiscoverParams("latest", 1, { runtime: preferences.runtime, genre })),
+  ]);
+
+  const popularResults = popularResponse.status === "fulfilled" ? filterPopularResults(popularResponse.value.results) : [];
+  const latestResults = latestResponse.status === "fulfilled" ? filterLatestResults(latestResponse.value.results) : [];
+  const merged = [...popularResults, ...latestResults];
+  const deduped = [];
+  const seenIds = new Set();
+
+  merged.forEach((movie) => {
+    if (!movie?.id || seenIds.has(movie.id)) {
+      return;
+    }
+
+    seenIds.add(movie.id);
+    deduped.push(movie);
+  });
+
+  return deduped;
+};
+
+const generatePickPayload = async (rawPreferences = {}) => {
+  const preferences = resolvePickPreferences(rawPreferences);
+  const cacheKey = `pick:${preferences.source}:${preferences.view}:${preferences.mood}:${preferences.runtime}:${preferences.company}:${preferences.prompt.toLowerCase()}`;
+
+  if (reelbotCache.has(cacheKey)) {
+    return { ...reelbotCache.get(cacheKey), cached: true };
+  }
+
+  const candidatePool = await getPickCandidatePool(preferences);
+
+  const fallbackPool = !candidatePool.length && (preferences.mood !== "all" || preferences.runtime !== "any")
+    ? await getPickCandidatePool({ ...preferences, mood: "all", runtime: "any" })
+    : candidatePool;
+
+  const rankedCandidates = fallbackPool
+    .slice(0, 18)
+    .map((movie) => ({ movie, score: scorePickCandidate(movie, preferences) }))
+    .sort((left, right) => right.score - left.score);
+
+  const primaryPick = rankedCandidates[0]?.movie || null;
+  const alternatePicks = rankedCandidates.slice(1, 3).map((entry) => entry.movie);
+
+  if (!primaryPick) {
+    return {
+      label: "Pick for Me",
+      summary: `ReelBot couldn't find a strong match ${buildPickPreferenceSummary(preferences)} just yet. Try loosening the filters.`,
+      resolved_preferences: preferences,
+      primary: null,
+      alternates: [],
+      cached: false,
+    };
+  }
+
+  const payload = {
+    label: "Pick for Me",
+    summary: `ReelBot scanned the catalog ${buildPickPreferenceSummary(preferences)} and pulled the strongest fit for tonight.`,
+    resolved_preferences: preferences,
+    primary: normalizePickMovie(primaryPick, preferences),
+    alternates: alternatePicks.map((movie) => normalizePickMovie(movie, preferences)),
+  };
+
+  reelbotCache.set(cacheKey, payload);
+  return { ...payload, cached: false };
+};
+
+const normalizeMovieDetails = (movie) => {
+  const reviewHighlights = getReviewHighlights(movie.reviews?.results);
+
+  return {
+    id: movie.id,
+    title: movie.title,
+    tagline: movie.tagline || "",
+    description: movie.overview || "No description available.",
+    release_date: movie.release_date || "",
+    release_year: movie.release_date ? new Date(movie.release_date).getFullYear() : null,
+    runtime: movie.runtime || null,
+    status: movie.status || "",
+    director: getDirector(movie.credits),
+    rating: movie.vote_average || 0,
+    vote_count: movie.vote_count || 0,
+    genres: Array.isArray(movie.genres) ? movie.genres : [],
+    genre_names: Array.isArray(movie.genres) ? movie.genres.map((genre) => genre.name) : [],
+    original_language: movie.original_language || "",
+    spoken_languages: Array.isArray(movie.spoken_languages)
+      ? movie.spoken_languages.map((language) => language.english_name)
+      : [],
+    production_countries: Array.isArray(movie.production_countries)
+      ? movie.production_countries.map((country) => country.name)
+      : [],
+    top_cast: Array.isArray(movie.credits?.cast)
+      ? movie.credits.cast.slice(0, 5).map((castMember) => castMember.name)
+      : [],
+    poster_path: movie.poster_path || null,
+    backdrop_path: movie.backdrop_path || null,
+    review_highlights: reviewHighlights,
+    similar: Array.isArray(movie.similar?.results)
+      ? movie.similar.results
+          .filter((similarMovie) => similarMovie.poster_path)
+          .sort((left, right) => (right.vote_count || 0) - (left.vote_count || 0) || (right.popularity || 0) - (left.popularity || 0))
+          .slice(0, 6)
+          .map((similarMovie) => ({
+            id: similarMovie.id,
+            title: similarMovie.title,
+            release_date: similarMovie.release_date || "",
+            poster_path: similarMovie.poster_path || null,
+          }))
+      : [],
+  };
+};
 
 const normalizeAction = (action) => (REELBOT_ACTIONS[action] ? action : "quick_take");
 
@@ -222,9 +688,7 @@ const getMovieContext = async (movieId) => {
 
   const genres = Array.isArray(movie.genres) ? movie.genres.map((genre) => genre.name).join(", ") : "Unknown";
   const director = getDirector(movie.credits);
-  const reviews = movie.reviews?.results || [];
-  const topReview = reviews[0] || null;
-  const bottomReview = reviews.length > 1 ? reviews[reviews.length - 1] : null;
+  const reviewHighlights = getReviewHighlights(movie.reviews?.results);
   const similarMovies = (movie.similar?.results || []).slice(0, 5).map((similarMovie) => ({
     title: similarMovie.title,
     overview: similarMovie.overview || "",
@@ -235,8 +699,8 @@ const getMovieContext = async (movieId) => {
     movie,
     genres,
     director,
-    topReview,
-    bottomReview,
+    topReview: reviewHighlights.positive,
+    bottomReview: reviewHighlights.negative,
     similarMovies,
     topCast,
   };
@@ -248,6 +712,8 @@ const buildContextBlock = (context) => {
   return [
     `Title: ${movie.title}`,
     `Release year: ${movie.release_date ? new Date(movie.release_date).getFullYear() : "Unknown"}`,
+    `Release status: ${movie.status || "Unknown"}`,
+    `Release date: ${movie.release_date || "Unknown"}`,
     `Runtime: ${movie.runtime || "Unknown"} minutes`,
     `Genres: ${genres}`,
     `Director: ${director}`,
@@ -263,6 +729,102 @@ const buildContextBlock = (context) => {
 
 const buildPromptForAction = (action, context) => {
   const contextBlock = buildContextBlock(context);
+  const previewMode = isUpcomingMovie(context.movie);
+
+  if (previewMode) {
+    switch (action) {
+      case "is_this_for_me":
+        return `Help a viewer decide whether this unreleased movie looks like their kind of watch using only currently known information.
+
+${contextBlock}
+
+Task:
+- Return exactly 3 short HTML paragraphs.
+- Paragraph 1 must begin with <strong>Best for:</strong> and describe the likely audience fit based on genre, premise, and talent.
+- Paragraph 2 must begin with <strong>Maybe not for:</strong> and explain who may want to wait for more footage or reviews.
+- Paragraph 3 must begin with <strong>What we know:</strong> and clearly signal that this is a pre-release read, not a final verdict.`;
+      case "why_watch":
+        return `Explain why this unreleased movie is on people's radar before it has even opened.
+
+${contextBlock}
+
+Task:
+- Return an ordered HTML list with exactly 5 items.
+- Each item should begin with a short <strong>hook</strong> followed by one concise sentence.
+- Focus on cast, director, premise, scale, franchise pull, or genre promise.
+- Do not write as if the movie has already been seen by a wide audience.`;
+      case "similar_picks":
+        return `Recommend what to watch now while someone waits for this unreleased movie.
+
+${contextBlock}
+
+Task:
+- Return an ordered HTML list with exactly 3 movie recommendations.
+- Each item must start with the title in <strong>Title</strong> format.
+- Add one sentence explaining why it scratches a similar itch in tone, themes, talent, or scale.
+- Frame this as a while-you-wait recommendation set.`;
+      case "scary_check":
+        return `Estimate how intense this unreleased movie looks based only on the currently available synopsis, genre, and creative signals.
+
+${contextBlock}
+
+Task:
+- Return exactly 2 short HTML paragraphs.
+- Paragraph 1 must begin with <strong>Early read:</strong> and describe the likely intensity level.
+- Paragraph 2 must begin with <strong>What that is based on:</strong> and explain the genre or premise signals behind that read.
+- Make clear this is a preview-stage judgment, not a post-release certainty.`;
+      case "pace_check":
+        return `Estimate how big, sweeping, or patient this unreleased movie looks right now.
+
+${contextBlock}
+
+Task:
+- Return exactly 2 short HTML paragraphs.
+- Paragraph 1 must begin with <strong>Early read:</strong> and say whether it currently looks brisk, patient, or epic in scale.
+- Paragraph 2 must begin with <strong>Why it reads that way:</strong> and explain the synopsis, runtime, genre, or director signals behind that judgment.`;
+      case "best_mood":
+        return `Describe the best mood or opening-week mindset for this unreleased movie.
+
+${contextBlock}
+
+Task:
+- Return exactly 2 short HTML paragraphs.
+- Paragraph 1 must begin with <strong>Best mood:</strong> and explain what kind of anticipation or viewing mood fits this title.
+- Paragraph 2 must begin with <strong>Best setup:</strong> and suggest whether it feels like a solo, pair, or friends watch based on current signals.`;
+      case "date_night":
+        return `Judge whether this unreleased movie looks worth planning around for date night or a shared theater outing.
+
+${contextBlock}
+
+Task:
+- Return exactly 2 short HTML paragraphs.
+- Paragraph 1 must begin with <strong>Early verdict:</strong> and clearly say yes, maybe, or probably not.
+- Paragraph 2 must begin with <strong>Why:</strong> and explain the likely shared-viewing appeal using only current information.`;
+      case "spoiler_synopsis":
+      case "ending_explained":
+      case "themes_and_takeaways":
+      case "debate_club":
+        return `This movie has not been released yet.
+
+${contextBlock}
+
+Task:
+- Return exactly 2 short HTML paragraphs.
+- Paragraph 1 must begin with <strong>Not available yet:</strong> and explain that spoiler or post-watch analysis is not appropriate before release.
+- Paragraph 2 must begin with <strong>Ask instead:</strong> and steer the viewer toward first-look, audience-fit, or while-you-wait guidance.`;
+      case "quick_take":
+      default:
+        return `Create a spoiler-light first look for an unreleased movie using only the currently known synopsis, talent, genre, and release signals.
+
+${contextBlock}
+
+Task:
+- Write exactly 2 short HTML paragraphs.
+- Explain the likely tone, genre promise, and audience fit.
+- Make clear this is a preview read rather than a final review.
+- Do not imply firsthand knowledge of audience reaction or the full finished movie.`;
+    }
+  }
 
   switch (action) {
     case "is_this_for_me":
@@ -392,11 +954,79 @@ Task:
 
 const buildFallbackContent = (action, context) => {
   const { movie, genres, director, similarMovies } = context;
+  const previewMode = isUpcomingMovie(movie);
   const safeTitle = escapeHtml(movie.title);
   const safeOverview = escapeHtml(movie.overview || "No description available.");
   const safeGenres = escapeHtml(genres);
   const safeDirector = escapeHtml(director);
   const lowerGenres = safeGenres.toLowerCase();
+  const releaseStatus = escapeHtml(movie.status || "Unreleased");
+  const releaseDate = escapeHtml(movie.release_date || "TBA");
+
+  if (previewMode) {
+    switch (action) {
+      case "is_this_for_me":
+        return `
+          <p><strong>Best for:</strong> Viewers already interested in ${lowerGenres} and the talent behind ${safeTitle}, especially if they like making an early call before reviews land.</p>
+          <p><strong>Maybe not for:</strong> Anyone who prefers firm audience consensus, spoiler-aware guidance, or a proven word-of-mouth case may want to wait until release.</p>
+          <p><strong>What we know:</strong> This is still a preview-stage read built from the current synopsis, cast, director, and release signals rather than a finished-audience reaction.</p>
+        `;
+      case "why_watch":
+        return `
+          <ol>
+            <li><strong>Talent factor</strong> — The combination of ${safeDirector} and the listed cast gives ${safeTitle} real pre-release pull.</li>
+            <li><strong>Genre promise</strong> — It is already signaling a clear ${lowerGenres} identity instead of feeling shapeless.</li>
+            <li><strong>Conversation value</strong> — It looks like the kind of release people will want to talk about the week it opens.</li>
+            <li><strong>Scope</strong> — Even before release, the setup suggests a movie with enough ambition to track early.</li>
+            <li><strong>Timing</strong> — With a current release date of ${releaseDate}, this is the kind of title people may want to plan around.</li>
+          </ol>
+        `;
+      case "similar_picks":
+        return similarMovies.length > 0
+          ? `<ol>${similarMovies
+              .slice(0, 3)
+              .map(
+                (similarMovie) =>
+                  `<li><strong>${escapeHtml(similarMovie.title)}</strong> — A strong while-you-wait option if you want something nearby in tone, scale, or audience appeal right now.</li>`
+              )
+              .join("")}</ol>`
+          : `<p>ReelBot could not line up while-you-wait picks right now, but the adjacent titles below are still the best current touchstones.</p>`;
+      case "scary_check":
+        return `
+          <p><strong>Early read:</strong> ${safeTitle} currently looks more driven by ${lowerGenres} intensity cues than by guaranteed full-on horror punishment.</p>
+          <p><strong>What that is based on:</strong> This is a preview-stage read from the synopsis and genre mix, not a post-release report on exactly how hard the movie hits.</p>
+        `;
+      case "pace_check":
+        return `
+          <p><strong>Early read:</strong> ${safeTitle} looks more like a deliberate or large-scale watch than a lightweight throwaway.</p>
+          <p><strong>Why it reads that way:</strong> The genre mix, current runtime listing, and direction from ${safeDirector} suggest a movie with shape and intent even before release.</p>
+        `;
+      case "best_mood":
+        return `
+          <p><strong>Best mood:</strong> This feels like a title for when you want anticipation, scale, and something to look forward to rather than pure comfort-viewing certainty.</p>
+          <p><strong>Best setup:</strong> It probably works best with someone who enjoys opening-week conversation and pre-release hype, not with a crowd that only wants a sure thing.</p>
+        `;
+      case "date_night":
+        return `
+          <p><strong>Early verdict:</strong> Maybe — it depends on whether both of you enjoy planning around a promising release before the crowd consensus is in.</p>
+          <p><strong>Why:</strong> ${safeTitle} looks like more of an anticipation play than a guaranteed easy date-night layup at this stage.</p>
+        `;
+      case "spoiler_synopsis":
+      case "ending_explained":
+      case "themes_and_takeaways":
+      case "debate_club":
+        return `
+          <p><strong>Not available yet:</strong> ${safeTitle} is still marked ${releaseStatus}, so spoiler or post-watch analysis would be fake certainty.</p>
+          <p><strong>Ask instead:</strong> Use First Look, Who's It For?, or While You Wait to keep the read honest until the movie is actually out.</p>
+        `;
+      case "quick_take":
+      default:
+        return `
+          <p><strong>First look:</strong> ${safeOverview}</p>
+          <p><strong>So far:</strong> Based on the current setup, genre promise, and talent involved, ${safeTitle} looks like a release worth tracking rather than a final verdict you can lock in today.</p>
+        `;
+    }
+  }
 
   switch (action) {
     case "is_this_for_me":
@@ -543,7 +1173,7 @@ app.get("/movies/:id", async (req, res) => {
   try {
     console.log(`Fetching details for movie ID: ${movieId}`);
     const movie = await fetchTmdb(`/movie/${movieId}`, {
-      append_to_response: "credits,similar",
+      append_to_response: "credits,reviews,similar",
     });
 
     res.json(normalizeMovieDetails(movie));
@@ -614,90 +1244,109 @@ const filterUpcomingResults = (results = []) =>
     .filter((movie) => (movie.vote_count || 0) >= 3 || (movie.popularity || 0) >= 15)
     .sort(sortUpcomingMovies);
 
-app.get("/movies", async (req, res) => {
-  const { type = "latest", page = 1 } = req.query;
-  const pageNumber = Math.max(1, Number.parseInt(page, 10) || 1);
+const sortDiscoveryResults = (type, results = []) => {
+  if (normalizeDiscoveryView(type) === "popular") {
+    return filterPopularResults(results);
+  }
 
-  const todayDate = new Date();
-  const today = formatDate(todayDate);
-  const oneMonthAgo = new Date(todayDate);
-  oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-  const formattedOneMonthAgo = formatDate(oneMonthAgo);
-  const tomorrow = new Date(todayDate);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const formattedTomorrow = formatDate(tomorrow);
-  const sixMonthsOut = new Date(todayDate);
-  sixMonthsOut.setMonth(sixMonthsOut.getMonth() + 6);
-  const formattedSixMonthsOut = formatDate(sixMonthsOut);
+  if (normalizeDiscoveryView(type) === "upcoming") {
+    return filterUpcomingResults(results);
+  }
+
+  return filterLatestResults(results);
+};
+
+const fetchFilledDiscoverResults = async (type, pageNumber, options = {}, fillCount = 0) => {
+  const normalizedType = normalizeDiscoveryView(type);
+  const minimumCount = Math.max(0, Number.parseInt(fillCount, 10) || 0);
+
+  if (minimumCount <= 0 || pageNumber !== 1) {
+    const payload = await fetchTmdb("/discover/movie", buildDiscoverParams(normalizedType, pageNumber, options));
+    return {
+      ...payload,
+      results: sortDiscoveryResults(normalizedType, payload.results),
+    };
+  }
+
+  const collected = [];
+  const seenIds = new Set();
+  let tmdbPage = 1;
+  let totalPages = 1;
+
+  while (collected.length < minimumCount && tmdbPage <= 4) {
+    const payload = await fetchTmdb("/discover/movie", buildDiscoverParams(normalizedType, tmdbPage, options));
+    totalPages = payload.total_pages || totalPages;
+
+    sortDiscoveryResults(normalizedType, payload.results).forEach((movie) => {
+      if (!movie?.id || seenIds.has(movie.id)) {
+        return;
+      }
+
+      seenIds.add(movie.id);
+      collected.push(movie);
+    });
+
+    if (tmdbPage >= totalPages) {
+      break;
+    }
+
+    tmdbPage += 1;
+  }
+
+  return {
+    page: 1,
+    total_pages: totalPages,
+    total_results: collected.length,
+    results: collected.slice(0, minimumCount),
+  };
+};
+
+const buildPickFallbackPayload = (rawPreferences = {}, message) => {
+  const preferences = resolvePickPreferences(rawPreferences);
+  const summary = message || `ReelBot hit a snag while searching ${buildPickPreferenceSummary(preferences)}. Try again, or loosen the filters.`;
+
+  return {
+    label: "Pick for Me",
+    summary,
+    resolved_preferences: preferences,
+    primary: null,
+    alternates: [],
+    cached: false,
+    degraded: true,
+  };
+};
+
+app.get("/movies", async (req, res) => {
+  const { type = "latest", page = 1, genre = "", runtime = "any", fill = 0 } = req.query;
+  const pageNumber = Math.max(1, Number.parseInt(page, 10) || 1);
+  const normalizedType = normalizeDiscoveryView(type);
 
   try {
-    let payload;
-
-    if (type === "popular") {
-      payload = await fetchTmdb("/discover/movie", {
-        region: "US",
-        include_adult: "false",
-        sort_by: "popularity.desc",
-        "primary_release_date.lte": today,
-        "release_date.lte": today,
-        with_release_type: "2|3",
-        with_original_language: "en",
-        "vote_count.gte": 120,
-        "vote_average.gte": 5.5,
-        without_genres: "99,10770",
-        page: pageNumber,
-      });
-
-      payload = {
-        ...payload,
-        results: filterPopularResults(payload.results),
-      };
-    } else if (type === "upcoming") {
-      payload = await fetchTmdb("/discover/movie", {
-        region: "US",
-        include_adult: "false",
-        sort_by: "popularity.desc",
-        "primary_release_date.gte": formattedTomorrow,
-        "primary_release_date.lte": formattedSixMonthsOut,
-        "release_date.gte": formattedTomorrow,
-        "release_date.lte": formattedSixMonthsOut,
-        with_release_type: "2|3",
-        with_original_language: "en",
-        without_genres: "99,10770",
-        page: pageNumber,
-      });
-
-      payload = {
-        ...payload,
-        results: filterUpcomingResults(payload.results),
-      };
-    } else {
-      payload = await fetchTmdb("/discover/movie", {
-        region: "US",
-        include_adult: "false",
-        sort_by: "primary_release_date.desc",
-        "primary_release_date.gte": formattedOneMonthAgo,
-        "primary_release_date.lte": today,
-        "release_date.gte": formattedOneMonthAgo,
-        "release_date.lte": today,
-        with_release_type: "2|3",
-        with_original_language: "en",
-        "vote_count.gte": 15,
-        "vote_average.gte": 5,
-        without_genres: "99,10770",
-        page: pageNumber,
-      });
-
-      payload = {
-        ...payload,
-        results: filterLatestResults(payload.results),
-      };
-    }
+    const payload = await fetchFilledDiscoverResults(normalizedType, pageNumber, {
+      genre: genre || undefined,
+      runtime,
+    }, fill);
 
     res.json(payload);
   } catch (error) {
-    console.error(`❌ Error fetching ${type} movies:`, error.response?.data || error.message);
-    res.status(500).json({ error: `Failed to fetch ${type} movies` });
+    console.error(`❌ Error fetching ${normalizedType} movies:`, error.response?.data || error.message);
+    res.status(500).json({ error: `Failed to fetch ${normalizedType} movies` });
+  }
+});
+
+app.get("/genres", async (req, res) => {
+  try {
+    const payload = await fetchTmdb("/genre/movie/list");
+    const genres = Array.isArray(payload.genres)
+      ? payload.genres
+          .filter((genre) => ![99, 10770].includes(genre.id))
+          .sort((left, right) => left.name.localeCompare(right.name))
+      : [];
+
+    res.json({ genres });
+  } catch (error) {
+    console.error("❌ Error fetching genres:", error.response?.data || error.message);
+    res.status(500).json({ error: "Failed to fetch genres" });
   }
 });
 
@@ -716,6 +1365,22 @@ app.get("/search", async (req, res) => {
   } catch (error) {
     console.error("❌ Error fetching search results:", error);
     res.status(500).json({ error: "Failed to fetch search results" });
+  }
+});
+
+app.post("/reelbot/pick", async (req, res) => {
+  if (!hasExplicitUserTrigger(req)) {
+    return res.status(400).json({
+      error: "ReelBot pick requests must come from an explicit user click.",
+    });
+  }
+
+  try {
+    const payload = await generatePickPayload(req.body || {});
+    res.json(payload);
+  } catch (error) {
+    console.error("Error generating ReelBot pick:", error.response?.data || error.message);
+    res.json(buildPickFallbackPayload(req.body || {}));
   }
 });
 
