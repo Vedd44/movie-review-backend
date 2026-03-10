@@ -474,42 +474,105 @@ const resolvePickPreferences = (preferences = {}) => {
   };
 };
 
-const buildPickPreferenceSummary = (preferences) => {
-  const fragments = [
-    preferences.source === "library"
-      ? "across the full library"
-      : normalizeDiscoveryView(preferences.view) === "popular"
-        ? "from the popular feed"
-        : normalizeDiscoveryView(preferences.view) === "upcoming"
-          ? "from the coming-soon feed"
-          : "from the latest feed",
-  ];
-
-  if (preferences.mood !== "all") {
-    fragments.push(`for a ${PICK_MOOD_CONFIG[preferences.mood].label.toLowerCase()} night`);
-  }
-
-  if (preferences.genre !== "all") {
-    const genreLabels = getGenreFilterIds(preferences.genre)
-      .map((genreId) => TMDB_MOVIE_GENRE_LOOKUP[genreId])
-      .filter(Boolean)
-      .join(" / ");
-
-    if (genreLabels) {
-      fragments.push(`inside ${genreLabels.toLowerCase()}`);
-    }
-  }
-
-  if (preferences.runtime !== "any") {
-    fragments.push(`with a ${PICK_RUNTIME_CONFIG[preferences.runtime].label.toLowerCase()} lean`);
-  }
-
-  if (preferences.company !== "any") {
-    fragments.push(`best suited to a ${PICK_COMPANY_CONFIG[preferences.company].label.toLowerCase()}`);
-  }
-
-  return fragments.join(" ");
+const formatPickPromptForSummary = (prompt = "") => {
+  const normalizedPrompt = String(prompt || "").trim();
+  return normalizedPrompt ? `“${truncateText(normalizedPrompt, 72)}”` : "";
 };
+
+const getPickSummaryMoodPhrase = (mood) => {
+  switch (mood) {
+    case "easy_watch":
+      return "easy to get into";
+    case "mind_bending":
+      return "smart and twisty";
+    case "dark":
+      return "darker and more intense";
+    case "funny":
+      return "funny";
+    case "feel_something":
+      return "a little more emotional";
+    default:
+      return "";
+  }
+};
+
+const getPickSummaryCompanyPhrase = (company) => {
+  switch (company) {
+    case "solo":
+      return "good for a solo watch";
+    case "pair":
+      return "good for date night";
+    case "friends":
+      return "good with friends";
+    default:
+      return "";
+  }
+};
+
+const getPickSummaryRuntimePhrase = (runtime) => {
+  switch (runtime) {
+    case "under_two_hours":
+      return "that lands under two hours";
+    case "over_two_hours":
+      return "worth settling into for the night";
+    default:
+      return "";
+  }
+};
+
+const buildPickSetupPhrase = (preferences) =>
+  joinReasonClauses(
+    [
+      preferences.mood !== "all" ? getPickSummaryMoodPhrase(preferences.mood) : "",
+      preferences.company !== "any" ? getPickSummaryCompanyPhrase(preferences.company) : "",
+      preferences.runtime !== "any" ? getPickSummaryRuntimePhrase(preferences.runtime) : "",
+    ].filter(Boolean)
+  );
+
+const buildPickSuccessSummary = (preferences) => {
+  const promptLabel = formatPickPromptForSummary(preferences.prompt);
+
+  if (promptLabel) {
+    return preferences.source === "library"
+      ? `You asked for ${promptLabel}, and this feels like the best place to start from the full library.`
+      : `You asked for ${promptLabel}, and this feels like the best fit on this page tonight.`;
+  }
+
+  const setupPhrase = buildPickSetupPhrase(preferences);
+
+  if (setupPhrase) {
+    return preferences.source === "library"
+      ? `If you're after something ${setupPhrase}, this feels like the best place to start from the full library.`
+      : `If you're after something ${setupPhrase}, this feels like the best fit on this page tonight.`;
+  }
+
+  return preferences.source === "library"
+    ? "If you want one strong place to start, this feels like a good first pick from the full library."
+    : "If you want one confident place to start, this feels like the best pick on this page tonight.";
+};
+
+const buildPickNoMatchSummary = (preferences) => {
+  const promptLabel = formatPickPromptForSummary(preferences.prompt);
+
+  if (promptLabel) {
+    return `Nothing felt quite right for ${promptLabel} just yet. Try loosening the filters a little.`;
+  }
+
+  const setupPhrase = buildPickSetupPhrase(preferences);
+
+  if (setupPhrase) {
+    return `Nothing felt quite right for something ${setupPhrase} just yet. Try loosening the filters a little.`;
+  }
+
+  return preferences.source === "library"
+    ? "Nothing felt like the right call from the full library just yet. Try broadening the filters a little."
+    : "Nothing on this page felt like the right call just yet. Try broadening the filters a little.";
+};
+
+const buildPickErrorSummary = (preferences) =>
+  preferences.source === "library"
+    ? "ReelBot hit a snag while lining up something from the full library. Try again, or loosen the filters a little."
+    : "ReelBot hit a snag while lining up a pick from this page. Try again, or loosen the filters a little.";
 
 const buildDiscoverParams = (type = "latest", pageNumber = 1, options = {}) => {
   const normalizedType = normalizeDiscoveryView(type);
@@ -631,24 +694,91 @@ const scorePickCandidate = (movie, preferences, promptBoosts = { personMovieIds:
   return score;
 };
 
+const getPickMoodReason = (moodId) => {
+  switch (moodId) {
+    case "easy_watch":
+      return "should be easy to get into without feeling too heavy";
+    case "mind_bending":
+      return "gives you something smart and twisty to chew on";
+    case "dark":
+      return "keeps the mood darker and more intense";
+    case "funny":
+      return "keeps enough humor in the mix to stay fun";
+    case "feel_something":
+      return "has a little more emotional pull";
+    default:
+      return "fits the overall mood of the night";
+  }
+};
+
+const getPickCompanyReason = (companyId) => {
+  switch (companyId) {
+    case "solo":
+      return "feels like a strong solo-watch pick";
+    case "pair":
+      return "feels better suited to date night than something too abrasive or demanding";
+    case "friends":
+      return "should play well with a group";
+    default:
+      return "feels easy to say yes to tonight";
+  }
+};
+
+const getPickRuntimeReason = (runtimeId) => {
+  switch (runtimeId) {
+    case "under_two_hours":
+      return "should fit the night without taking over the whole evening";
+    case "over_two_hours":
+      return "feels better if you want to settle into something bigger";
+    default:
+      return "works even if runtime is not the main concern";
+  }
+};
+
+const joinReasonClauses = (clauses = []) => {
+  const filteredClauses = clauses.filter(Boolean);
+
+  if (!filteredClauses.length) {
+    return "feels like a solid all-around pick for tonight";
+  }
+
+  if (filteredClauses.length === 1) {
+    return filteredClauses[0];
+  }
+
+  if (filteredClauses.length === 2) {
+    return `${filteredClauses[0]} and ${filteredClauses[1]}`;
+  }
+
+  return `${filteredClauses.slice(0, -1).join(", ")}, and ${filteredClauses[filteredClauses.length - 1]}`;
+};
+
 const buildPickReason = (movie, preferences) => {
   const genreNames = (movie.genre_ids || []).map((genreId) => TMDB_MOVIE_GENRE_LOOKUP[genreId]).filter(Boolean);
   const leadingGenres = genreNames.slice(0, 2).join(" / ");
   const fragments = [];
 
+  if (preferences.prompt) {
+    fragments.push("feels close to the kind of movie you asked for");
+  }
+
   if (preferences.mood !== "all") {
-    fragments.push(`hits the ${PICK_MOOD_CONFIG[preferences.mood].label.toLowerCase()} lane`);
+    fragments.push(getPickMoodReason(preferences.mood));
   }
 
   if (preferences.company !== "any") {
-    fragments.push(`plays well as a ${PICK_COMPANY_CONFIG[preferences.company].label.toLowerCase()}`);
+    fragments.push(getPickCompanyReason(preferences.company));
+  }
+
+  if (preferences.runtime !== "any") {
+    fragments.push(getPickRuntimeReason(preferences.runtime));
   }
 
   if (!fragments.length && leadingGenres) {
-    fragments.push(`brings a ${leadingGenres.toLowerCase()} mix with strong audience pull`);
+    fragments.push(`leans into a ${leadingGenres.toLowerCase()} mix`);
   }
 
-  return `${movie.title} rose to the top because it ${fragments.join(" and ") || "looks like the cleanest fit for tonight"}.`;
+  return `It ${joinReasonClauses([...new Set(fragments)])}.`;
 };
 
 const normalizePickMovie = (movie, preferences) => ({
@@ -712,11 +842,20 @@ const getPickCandidatePool = async (preferences) => {
   return deduped;
 };
 
+const normalizeExcludedIds = (excludedIds = []) =>
+  new Set(
+    (Array.isArray(excludedIds) ? excludedIds : String(excludedIds || "").split(","))
+      .map((value) => Number.parseInt(value, 10))
+      .filter(Boolean)
+  );
+
 const generatePickPayload = async (rawPreferences = {}) => {
   const preferences = resolvePickPreferences(rawPreferences);
-  const cacheKey = `pick:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:${preferences.prompt.toLowerCase()}`;
+  const excludedIds = normalizeExcludedIds(rawPreferences.excluded_ids);
+  const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
+  const cacheKey = `pick:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:${preferences.prompt.toLowerCase()}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:refresh:${refreshKey}`;
 
-  if (reelbotCache.has(cacheKey)) {
+  if (!refreshKey && reelbotCache.has(cacheKey)) {
     return { ...reelbotCache.get(cacheKey), cached: true };
   }
 
@@ -727,18 +866,21 @@ const generatePickPayload = async (rawPreferences = {}) => {
     ? await getPickCandidatePool({ ...preferences, mood: "all", runtime: "any" })
     : candidatePool;
 
-  const rankedCandidates = fallbackPool
-    .slice(0, 24)
+  const filteredPool = fallbackPool.filter((movie) => !excludedIds.has(movie.id));
+  const viablePool = filteredPool.length >= 4 ? filteredPool : filteredPool.length ? filteredPool : fallbackPool;
+
+  const rankedCandidates = viablePool
+    .slice(0, 40)
     .map((movie) => ({ movie, score: scorePickCandidate(movie, preferences, promptBoosts) }))
     .sort((left, right) => right.score - left.score);
 
   const primaryPick = rankedCandidates[0]?.movie || null;
-  const alternatePicks = rankedCandidates.slice(1, 3).map((entry) => entry.movie);
+  const alternatePicks = rankedCandidates.slice(1, 4).map((entry) => entry.movie);
 
   if (!primaryPick) {
     return {
       label: "Pick for Me",
-      summary: `ReelBot couldn't find a strong match ${buildPickPreferenceSummary(preferences)} just yet. Try loosening the filters.`,
+      summary: buildPickNoMatchSummary(preferences),
       resolved_preferences: preferences,
       primary: null,
       alternates: [],
@@ -748,14 +890,70 @@ const generatePickPayload = async (rawPreferences = {}) => {
 
   const payload = {
     label: "Pick for Me",
-    summary: `ReelBot scanned the catalog ${buildPickPreferenceSummary(preferences)} and pulled the strongest fit for tonight.`,
+    summary: buildPickSuccessSummary(preferences),
     resolved_preferences: preferences,
     primary: normalizePickMovie(primaryPick, preferences),
     alternates: alternatePicks.map((movie) => normalizePickMovie(movie, preferences)),
   };
 
-  reelbotCache.set(cacheKey, payload);
+  if (!refreshKey) {
+    reelbotCache.set(cacheKey, payload);
+  }
+
   return { ...payload, cached: false };
+};
+
+const pickTrailer = (videos = []) => {
+  const safeVideos = Array.isArray(videos) ? videos : [];
+  const trailer =
+    safeVideos.find((video) => video?.site === "YouTube" && video?.type === "Trailer" && video?.official) ||
+    safeVideos.find((video) => video?.site === "YouTube" && video?.type === "Trailer") ||
+    safeVideos.find((video) => video?.site === "YouTube" && video?.type === "Teaser") ||
+    safeVideos.find((video) => video?.site === "YouTube" && video?.type === "Clip") ||
+    safeVideos.find((video) => video?.site === "YouTube");
+
+  if (!trailer?.key) {
+    return null;
+  }
+
+  return {
+    name: trailer.name || "Trailer",
+    site: trailer.site,
+    type: trailer.type || "Video",
+    key: trailer.key,
+    official: Boolean(trailer.official),
+    url: `https://www.youtube.com/watch?v=${trailer.key}`,
+    embed_url: `https://www.youtube.com/embed/${trailer.key}?autoplay=1&rel=0&modestbranding=1`,
+  };
+};
+
+const normalizeProviderList = (providers = [], accessType) =>
+  Array.isArray(providers)
+    ? providers.slice(0, 6).map((provider) => ({
+        id: provider.provider_id,
+        name: provider.provider_name,
+        logo_path: provider.logo_path || null,
+        access_type: accessType,
+      }))
+    : [];
+
+const normalizeWatchProviders = (watchProviderPayload) => {
+  const results = watchProviderPayload?.results || {};
+  const region = results.US ? "US" : Object.keys(results)[0];
+
+  if (!region) {
+    return null;
+  }
+
+  const regionData = results[region] || {};
+
+  return {
+    region,
+    link: regionData.link || "",
+    subscription: normalizeProviderList(regionData.flatrate, "subscription"),
+    rent: normalizeProviderList(regionData.rent, "rent"),
+    buy: normalizeProviderList(regionData.buy, "buy"),
+  };
 };
 
 const normalizeMovieDetails = (movie) => {
@@ -788,6 +986,8 @@ const normalizeMovieDetails = (movie) => {
     poster_path: movie.poster_path || null,
     backdrop_path: movie.backdrop_path || null,
     review_highlights: reviewHighlights,
+    trailer: pickTrailer(movie.videos?.results),
+    watch_providers: normalizeWatchProviders(movie["watch/providers"]),
     similar: Array.isArray(movie.similar?.results)
       ? movie.similar.results
           .filter((similarMovie) => similarMovie.poster_path)
@@ -858,7 +1058,7 @@ const createOpenAIRequestBody = (action, systemPrompt, userPrompt) => {
 
 const getMovieContext = async (movieId) => {
   const movie = await fetchTmdb(`/movie/${movieId}`, {
-    append_to_response: "credits,reviews,similar",
+    append_to_response: "credits,reviews,similar,videos,watch/providers",
   });
 
   const genres = Array.isArray(movie.genres) ? movie.genres.map((genre) => genre.name).join(", ") : "Unknown";
@@ -1348,7 +1548,7 @@ app.get("/movies/:id", async (req, res) => {
   try {
     console.log(`Fetching details for movie ID: ${movieId}`);
     const movie = await fetchTmdb(`/movie/${movieId}`, {
-      append_to_response: "credits,reviews,similar",
+      append_to_response: "credits,reviews,similar,videos,watch/providers",
     });
 
     res.json(normalizeMovieDetails(movie));
@@ -1478,7 +1678,7 @@ const fetchFilledDiscoverResults = async (type, pageNumber, options = {}, fillCo
 
 const buildPickFallbackPayload = (rawPreferences = {}, message) => {
   const preferences = resolvePickPreferences(rawPreferences);
-  const summary = message || `ReelBot hit a snag while searching ${buildPickPreferenceSummary(preferences)}. Try again, or loosen the filters.`;
+  const summary = message || buildPickErrorSummary(preferences);
 
   return {
     label: "Pick for Me",
