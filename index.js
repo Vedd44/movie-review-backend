@@ -11,6 +11,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY?.trim();
 const TMDB_API_KEY = process.env.TMDB_API_KEY?.trim();
 const OPENAI_MODEL = (process.env.OPENAI_MODEL || "gpt-5-mini").trim();
 const reelbotCache = new Map();
+const promptLookupCache = new Map();
 
 const REELBOT_ACTIONS = {
   quick_take: {
@@ -145,6 +146,39 @@ const TMDB_MOVIE_GENRE_LOOKUP = {
   10751: "Family",
   10752: "War",
 };
+
+
+const PROMPT_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "best",
+  "but",
+  "for",
+  "fun",
+  "good",
+  "i",
+  "if",
+  "in",
+  "into",
+  "it",
+  "like",
+  "me",
+  "movie",
+  "movies",
+  "my",
+  "night",
+  "non",
+  "of",
+  "or",
+  "something",
+  "that",
+  "the",
+  "this",
+  "to",
+  "watch",
+  "with",
+]);
 
 console.log(`OpenAI model configured: ${OPENAI_MODEL}`);
 console.log(`OpenAI API key present: ${OPENAI_API_KEY ? "yes" : "no"}`);
@@ -284,6 +318,110 @@ const VALID_PICK_SOURCES = new Set(["feed", "library"]);
 const normalizePreferenceKey = (value, config, fallback) => (config[value] ? value : fallback);
 const normalizePickSource = (value) => (VALID_PICK_SOURCES.has(value) ? value : "feed");
 
+const normalizePickGenre = (value) => {
+  if (!value || value === "all") {
+    return "all";
+  }
+
+  const genreIds = String(value)
+    .split(",")
+    .map((entry) => Number.parseInt(entry, 10))
+    .filter((genreId) => TMDB_MOVIE_GENRE_LOOKUP[genreId]);
+
+  return genreIds.length ? genreIds.join(",") : "all";
+};
+
+const getGenreFilterIds = (value) =>
+  normalizePickGenre(value) === "all"
+    ? []
+    : normalizePickGenre(value)
+        .split(",")
+        .map((entry) => Number.parseInt(entry, 10))
+        .filter(Boolean);
+
+const tokenizePrompt = (prompt = "") =>
+  String(prompt || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 1);
+
+const getPromptSearchQueries = (prompt = "") => {
+  const rawTokens = tokenizePrompt(prompt);
+  const rankedTokens = rawTokens.filter((token) => !PROMPT_STOPWORDS.has(token));
+  const tokens = rankedTokens.length ? rankedTokens : rawTokens;
+  const queries = [];
+
+  if (tokens.length >= 3) {
+    for (let index = 0; index <= tokens.length - 3; index += 1) {
+      queries.push(tokens.slice(index, index + 3).join(" "));
+    }
+  }
+
+  if (tokens.length >= 2) {
+    for (let index = 0; index <= tokens.length - 2; index += 1) {
+      queries.push(tokens.slice(index, index + 2).join(" "));
+    }
+  }
+
+  if (tokens.length) {
+    queries.push(tokens.slice(0, 4).join(" "));
+  }
+
+  queries.push(String(prompt || "").trim().toLowerCase());
+
+  return [...new Set(queries.map((query) => query.trim()).filter((query) => query.split(/\s+/).length >= 2))].slice(0, 6);
+};
+
+const countPromptMatches = (textValue = "", promptTokens = []) => {
+  const haystack = String(textValue || "").toLowerCase();
+  return promptTokens.reduce((count, token) => (haystack.includes(token) ? count + 1 : count), 0);
+};
+
+const getPromptMovieBoosts = async (prompt = "") => {
+  const normalizedPrompt = String(prompt || "").trim().toLowerCase();
+
+  if (!normalizedPrompt) {
+    return { personMovieIds: new Set(), promptTokens: [] };
+  }
+
+  if (promptLookupCache.has(normalizedPrompt)) {
+    return promptLookupCache.get(normalizedPrompt);
+  }
+
+  const promptTokens = tokenizePrompt(prompt).filter((token) => !PROMPT_STOPWORDS.has(token));
+  const result = { personMovieIds: new Set(), promptTokens };
+  const queries = getPromptSearchQueries(prompt);
+
+  for (const query of queries) {
+    try {
+      const payload = await fetchTmdb("/search/person", { query, include_adult: "false", page: 1 });
+      const person = (payload.results || []).find((entry) => {
+        const name = String(entry?.name || "").toLowerCase();
+        return name && (name.includes(query) || query.includes(name));
+      });
+
+      if (!person?.id) {
+        continue;
+      }
+
+      const credits = await fetchTmdb(`/person/${person.id}/movie_credits`);
+      (credits.cast || []).forEach((movie) => {
+        if (movie?.id) {
+          result.personMovieIds.add(movie.id);
+        }
+      });
+      break;
+    } catch (error) {
+      console.error("Error resolving prompt person hints:", error.response?.data || error.message);
+    }
+  }
+
+  promptLookupCache.set(normalizedPrompt, result);
+  return result;
+};
+
 const getPromptSignals = (prompt = "") => {
   const normalizedPrompt = String(prompt || "").toLowerCase();
 
@@ -323,6 +461,7 @@ const resolvePickPreferences = (preferences = {}) => {
   const mood = normalizePreferenceKey(preferences.mood, PICK_MOOD_CONFIG, promptSignals.mood || "all");
   const runtime = normalizePreferenceKey(preferences.runtime, PICK_RUNTIME_CONFIG, promptSignals.runtime || "any");
   const company = normalizePreferenceKey(preferences.company, PICK_COMPANY_CONFIG, promptSignals.company || "any");
+  const genre = normalizePickGenre(preferences.genre);
 
   return {
     view,
@@ -330,6 +469,7 @@ const resolvePickPreferences = (preferences = {}) => {
     mood,
     runtime,
     company,
+    genre,
     prompt,
   };
 };
@@ -347,6 +487,17 @@ const buildPickPreferenceSummary = (preferences) => {
 
   if (preferences.mood !== "all") {
     fragments.push(`for a ${PICK_MOOD_CONFIG[preferences.mood].label.toLowerCase()} night`);
+  }
+
+  if (preferences.genre !== "all") {
+    const genreLabels = getGenreFilterIds(preferences.genre)
+      .map((genreId) => TMDB_MOVIE_GENRE_LOOKUP[genreId])
+      .filter(Boolean)
+      .join(" / ");
+
+    if (genreLabels) {
+      fragments.push(`inside ${genreLabels.toLowerCase()}`);
+    }
   }
 
   if (preferences.runtime !== "any") {
@@ -435,7 +586,7 @@ const buildDiscoverParams = (type = "latest", pageNumber = 1, options = {}) => {
 
 const matchesAnyGenre = (genreIds = [], preferredGenreIds = []) => preferredGenreIds.some((genreId) => genreIds.includes(genreId));
 
-const scorePickCandidate = (movie, preferences) => {
+const scorePickCandidate = (movie, preferences, promptBoosts = { personMovieIds: new Set(), promptTokens: [] }) => {
   let score = (movie.vote_average || 0) * 12;
   score += Math.min(movie.vote_count || 0, 1500) / 35;
   score += Math.min(movie.popularity || 0, 600) / 40;
@@ -448,6 +599,10 @@ const scorePickCandidate = (movie, preferences) => {
     score += 12;
   }
 
+  if (preferences.genre !== "all" && matchesAnyGenre(movie.genre_ids || [], getGenreFilterIds(preferences.genre))) {
+    score += 22;
+  }
+
   if (preferences.prompt) {
     const promptSignals = getPromptSignals(preferences.prompt);
 
@@ -458,6 +613,15 @@ const scorePickCandidate = (movie, preferences) => {
     if (promptSignals.company && matchesAnyGenre(movie.genre_ids || [], PICK_COMPANY_CONFIG[promptSignals.company].genreIds)) {
       score += 8;
     }
+
+    if (promptBoosts.personMovieIds?.has(movie.id)) {
+      score += 72;
+    }
+
+    const titleMatches = countPromptMatches(movie.title, promptBoosts.promptTokens || []);
+    const overviewMatches = countPromptMatches(movie.overview, promptBoosts.promptTokens || []);
+    score += titleMatches * 12;
+    score += overviewMatches * 4;
   }
 
   if (preferences.view === "latest") {
@@ -501,7 +665,12 @@ const getPickCandidatePool = async (preferences) => {
   if (preferences.source !== "library") {
     const discoverParams = buildDiscoverParams(preferences.view, 1, {
       runtime: preferences.runtime,
-      genre: preferences.mood !== "all" ? PICK_MOOD_CONFIG[preferences.mood].genreIds.join(",") : undefined,
+      genre:
+        preferences.genre !== "all"
+          ? preferences.genre
+          : preferences.mood !== "all"
+            ? PICK_MOOD_CONFIG[preferences.mood].genreIds.join(",")
+            : undefined,
     });
 
     const response = await fetchTmdb("/discover/movie", discoverParams);
@@ -514,7 +683,12 @@ const getPickCandidatePool = async (preferences) => {
     return filteredResults;
   }
 
-  const genre = preferences.mood !== "all" ? PICK_MOOD_CONFIG[preferences.mood].genreIds.join(",") : undefined;
+  const genre =
+    preferences.genre !== "all"
+      ? preferences.genre
+      : preferences.mood !== "all"
+        ? PICK_MOOD_CONFIG[preferences.mood].genreIds.join(",")
+        : undefined;
   const [popularResponse, latestResponse] = await Promise.allSettled([
     fetchTmdb("/discover/movie", buildDiscoverParams("popular", 1, { runtime: preferences.runtime, genre })),
     fetchTmdb("/discover/movie", buildDiscoverParams("latest", 1, { runtime: preferences.runtime, genre })),
@@ -540,21 +714,22 @@ const getPickCandidatePool = async (preferences) => {
 
 const generatePickPayload = async (rawPreferences = {}) => {
   const preferences = resolvePickPreferences(rawPreferences);
-  const cacheKey = `pick:${preferences.source}:${preferences.view}:${preferences.mood}:${preferences.runtime}:${preferences.company}:${preferences.prompt.toLowerCase()}`;
+  const cacheKey = `pick:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:${preferences.prompt.toLowerCase()}`;
 
   if (reelbotCache.has(cacheKey)) {
     return { ...reelbotCache.get(cacheKey), cached: true };
   }
 
   const candidatePool = await getPickCandidatePool(preferences);
+  const promptBoosts = await getPromptMovieBoosts(preferences.prompt);
 
   const fallbackPool = !candidatePool.length && (preferences.mood !== "all" || preferences.runtime !== "any")
     ? await getPickCandidatePool({ ...preferences, mood: "all", runtime: "any" })
     : candidatePool;
 
   const rankedCandidates = fallbackPool
-    .slice(0, 18)
-    .map((movie) => ({ movie, score: scorePickCandidate(movie, preferences) }))
+    .slice(0, 24)
+    .map((movie) => ({ movie, score: scorePickCandidate(movie, preferences, promptBoosts) }))
     .sort((left, right) => right.score - left.score);
 
   const primaryPick = rankedCandidates[0]?.movie || null;
