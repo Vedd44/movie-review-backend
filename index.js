@@ -11,7 +11,40 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY?.trim();
 const TMDB_API_KEY = process.env.TMDB_API_KEY?.trim();
 const OPENAI_MODEL = (process.env.OPENAI_MODEL || "gpt-5-mini").trim();
 const reelbotCache = new Map();
+const pickCache = new Map();
+const tmdbCache = new Map();
+const pickSurfaceTally = new Map();
 const promptLookupCache = new Map();
+
+const CACHE_TTLS = {
+  now_playing: 5 * 60 * 1000,
+  popular: 10 * 60 * 1000,
+  upcoming: 30 * 60 * 1000,
+  discover: 10 * 60 * 1000,
+  pick: 3 * 60 * 1000,
+  movie_details: 6 * 60 * 60 * 1000,
+  prompt_lookup: 6 * 60 * 60 * 1000,
+};
+
+const FEED_PAGE_ROTATION_LIMITS = {
+  now_playing: 3,
+  popular: 5,
+  upcoming: 4,
+  discover: 6,
+};
+
+const OVEREXPOSED_PICK_TITLES = new Set([
+  "the shawshank redemption",
+  "the godfather",
+  "the dark knight",
+  "pulp fiction",
+  "fight club",
+  "forrest gump",
+  "goodfellas",
+  "interstellar",
+  "inception",
+  "the lord of the rings: the return of the king",
+]);
 
 const REELBOT_ACTIONS = {
   quick_take: {
@@ -64,7 +97,7 @@ const REELBOT_ACTIONS = {
   },
 };
 
-const VALID_DISCOVERY_VIEWS = new Set(["latest", "popular", "upcoming"]);
+const VALID_DISCOVERY_VIEWS = new Set(["latest", "now_playing", "popular", "upcoming"]);
 
 const PICK_MOOD_CONFIG = {
   all: {
@@ -198,6 +231,84 @@ const fetchTmdb = async (path, params = {}) => {
   return response.data;
 };
 
+const stableStringify = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(",")}}`;
+  }
+
+  return JSON.stringify(value);
+};
+
+const readCache = (cache, key) => {
+  const entry = cache.get(key);
+
+  if (!entry) {
+    return null;
+  }
+
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(key);
+    return null;
+  }
+
+  return entry.value;
+};
+
+const writeCache = (cache, key, value, ttlMs) => {
+  cache.set(key, {
+    value,
+    expiresAt: Date.now() + ttlMs,
+  });
+
+  return value;
+};
+
+const fetchTmdbCached = async (path, params = {}, ttlMs = CACHE_TTLS.discover) => {
+  const cacheKey = `${path}:${stableStringify(params)}`;
+  const cachedValue = readCache(tmdbCache, cacheKey);
+
+  if (cachedValue) {
+    return cachedValue;
+  }
+
+  const payload = await fetchTmdb(path, params);
+  return writeCache(tmdbCache, cacheKey, payload, ttlMs);
+};
+
+const getFeedCacheTtl = (type) => {
+  switch (normalizeDiscoveryView(type)) {
+    case "popular":
+      return CACHE_TTLS.popular;
+    case "upcoming":
+      return CACHE_TTLS.upcoming;
+    case "now_playing":
+    default:
+      return CACHE_TTLS.now_playing;
+  }
+};
+
+const getRotatedPage = (type, offset = 0) => {
+  const normalizedType = type === "discover" ? "discover" : normalizeDiscoveryView(type);
+  const pageLimit = FEED_PAGE_ROTATION_LIMITS[normalizedType] || 1;
+  const bucketSize = normalizedType === "discover" ? CACHE_TTLS.discover : getFeedCacheTtl(normalizedType);
+  const bucket = Math.floor(Date.now() / bucketSize);
+  const seedSource = `${normalizedType}:${bucket}:${offset}`;
+  const seed = Array.from(seedSource).reduce((total, character) => total + character.charCodeAt(0), 0);
+  return (seed % pageLimit) + 1;
+};
+
+const buildFeedCacheControlHeader = (type) => {
+  const ttlSeconds = Math.floor(getFeedCacheTtl(type) / 1000);
+  return `public, s-maxage=${ttlSeconds}, stale-while-revalidate=60`;
+};
+
 const escapeHtml = (value = "") =>
   String(value)
     .replace(/&/g, "&amp;")
@@ -311,7 +422,13 @@ const getReviewHighlights = (reviews = []) => {
   };
 };
 
-const normalizeDiscoveryView = (view) => (VALID_DISCOVERY_VIEWS.has(view) ? view : "latest");
+const normalizeDiscoveryView = (view) => {
+  if (view === "latest") {
+    return "now_playing";
+  }
+
+  return VALID_DISCOVERY_VIEWS.has(view) ? view : "now_playing";
+};
 
 const VALID_PICK_SOURCES = new Set(["feed", "library"]);
 
@@ -649,46 +766,288 @@ const buildDiscoverParams = (type = "latest", pageNumber = 1, options = {}) => {
 
 const matchesAnyGenre = (genreIds = [], preferredGenreIds = []) => preferredGenreIds.some((genreId) => genreIds.includes(genreId));
 
+const dedupeMoviesById = (movies = []) => {
+  const seenIds = new Set();
+  const deduped = [];
+
+  movies.forEach((movie) => {
+    if (!movie?.id || seenIds.has(movie.id)) {
+      return;
+    }
+
+    seenIds.add(movie.id);
+    deduped.push(movie);
+  });
+
+  return deduped;
+};
+
+const getPickGenreParam = (preferences) => {
+  const genreIds = new Set(getGenreFilterIds(preferences.genre));
+
+  if (preferences.mood !== "all") {
+    PICK_MOOD_CONFIG[preferences.mood].genreIds.forEach((genreId) => genreIds.add(genreId));
+  }
+
+  if (preferences.company !== "any") {
+    PICK_COMPANY_CONFIG[preferences.company].genreIds.forEach((genreId) => genreIds.add(genreId));
+  }
+
+  return genreIds.size ? Array.from(genreIds).join(",") : undefined;
+};
+
+const isLowSignalMovie = (movie) => {
+  if (!movie?.id || !movie.poster_path || !movie.overview || movie.adult) {
+    return true;
+  }
+
+  if (movie.original_language && movie.original_language !== "en") {
+    return true;
+  }
+
+  const voteCount = movie.vote_count || 0;
+  const popularity = movie.popularity || 0;
+  return voteCount < 8 && popularity < 15;
+};
+
+const fetchFeedBatch = async (type, pageNumber) => {
+  const normalizedType = normalizeDiscoveryView(type);
+  const ttlMs = getFeedCacheTtl(normalizedType);
+
+  if (normalizedType === "popular") {
+    const payload = await fetchTmdbCached("/movie/popular", { page: pageNumber, region: "US" }, ttlMs);
+    return filterPopularResults(payload.results);
+  }
+
+  if (normalizedType === "upcoming") {
+    const payload = await fetchTmdbCached("/movie/upcoming", { page: pageNumber, region: "US" }, ttlMs);
+    return filterUpcomingResults(payload.results);
+  }
+
+  const payload = await fetchTmdbCached("/movie/now_playing", { page: pageNumber, region: "US" }, ttlMs);
+  return filterLatestResults(payload.results);
+};
+
+const fetchDiscoverBatch = async (type, pageNumber, options = {}) => {
+  const payload = await fetchTmdbCached(
+    "/discover/movie",
+    buildDiscoverParams(type, pageNumber, options),
+    CACHE_TTLS.discover
+  );
+
+  return sortDiscoveryResults(type, payload.results);
+};
+
+const getMovieReleaseYear = (movie) => {
+  const releaseYear = movie?.release_date ? new Date(movie.release_date).getFullYear() : null;
+  return Number.isFinite(releaseYear) ? releaseYear : null;
+};
+
+const getMovieEraBucket = (movie) => {
+  const year = getMovieReleaseYear(movie);
+
+  if (!year) {
+    return "unknown";
+  }
+
+  if (year >= 2020) {
+    return "recent";
+  }
+
+  if (year >= 2010) {
+    return "2010s";
+  }
+
+  if (year >= 2000) {
+    return "2000s";
+  }
+
+  if (year >= 1990) {
+    return "1990s";
+  }
+
+  return "older";
+};
+
+const getExposurePenalty = (movie) => {
+  let penalty = 0;
+  const normalizedTitle = String(movie?.title || "").trim().toLowerCase();
+  const voteCount = movie?.vote_count || 0;
+  const popularity = movie?.popularity || 0;
+  const surfaceCount = pickSurfaceTally.get(movie?.id) || 0;
+
+  if (OVEREXPOSED_PICK_TITLES.has(normalizedTitle)) {
+    penalty += 18;
+  }
+
+  if (voteCount > 25000) {
+    penalty += 16;
+  } else if (voteCount > 15000) {
+    penalty += 10;
+  } else if (voteCount > 8000) {
+    penalty += 5;
+  }
+
+  if (popularity > 180) {
+    penalty += 10;
+  } else if (popularity > 120) {
+    penalty += 6;
+  }
+
+  if (surfaceCount >= 3) {
+    penalty += 12;
+  } else if (surfaceCount >= 2) {
+    penalty += 8;
+  } else if (surfaceCount >= 1) {
+    penalty += 4;
+  }
+
+  const eraBucket = getMovieEraBucket(movie);
+  if (eraBucket === "older") {
+    penalty += 8;
+  } else if (eraBucket === "1990s") {
+    penalty += 4;
+  }
+
+  return penalty;
+};
+
+const getQualityFitBoost = (movie) => {
+  let boost = 0;
+  const voteAverage = movie?.vote_average || 0;
+  const voteCount = movie?.vote_count || 0;
+  const popularity = movie?.popularity || 0;
+  const eraBucket = getMovieEraBucket(movie);
+
+  if (voteAverage >= 6.5 && voteAverage <= 8.3) {
+    boost += 10;
+  } else if (voteAverage > 8.8) {
+    boost -= 6;
+  } else if (voteAverage < 6.2) {
+    boost -= 10;
+  }
+
+  if (voteCount >= 120 && voteCount <= 8000) {
+    boost += 8;
+  }
+
+  if (popularity >= 18 && popularity <= 110) {
+    boost += 6;
+  }
+
+  if (eraBucket === "recent" || eraBucket === "2010s" || eraBucket === "2000s") {
+    boost += 4;
+  }
+
+  return boost;
+};
+
+const balanceCandidatesByEra = (rankedCandidates = [], targetCount = 24) => {
+  const buckets = {
+    recent: [],
+    "2010s": [],
+    "2000s": [],
+    "1990s": [],
+    older: [],
+    unknown: [],
+  };
+
+  rankedCandidates.forEach((entry) => {
+    buckets[getMovieEraBucket(entry.movie)].push(entry);
+  });
+
+  const curated = [];
+  const takeFromBucket = (bucketName, count) => {
+    while (buckets[bucketName].length && count > 0) {
+      curated.push(buckets[bucketName].shift());
+      count -= 1;
+    }
+  };
+
+  takeFromBucket("recent", 7);
+  takeFromBucket("2010s", 6);
+  takeFromBucket("2000s", 5);
+  takeFromBucket("1990s", 3);
+  takeFromBucket("older", 2);
+  takeFromBucket("unknown", 2);
+
+  const leftovers = Object.values(buckets).flat();
+  leftovers.sort((left, right) => right.score - left.score);
+
+  while (curated.length < targetCount && leftovers.length) {
+    curated.push(leftovers.shift());
+  }
+
+  return curated.slice(0, targetCount);
+};
+
 const scorePickCandidate = (movie, preferences, promptBoosts = { personMovieIds: new Set(), promptTokens: [] }) => {
-  let score = (movie.vote_average || 0) * 12;
-  score += Math.min(movie.vote_count || 0, 1500) / 35;
-  score += Math.min(movie.popularity || 0, 600) / 40;
+  let score = (movie.vote_average || 0) * 10;
+  score += Math.min(movie.vote_count || 0, 1800) / 38;
+  score += Math.min(movie.popularity || 0, 800) / 48;
+  score += getQualityFitBoost(movie);
+  score -= getExposurePenalty(movie);
 
   if (preferences.mood !== "all" && matchesAnyGenre(movie.genre_ids || [], PICK_MOOD_CONFIG[preferences.mood].genreIds)) {
-    score += 18;
+    score += 16;
   }
 
   if (preferences.company !== "any" && matchesAnyGenre(movie.genre_ids || [], PICK_COMPANY_CONFIG[preferences.company].genreIds)) {
-    score += 12;
+    score += 11;
   }
 
   if (preferences.genre !== "all" && matchesAnyGenre(movie.genre_ids || [], getGenreFilterIds(preferences.genre))) {
-    score += 22;
+    score += 18;
+  }
+
+  if (preferences.runtime !== "any" && movie.runtime) {
+    const runtimeConfig = PICK_RUNTIME_CONFIG[preferences.runtime];
+    if (runtimeConfig.min && movie.runtime >= runtimeConfig.min) {
+      score += 12;
+    }
+    if (runtimeConfig.max && movie.runtime <= runtimeConfig.max) {
+      score += 12;
+    }
+    if (runtimeConfig.min && movie.runtime < runtimeConfig.min) {
+      score -= 18;
+    }
+    if (runtimeConfig.max && movie.runtime > runtimeConfig.max) {
+      score -= 18;
+    }
   }
 
   if (preferences.prompt) {
     const promptSignals = getPromptSignals(preferences.prompt);
 
     if (promptSignals.mood && matchesAnyGenre(movie.genre_ids || [], PICK_MOOD_CONFIG[promptSignals.mood].genreIds)) {
-      score += 10;
-    }
-
-    if (promptSignals.company && matchesAnyGenre(movie.genre_ids || [], PICK_COMPANY_CONFIG[promptSignals.company].genreIds)) {
       score += 8;
     }
 
+    if (promptSignals.company && matchesAnyGenre(movie.genre_ids || [], PICK_COMPANY_CONFIG[promptSignals.company].genreIds)) {
+      score += 6;
+    }
+
     if (promptBoosts.personMovieIds?.has(movie.id)) {
-      score += 72;
+      score += 46;
     }
 
     const titleMatches = countPromptMatches(movie.title, promptBoosts.promptTokens || []);
     const overviewMatches = countPromptMatches(movie.overview, promptBoosts.promptTokens || []);
-    score += titleMatches * 12;
-    score += overviewMatches * 4;
+    score += titleMatches * 9;
+    score += overviewMatches * 3;
   }
 
-  if (preferences.view === "latest") {
+  if (preferences.view === "now_playing") {
     score += movie.release_date ? new Date(movie.release_date).getTime() / 1000000000000 : 0;
+  }
+
+  const releaseYear = getMovieReleaseYear(movie);
+  if (releaseYear) {
+    if (releaseYear >= 2015) {
+      score += 4;
+    } else if (releaseYear < 1990) {
+      score -= 6;
+    }
   }
 
   return score;
@@ -697,41 +1056,41 @@ const scorePickCandidate = (movie, preferences, promptBoosts = { personMovieIds:
 const getPickMoodReason = (moodId) => {
   switch (moodId) {
     case "easy_watch":
-      return "should be easy to get into without feeling too heavy";
+      return "Easy to sink into without turning the night heavy";
     case "mind_bending":
-      return "gives you something smart and twisty to chew on";
+      return "More idea-driven and satisfying than a generic thriller pick";
     case "dark":
-      return "keeps the mood darker and more intense";
+      return "Keeps the intensity up without drifting into random shock value";
     case "funny":
-      return "keeps enough humor in the mix to stay fun";
+      return "Light enough to keep the night moving instead of dragging";
     case "feel_something":
-      return "has a little more emotional pull";
+      return "Emotional in a rewarding way rather than purely draining";
     default:
-      return "fits the overall mood of the night";
+      return "Feels like a strong overall fit for tonight";
   }
 };
 
 const getPickCompanyReason = (companyId) => {
   switch (companyId) {
     case "solo":
-      return "feels like a strong solo-watch pick";
+      return "Strong enough to hold attention on its own";
     case "pair":
-      return "feels better suited to date night than something too abrasive or demanding";
+      return "Works better as a shared watch than something too abrasive or niche";
     case "friends":
-      return "should play well with a group";
+      return "Broad enough to play well with a room";
     default:
-      return "feels easy to say yes to tonight";
+      return "Easy to say yes to without overthinking it";
   }
 };
 
 const getPickRuntimeReason = (runtimeId) => {
   switch (runtimeId) {
     case "under_two_hours":
-      return "should fit the night without taking over the whole evening";
+      return "Fits the night cleanly without taking over the whole evening";
     case "over_two_hours":
-      return "feels better if you want to settle into something bigger";
+      return "Has enough scale to justify settling in for a longer watch";
     default:
-      return "works even if runtime is not the main concern";
+      return "Runtime should not be the thing that gets in the way";
   }
 };
 
@@ -756,90 +1115,66 @@ const joinReasonClauses = (clauses = []) => {
 const buildPickReason = (movie, preferences) => {
   const genreNames = (movie.genre_ids || []).map((genreId) => TMDB_MOVIE_GENRE_LOOKUP[genreId]).filter(Boolean);
   const leadingGenres = genreNames.slice(0, 2).join(" / ");
-  const fragments = [];
 
-  if (preferences.prompt) {
-    fragments.push("feels close to the kind of movie you asked for");
-  }
-
-  if (preferences.mood !== "all") {
-    fragments.push(getPickMoodReason(preferences.mood));
+  if (preferences.runtime !== "any") {
+    return getPickRuntimeReason(preferences.runtime);
   }
 
   if (preferences.company !== "any") {
-    fragments.push(getPickCompanyReason(preferences.company));
+    return getPickCompanyReason(preferences.company);
   }
 
-  if (preferences.runtime !== "any") {
-    fragments.push(getPickRuntimeReason(preferences.runtime));
+  if (preferences.mood !== "all") {
+    return getPickMoodReason(preferences.mood);
   }
 
-  if (!fragments.length && leadingGenres) {
-    fragments.push(`leans into a ${leadingGenres.toLowerCase()} mix`);
+  if (leadingGenres) {
+    return `Leans into a ${leadingGenres.toLowerCase()} mix without feeling like an obvious default pick`;
   }
 
-  return `It ${joinReasonClauses([...new Set(fragments)])}.`;
+  return "Strong enough to feel like a deliberate pick instead of the usual default";
 };
 
-const normalizePickMovie = (movie, preferences) => ({
+const normalizePickMovie = (movie, preferences, overrides = {}) => ({
   id: movie.id,
   title: movie.title,
   overview: truncateText(movie.overview || "No description available.", 220),
   release_date: movie.release_date || "",
   vote_average: movie.vote_average || 0,
   poster_path: movie.poster_path || null,
-  reason: buildPickReason(movie, preferences),
+  runtime: movie.runtime || null,
+  genre_names: Array.isArray(movie.genre_names) ? movie.genre_names : [],
+  match_score: overrides.match_score || null,
+  reason: overrides.reason || buildPickReason(movie, preferences),
 });
 
 const getPickCandidatePool = async (preferences) => {
-  if (preferences.source !== "library") {
-    const discoverParams = buildDiscoverParams(preferences.view, 1, {
-      runtime: preferences.runtime,
-      genre:
-        preferences.genre !== "all"
-          ? preferences.genre
-          : preferences.mood !== "all"
-            ? PICK_MOOD_CONFIG[preferences.mood].genreIds.join(",")
-            : undefined,
-    });
+  const discoverGenre = getPickGenreParam(preferences);
+  const supportingView = normalizeDiscoveryView(preferences.view) === "popular" ? "now_playing" : "popular";
 
-    const response = await fetchTmdb("/discover/movie", discoverParams);
-    const filteredResults = normalizeDiscoveryView(preferences.view) === "popular"
-      ? filterPopularResults(response.results)
-      : normalizeDiscoveryView(preferences.view) === "upcoming"
-        ? filterUpcomingResults(response.results)
-        : filterLatestResults(response.results);
+  const requestPlan = preferences.source === "library"
+    ? [
+        () => fetchFeedBatch(preferences.view, getRotatedPage(preferences.view, 0)),
+        () => fetchFeedBatch(supportingView, getRotatedPage(supportingView, 1)),
+        () => fetchDiscoverBatch(preferences.view, getRotatedPage("discover", 0), { runtime: preferences.runtime, genre: discoverGenre }),
+        () => fetchDiscoverBatch(supportingView, getRotatedPage("discover", 1), { runtime: preferences.runtime, genre: discoverGenre }),
+        () => fetchFeedBatch("now_playing", getRotatedPage("now_playing", 2)),
+        () => fetchDiscoverBatch("popular", getRotatedPage("discover", 2), { runtime: preferences.runtime, genre: discoverGenre }),
+      ]
+    : [
+        () => fetchFeedBatch(preferences.view, getRotatedPage(preferences.view, 0)),
+        () => fetchDiscoverBatch(preferences.view, getRotatedPage("discover", 0), { runtime: preferences.runtime, genre: discoverGenre }),
+        () => fetchFeedBatch(supportingView, getRotatedPage(supportingView, 1)),
+        () => fetchDiscoverBatch(supportingView, getRotatedPage("discover", 1), { runtime: preferences.runtime, genre: discoverGenre }),
+        () => fetchFeedBatch("now_playing", getRotatedPage("now_playing", 2)),
+      ];
 
-    return filteredResults;
-  }
+  const responses = await Promise.allSettled(requestPlan.map((request) => request()));
+  const merged = responses
+    .filter((response) => response.status === "fulfilled")
+    .flatMap((response) => response.value || []);
 
-  const genre =
-    preferences.genre !== "all"
-      ? preferences.genre
-      : preferences.mood !== "all"
-        ? PICK_MOOD_CONFIG[preferences.mood].genreIds.join(",")
-        : undefined;
-  const [popularResponse, latestResponse] = await Promise.allSettled([
-    fetchTmdb("/discover/movie", buildDiscoverParams("popular", 1, { runtime: preferences.runtime, genre })),
-    fetchTmdb("/discover/movie", buildDiscoverParams("latest", 1, { runtime: preferences.runtime, genre })),
-  ]);
-
-  const popularResults = popularResponse.status === "fulfilled" ? filterPopularResults(popularResponse.value.results) : [];
-  const latestResults = latestResponse.status === "fulfilled" ? filterLatestResults(latestResponse.value.results) : [];
-  const merged = [...popularResults, ...latestResults];
-  const deduped = [];
-  const seenIds = new Set();
-
-  merged.forEach((movie) => {
-    if (!movie?.id || seenIds.has(movie.id)) {
-      return;
-    }
-
-    seenIds.add(movie.id);
-    deduped.push(movie);
-  });
-
-  return deduped;
+  return dedupeMoviesById(merged).filter((movie) => !isLowSignalMovie(movie)).slice(0, 100);
 };
 
 const normalizeExcludedIds = (excludedIds = []) =>
@@ -849,38 +1184,206 @@ const normalizeExcludedIds = (excludedIds = []) =>
       .filter(Boolean)
   );
 
+const fetchPickDetail = async (movieId) => {
+  const payload = await fetchTmdbCached(`/movie/${movieId}`, {}, CACHE_TTLS.movie_details);
+  return {
+    id: payload.id,
+    runtime: payload.runtime || null,
+    genre_ids: Array.isArray(payload.genres) ? payload.genres.map((genre) => genre.id) : [],
+    genre_names: Array.isArray(payload.genres) ? payload.genres.map((genre) => genre.name) : [],
+    original_language: payload.original_language || "",
+    vote_average: payload.vote_average || 0,
+    vote_count: payload.vote_count || 0,
+    popularity: payload.popularity || 0,
+    overview: payload.overview || "",
+  };
+};
+
+const enrichCandidatesWithDetails = async (movies = []) => {
+  const responses = await Promise.allSettled(movies.map((movie) => fetchPickDetail(movie.id)));
+
+  return movies.map((movie, index) => {
+    const detailResponse = responses[index];
+    if (detailResponse.status !== "fulfilled") {
+      return movie;
+    }
+
+    return {
+      ...movie,
+      ...detailResponse.value,
+      genre_ids: detailResponse.value.genre_ids.length ? detailResponse.value.genre_ids : movie.genre_ids,
+      overview: detailResponse.value.overview || movie.overview,
+    };
+  });
+};
+
+const buildCompactCandidate = (movie) => ({
+  id: movie.id,
+  title: movie.title,
+  release_year: movie.release_date ? new Date(movie.release_date).getFullYear() : null,
+  era_bucket: getMovieEraBucket(movie),
+  runtime: movie.runtime || null,
+  genres: Array.isArray(movie.genre_names) ? movie.genre_names : [],
+  vote_average: Number((movie.vote_average || 0).toFixed(1)),
+  popularity: Math.round(movie.popularity || 0),
+  vote_count: movie.vote_count || 0,
+  overview: truncateText(movie.overview || "", 180),
+});
+
+const safeJsonParse = (value) => {
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
+};
+
+const buildPickRankingPrompt = (preferences, candidates) => {
+  const candidateBlock = candidates.map((movie) => stableStringify(buildCompactCandidate(movie))).join("\n");
+
+  return `User preferences:\n${stableStringify({
+    source: preferences.source,
+    view: preferences.view,
+    mood: preferences.mood,
+    runtime: preferences.runtime,
+    company: preferences.company,
+    prompt: preferences.prompt,
+  })}\n\nCandidate pool:\n${candidateBlock}\n\nChoose exactly 1 best pick and 3 backup picks from the provided candidate ids only. Prefer high-fit recommendations that match the requested mood, runtime, and setup, but avoid overexposed or extremely famous default classics unless they are an exceptional fit. Do not simply pick the most universally famous title. Keep backups meaningfully different in tone, era, or intensity while staying in the same overall lane.`;
+};
+
+const rankCandidatesWithOpenAI = async (preferences, candidates) => {
+  if (!OPENAI_API_KEY || !candidates.length) {
+    return null;
+  }
+
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      summary: { type: "string" },
+      assistant_note: { type: "string" },
+      primary: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "integer" },
+          reason: { type: "string" },
+          match_score: { type: "integer" },
+        },
+        required: ["id", "reason", "match_score"],
+      },
+      backups: {
+        type: "array",
+        minItems: 3,
+        maxItems: 3,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            id: { type: "integer" },
+            reason: { type: "string" },
+          },
+          required: ["id", "reason"],
+        },
+      },
+    },
+    required: ["summary", "assistant_note", "primary", "backups"],
+  };
+
+  const response = await axios.post(
+    "https://api.openai.com/v1/responses",
+    {
+      model: "gpt-5-mini",
+      input: buildResponsesInput(
+        `You are ${AI_NAME}, a grounded movie-night assistant. Rank only from the supplied candidates. Never invent titles. Favor strong tonight-fit over all-time-famous defaults. Keep reasoning concise, practical, and non-redundant. Return valid JSON that matches the schema.`,
+        buildPickRankingPrompt(preferences, candidates)
+      ),
+      temperature: 0.4,
+      max_output_tokens: 450,
+      store: false,
+      reasoning: { effort: "minimal" },
+      text: {
+        verbosity: "low",
+        format: {
+          type: "json_schema",
+          name: "reelbot_pick_ranking",
+          strict: true,
+          schema,
+        },
+      },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+
+  return safeJsonParse(extractResponsesText(response.data));
+};
+
+const buildMatchScore = (score, topScore) => {
+  if (!topScore) {
+    return 78;
+  }
+
+  const relativeGap = Math.max(0, topScore - score);
+  return Math.max(68, Math.min(96, Math.round(94 - (relativeGap / Math.max(topScore, 1)) * 28)));
+};
+
 const generatePickPayload = async (rawPreferences = {}) => {
   const preferences = resolvePickPreferences(rawPreferences);
   const excludedIds = normalizeExcludedIds(rawPreferences.excluded_ids);
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
-  const cacheKey = `pick:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:${preferences.prompt.toLowerCase()}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:refresh:${refreshKey}`;
+  const cacheKey = `pick:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:${preferences.prompt.toLowerCase()}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}`;
 
-  if (!refreshKey && reelbotCache.has(cacheKey)) {
-    return { ...reelbotCache.get(cacheKey), cached: true };
+  if (!refreshKey) {
+    const cachedPayload = readCache(pickCache, cacheKey);
+    if (cachedPayload) {
+      return { ...cachedPayload, cached: true };
+    }
   }
 
-  const candidatePool = await getPickCandidatePool(preferences);
   const promptBoosts = await getPromptMovieBoosts(preferences.prompt);
-
+  const candidatePool = await getPickCandidatePool(preferences);
   const fallbackPool = !candidatePool.length && (preferences.mood !== "all" || preferences.runtime !== "any")
     ? await getPickCandidatePool({ ...preferences, mood: "all", runtime: "any" })
     : candidatePool;
 
-  const filteredPool = fallbackPool.filter((movie) => !excludedIds.has(movie.id));
-  const viablePool = filteredPool.length >= 4 ? filteredPool : filteredPool.length ? filteredPool : fallbackPool;
-
-  const rankedCandidates = viablePool
-    .slice(0, 40)
+  const locallyFilteredPool = fallbackPool.filter((movie) => !excludedIds.has(movie.id) && !isLowSignalMovie(movie));
+  const preliminaryRanked = dedupeMoviesById(locallyFilteredPool)
     .map((movie) => ({ movie, score: scorePickCandidate(movie, preferences, promptBoosts) }))
     .sort((left, right) => right.score - left.score);
 
-  const primaryPick = rankedCandidates[0]?.movie || null;
-  const alternatePicks = rankedCandidates.slice(1, 4).map((entry) => entry.movie);
+  const topPreliminaryCandidates = preliminaryRanked.slice(0, 28).map((entry) => entry.movie);
+  const detailedCandidates = await enrichCandidatesWithDetails(topPreliminaryCandidates);
+  const finalRankedCandidates = detailedCandidates
+    .filter((movie) => !isLowSignalMovie(movie) && !excludedIds.has(movie.id))
+    .map((movie) => ({ movie, score: scorePickCandidate(movie, preferences, promptBoosts) }))
+    .sort((left, right) => right.score - left.score);
+
+  const curatedRankingEntries = balanceCandidatesByEra(finalRankedCandidates, 22);
+  const rankingPool = curatedRankingEntries.map((entry) => entry.movie);
+  const aiRanking = rankingPool.length >= 4 ? await rankCandidatesWithOpenAI(preferences, rankingPool).catch((error) => {
+    console.error("OpenAI ranking failed:", error.response?.data || error.message);
+    return null;
+  }) : null;
+
+  const movieLookup = new Map(rankingPool.map((movie) => [movie.id, movie]));
+  const fallbackPrimary = finalRankedCandidates[0]?.movie || null;
+  const fallbackBackups = finalRankedCandidates.slice(1, 4).map((entry) => entry.movie);
+
+  const primaryPick = movieLookup.get(aiRanking?.primary?.id) || fallbackPrimary;
+  const alternatePicks = (Array.isArray(aiRanking?.backups) ? aiRanking.backups.map((entry) => movieLookup.get(entry.id)).filter(Boolean) : fallbackBackups)
+    .filter((movie) => movie?.id && movie.id !== primaryPick?.id)
+    .slice(0, 3);
 
   if (!primaryPick) {
     return {
       label: "Pick for Me",
       summary: buildPickNoMatchSummary(preferences),
+      assistant_note: "ReelBot could not find a strong-enough fit from the current candidate pool.",
       resolved_preferences: preferences,
       primary: null,
       alternates: [],
@@ -888,16 +1391,31 @@ const generatePickPayload = async (rawPreferences = {}) => {
     };
   }
 
+  const topScore = finalRankedCandidates[0]?.score || 0;
   const payload = {
     label: "Pick for Me",
-    summary: buildPickSuccessSummary(preferences),
+    summary: aiRanking?.summary || buildPickSuccessSummary(preferences),
+    assistant_note: aiRanking?.assistant_note || "ReelBot ranked a fresh pool of candidates, then kept the backups close without making them feel redundant.",
+    match_score: aiRanking?.primary?.match_score || buildMatchScore(finalRankedCandidates.find((entry) => entry.movie.id === primaryPick.id)?.score || topScore, topScore),
     resolved_preferences: preferences,
-    primary: normalizePickMovie(primaryPick, preferences),
-    alternates: alternatePicks.map((movie) => normalizePickMovie(movie, preferences)),
+    primary: normalizePickMovie(primaryPick, preferences, {
+      reason: aiRanking?.primary?.reason,
+      match_score: aiRanking?.primary?.match_score || buildMatchScore(finalRankedCandidates.find((entry) => entry.movie.id === primaryPick.id)?.score || topScore, topScore),
+    }),
+    alternates: alternatePicks.map((movie, index) => normalizePickMovie(movie, preferences, {
+      reason: Array.isArray(aiRanking?.backups) ? aiRanking.backups[index]?.reason : "Strong backup if you want a nearby option that still fits the night.",
+      match_score: buildMatchScore(finalRankedCandidates.find((entry) => entry.movie.id === movie.id)?.score || topScore, topScore),
+    })),
+    candidate_count: candidatePool.length,
+    curated_candidate_count: rankingPool.length,
   };
 
+  [primaryPick, ...alternatePicks].filter(Boolean).forEach((movie) => {
+    pickSurfaceTally.set(movie.id, (pickSurfaceTally.get(movie.id) || 0) + 1);
+  });
+
   if (!refreshKey) {
-    reelbotCache.set(cacheKey, payload);
+    writeCache(pickCache, cacheKey, payload, CACHE_TTLS.pick);
   }
 
   return { ...payload, cached: false };
@@ -1606,16 +2124,19 @@ const sortUpcomingMovies = (left, right) => {
 const filterLatestResults = (results = []) =>
   results
     .filter((movie) => movie.poster_path)
+    .filter((movie) => !movie.adult)
     .sort(sortLatestMovies);
 
 const filterPopularResults = (results = []) =>
   results
     .filter((movie) => movie.poster_path)
+    .filter((movie) => !movie.adult)
     .sort(sortPopularMovies);
 
 const filterUpcomingResults = (results = []) =>
   results
     .filter((movie) => movie.poster_path)
+    .filter((movie) => !movie.adult)
     .filter((movie) => (movie.vote_count || 0) >= 3 || (movie.popularity || 0) >= 15)
     .sort(sortUpcomingMovies);
 
@@ -1631,42 +2152,52 @@ const sortDiscoveryResults = (type, results = []) => {
   return filterLatestResults(results);
 };
 
+const fetchHomepageFeed = async (type, pageNumber) => {
+  const normalizedType = normalizeDiscoveryView(type);
+  const rotatedPage = pageNumber > 1 ? pageNumber : getRotatedPage(normalizedType, 0);
+  const results = await fetchFeedBatch(normalizedType, rotatedPage);
+
+  return {
+    page: pageNumber,
+    total_pages: 500,
+    total_results: results.length,
+    results,
+    source_page: rotatedPage,
+  };
+};
+
 const fetchFilledDiscoverResults = async (type, pageNumber, options = {}, fillCount = 0) => {
   const normalizedType = normalizeDiscoveryView(type);
   const minimumCount = Math.max(0, Number.parseInt(fillCount, 10) || 0);
+  const hasFilters = Boolean(options.genre) || options.runtime !== "any";
+
+  if (!hasFilters) {
+    return fetchHomepageFeed(normalizedType, pageNumber);
+  }
 
   if (minimumCount <= 0 || pageNumber !== 1) {
-    const payload = await fetchTmdb("/discover/movie", buildDiscoverParams(normalizedType, pageNumber, options));
+    const discoverPage = pageNumber > 1 ? pageNumber : getRotatedPage("discover", 0);
+    const payload = await fetchTmdbCached("/discover/movie", buildDiscoverParams(normalizedType, discoverPage, options), CACHE_TTLS.discover);
     return {
       ...payload,
+      page: pageNumber,
       results: sortDiscoveryResults(normalizedType, payload.results),
     };
   }
 
-  const collected = [];
-  const seenIds = new Set();
-  let tmdbPage = 1;
-  let totalPages = 1;
+  const discoverPages = [getRotatedPage("discover", 0), getRotatedPage("discover", 1)];
+  const responses = await Promise.allSettled(
+    discoverPages.map((discoverPage) =>
+      fetchTmdbCached("/discover/movie", buildDiscoverParams(normalizedType, discoverPage, options), CACHE_TTLS.discover)
+    )
+  );
 
-  while (collected.length < minimumCount && tmdbPage <= 4) {
-    const payload = await fetchTmdb("/discover/movie", buildDiscoverParams(normalizedType, tmdbPage, options));
-    totalPages = payload.total_pages || totalPages;
-
-    sortDiscoveryResults(normalizedType, payload.results).forEach((movie) => {
-      if (!movie?.id || seenIds.has(movie.id)) {
-        return;
-      }
-
-      seenIds.add(movie.id);
-      collected.push(movie);
-    });
-
-    if (tmdbPage >= totalPages) {
-      break;
-    }
-
-    tmdbPage += 1;
-  }
+  const collected = dedupeMoviesById(
+    responses
+      .filter((response) => response.status === "fulfilled")
+      .flatMap((response) => sortDiscoveryResults(normalizedType, response.value.results))
+  );
+  const totalPages = responses.find((response) => response.status === "fulfilled")?.value?.total_pages || 1;
 
   return {
     page: 1,
@@ -1702,6 +2233,7 @@ app.get("/movies", async (req, res) => {
       runtime,
     }, fill);
 
+    res.set("Cache-Control", buildFeedCacheControlHeader(normalizedType));
     res.json(payload);
   } catch (error) {
     console.error(`❌ Error fetching ${normalizedType} movies:`, error.response?.data || error.message);
