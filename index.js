@@ -816,16 +816,29 @@ const fetchFeedBatch = async (type, pageNumber) => {
 
   if (normalizedType === "popular") {
     const payload = await fetchTmdbCached("/movie/popular", { page: pageNumber, region: "US" }, ttlMs);
-    return filterPopularResults(payload.results);
+    return {
+      results: filterPopularResults(payload.results),
+      total_pages: payload.total_pages || 1,
+      total_results: payload.total_results || 0,
+    };
   }
 
   if (normalizedType === "upcoming") {
     const payload = await fetchTmdbCached("/movie/upcoming", { page: pageNumber, region: "US" }, ttlMs);
-    return filterUpcomingResults(payload.results);
+    const filteredResults = filterUpcomingResults(payload.results);
+    return {
+      results: filteredResults.length ? filteredResults : payload.results.filter((movie) => movie.poster_path && !movie.adult),
+      total_pages: payload.total_pages || 1,
+      total_results: payload.total_results || 0,
+    };
   }
 
   const payload = await fetchTmdbCached("/movie/now_playing", { page: pageNumber, region: "US" }, ttlMs);
-  return filterLatestResults(payload.results);
+  return {
+    results: filterLatestResults(payload.results),
+    total_pages: payload.total_pages || 1,
+    total_results: payload.total_results || 0,
+  };
 };
 
 const fetchDiscoverBatch = async (type, pageNumber, options = {}) => {
@@ -1172,7 +1185,7 @@ const getPickCandidatePool = async (preferences) => {
   const responses = await Promise.allSettled(requestPlan.map((request) => request()));
   const merged = responses
     .filter((response) => response.status === "fulfilled")
-    .flatMap((response) => response.value || []);
+    .flatMap((response) => Array.isArray(response.value) ? response.value : response.value?.results || []);
 
   return dedupeMoviesById(merged).filter((movie) => !isLowSignalMovie(movie)).slice(0, 100);
 };
@@ -2137,7 +2150,7 @@ const filterUpcomingResults = (results = []) =>
   results
     .filter((movie) => movie.poster_path)
     .filter((movie) => !movie.adult)
-    .filter((movie) => (movie.vote_count || 0) >= 3 || (movie.popularity || 0) >= 15)
+    .filter((movie) => (movie.vote_count || 0) >= 1 || (movie.popularity || 0) >= 5)
     .sort(sortUpcomingMovies);
 
 const sortDiscoveryResults = (type, results = []) => {
@@ -2155,14 +2168,20 @@ const sortDiscoveryResults = (type, results = []) => {
 const fetchHomepageFeed = async (type, pageNumber) => {
   const normalizedType = normalizeDiscoveryView(type);
   const rotatedPage = pageNumber > 1 ? pageNumber : getRotatedPage(normalizedType, 0);
-  const results = await fetchFeedBatch(normalizedType, rotatedPage);
+  let sourcePage = rotatedPage;
+  let payload = await fetchFeedBatch(normalizedType, rotatedPage);
+
+  if (!payload.results.length && rotatedPage !== 1) {
+    payload = await fetchFeedBatch(normalizedType, 1);
+    sourcePage = 1;
+  }
 
   return {
     page: pageNumber,
-    total_pages: 500,
-    total_results: results.length,
-    results,
-    source_page: rotatedPage,
+    total_pages: payload.total_pages || 1,
+    total_results: payload.total_results || payload.results.length,
+    results: payload.results,
+    source_page: sourcePage,
   };
 };
 
