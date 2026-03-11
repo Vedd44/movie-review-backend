@@ -810,6 +810,26 @@ const isLowSignalMovie = (movie) => {
   return voteCount < 8 && popularity < 15;
 };
 
+const buildUpcomingDiscoverFallbackParams = (pageNumber = 1) => {
+  const todayDate = new Date();
+  const today = formatDate(todayDate);
+  const nextYear = new Date(todayDate);
+  nextYear.setMonth(nextYear.getMonth() + 12);
+
+  return {
+    region: "US",
+    include_adult: "false",
+    with_release_type: "2|3",
+    without_genres: "99,10770",
+    sort_by: "primary_release_date.asc",
+    "primary_release_date.gte": today,
+    "primary_release_date.lte": formatDate(nextYear),
+    "release_date.gte": today,
+    "release_date.lte": formatDate(nextYear),
+    page: pageNumber,
+  };
+};
+
 const fetchFeedBatch = async (type, pageNumber) => {
   const normalizedType = normalizeDiscoveryView(type);
   const ttlMs = getFeedCacheTtl(normalizedType);
@@ -826,10 +846,25 @@ const fetchFeedBatch = async (type, pageNumber) => {
   if (normalizedType === "upcoming") {
     const payload = await fetchTmdbCached("/movie/upcoming", { page: pageNumber, region: "US" }, ttlMs);
     const filteredResults = filterUpcomingResults(payload.results);
+
+    if (filteredResults.length) {
+      return {
+        results: filteredResults,
+        total_pages: payload.total_pages || 1,
+        total_results: payload.total_results || 0,
+      };
+    }
+
+    const fallbackPayload = await fetchTmdbCached(
+      "/discover/movie",
+      buildUpcomingDiscoverFallbackParams(pageNumber),
+      ttlMs
+    );
+
     return {
-      results: filteredResults.length ? filteredResults : payload.results.filter((movie) => movie.poster_path && !movie.adult),
-      total_pages: payload.total_pages || 1,
-      total_results: payload.total_results || 0,
+      results: filterUpcomingResults(fallbackPayload.results),
+      total_pages: fallbackPayload.total_pages || payload.total_pages || 1,
+      total_results: fallbackPayload.total_results || payload.total_results || 0,
     };
   }
 
@@ -2091,6 +2126,20 @@ app.get("/movies/:id", async (req, res) => {
 
 const formatDate = (value) => value.toISOString().split("T")[0];
 
+const isFutureRelease = (movie, monthsOut = 12) => {
+  const releaseDate = movie?.release_date ? new Date(movie.release_date) : null;
+  if (!(releaseDate instanceof Date) || Number.isNaN(releaseDate.getTime())) {
+    return false;
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const latestAllowedDate = new Date(today);
+  latestAllowedDate.setMonth(latestAllowedDate.getMonth() + monthsOut);
+
+  return releaseDate >= today && releaseDate <= latestAllowedDate;
+};
+
 const sortLatestMovies = (left, right) => {
   const releaseDateDiff = new Date(right.release_date || 0) - new Date(left.release_date || 0);
 
@@ -2150,6 +2199,7 @@ const filterUpcomingResults = (results = []) =>
   results
     .filter((movie) => movie.poster_path)
     .filter((movie) => !movie.adult)
+    .filter((movie) => isFutureRelease(movie, 12))
     .filter((movie) => (movie.vote_count || 0) >= 1 || (movie.popularity || 0) >= 5)
     .sort(sortUpcomingMovies);
 
