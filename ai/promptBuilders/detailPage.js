@@ -38,26 +38,41 @@ const DETAIL_ACTION_GUIDES = {
   debate_club: "Surface actual tradeoffs or ambiguities people debate.",
 };
 
-const buildDetailPrompts = ({ action, context, previewMode = false }) => ({
-  systemPrompt: [
-    `You are ReelBot's Detail Page Assistant.`,
-    getPrinciplesText(),
-    getVoiceText(),
-    "Role rules:",
-    "- Stay grounded in the specific movie provided.",
-    "- Be spoiler-light unless the action explicitly asks for spoilers.",
-    previewMode
-      ? "- If the movie is unreleased, treat this as an informed preview rather than a finished-view verdict."
-      : "- Use the available movie context to help the viewer decide whether and how to watch.",
-  ].join("\n\n"),
-  userPrompt: [
-    `Action: ${action}`,
-    `Guide: ${DETAIL_ACTION_GUIDES[action] || DETAIL_ACTION_GUIDES.quick_take}`,
-    `Preview mode: ${previewMode ? "yes" : "no"}`,
-    `Movie context: ${JSON.stringify(compactContext(context))}`,
-    "Write only the structured fields required by the schema.",
-  ].join("\n\n"),
-});
+const buildDetailPrompts = ({ action, context, previewMode = false, requestMeta = {} }) => {
+  const spoilerMode = requestMeta.spoiler_mode === true;
+  const useCase = typeof requestMeta.use_case === "string" && requestMeta.use_case.trim() ? requestMeta.use_case.trim() : action;
+  const promptTemplate = typeof requestMeta.prompt_template === "string" && requestMeta.prompt_template.trim()
+    ? requestMeta.prompt_template.trim()
+    : previewMode
+      ? "detail_preview"
+      : spoilerMode
+        ? "detail_spoiler"
+        : "detail_standard";
+
+  return {
+    systemPrompt: [
+      `You are ReelBot's Detail Page Assistant.`,
+      getPrinciplesText(),
+      getVoiceText(),
+      "Role rules:",
+      "- Stay grounded in the specific movie provided.",
+      "- Be spoiler-light unless the action explicitly asks for spoilers.",
+      previewMode
+        ? "- If the movie is unreleased, treat this as an informed preview rather than a finished-view verdict."
+        : "- Use the available movie context to help the viewer decide whether and how to watch.",
+    ].join("\n\n"),
+    userPrompt: [
+      `Action: ${action}`,
+      `Guide: ${DETAIL_ACTION_GUIDES[action] || DETAIL_ACTION_GUIDES.quick_take}`,
+      `Preview mode: ${previewMode ? "yes" : "no"}`,
+      `Spoiler mode: ${spoilerMode ? "on" : "off"}`,
+      `Prompt template: ${promptTemplate}`,
+      `Requested use case: ${useCase}`,
+      `Movie context: ${JSON.stringify(compactContext(context))}`,
+      "Write only the structured fields required by the schema.",
+    ].join("\n\n"),
+  };
+};
 
 module.exports = {
   buildDetailPrompts,

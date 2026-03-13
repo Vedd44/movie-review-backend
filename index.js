@@ -119,6 +119,8 @@ const REELBOT_ACTIONS = {
   },
 };
 
+const SPOILER_ACTION_IDS = new Set(["spoiler_synopsis", "ending_explained", "themes_and_takeaways", "debate_club"]);
+
 const VALID_DISCOVERY_VIEWS = new Set(["latest", "now_playing", "popular", "upcoming"]);
 
 const PICK_MOOD_CONFIG = {
@@ -2637,6 +2639,23 @@ const normalizeMovieDetails = (movie) => {
 };
 
 const normalizeAction = (action) => (REELBOT_ACTIONS[action] ? action : "quick_take");
+const normalizeReelbotRequestMeta = (requestedAction, requestBody = {}) => {
+  const action = normalizeAction(requestedAction);
+  const spoilerActionSelected = SPOILER_ACTION_IDS.has(action);
+  const spoilerMode = requestBody?.spoiler_mode === true;
+  const useCase = typeof requestBody?.use_case === "string" && requestBody.use_case.trim() ? requestBody.use_case.trim() : action;
+  const promptTemplate = typeof requestBody?.prompt_template === "string" && requestBody.prompt_template.trim()
+    ? requestBody.prompt_template.trim()
+    : spoilerActionSelected
+      ? "detail_spoiler"
+      : "detail_standard";
+
+  return {
+    spoiler_mode: spoilerMode,
+    use_case: useCase,
+    prompt_template: promptTemplate,
+  };
+};
 
 const hasExplicitUserTrigger = (req) => {
   const bodyTrigger = req.body?.trigger === "user_click";
@@ -3288,7 +3307,7 @@ const renderStructuredReelbotContent = (action, content = {}) => {
   }
 };
 
-const generateStructuredDetailContent = async (action, context) => {
+const generateStructuredDetailContent = async (action, context, requestMeta = {}) => {
   const previewMode = isUpcomingMovie(context.movie);
   const fallbackStructuredContent = buildFallbackStructuredDetailContent(action, context);
 
@@ -3297,7 +3316,7 @@ const generateStructuredDetailContent = async (action, context) => {
   }
 
   try {
-    const prompts = buildDetailPrompts({ action, context, previewMode });
+    const prompts = buildDetailPrompts({ action, context, previewMode, requestMeta });
     const aiPayload = await callStructuredOpenAI({
       systemPrompt: prompts.systemPrompt,
       userPrompt: prompts.userPrompt,
@@ -3314,9 +3333,16 @@ const generateStructuredDetailContent = async (action, context) => {
   }
 };
 
-const generateReelbotPayload = async (movieId, requestedAction = "quick_take") => {
+const generateReelbotPayload = async (movieId, requestedAction = "quick_take", requestMeta = {}) => {
   const action = normalizeAction(requestedAction);
-  const cacheKey = `${movieId}:${action}`;
+  const context = await getMovieContext(movieId);
+  const previewMode = isUpcomingMovie(context.movie);
+  const normalizedRequestMeta = {
+    ...requestMeta,
+    prompt_template: requestMeta.prompt_template || (previewMode ? "detail_preview" : SPOILER_ACTION_IDS.has(action) ? "detail_spoiler" : "detail_standard"),
+    use_case: requestMeta.use_case || action,
+  };
+  const cacheKey = `${movieId}:${action}:${normalizedRequestMeta.prompt_template}:${normalizedRequestMeta.use_case}:${normalizedRequestMeta.spoiler_mode ? "spoilers-on" : "spoilers-off"}`;
 
   if (reelbotCache.has(cacheKey)) {
     return { ...reelbotCache.get(cacheKey), cached: true };
@@ -3324,8 +3350,7 @@ const generateReelbotPayload = async (movieId, requestedAction = "quick_take") =
 
   console.log(`Received ReelBot request for movie ID: ${movieId}, action: ${action}`);
 
-  const context = await getMovieContext(movieId);
-  const structuredContent = await generateStructuredDetailContent(action, context);
+  const structuredContent = await generateStructuredDetailContent(action, context, normalizedRequestMeta);
   const content = renderStructuredReelbotContent(action, structuredContent);
 
   const payload = {
@@ -3333,6 +3358,9 @@ const generateReelbotPayload = async (movieId, requestedAction = "quick_take") =
     title: context.movie.title,
     action,
     label: REELBOT_ACTIONS[action].label,
+    spoiler_mode: normalizedRequestMeta.spoiler_mode,
+    prompt_template: normalizedRequestMeta.prompt_template,
+    use_case: normalizedRequestMeta.use_case,
     structured_content: structuredContent,
     content,
     ai_name: AI_NAME,
@@ -3792,6 +3820,9 @@ app.get("/movies/:id/reelbot", (req, res) => {
 app.post("/movies/:id/reelbot", async (req, res) => {
   const movieId = req.params.id;
   const action = req.body?.action || "quick_take";
+  const requestMovieId = String(req.body?.movie_id || "").trim();
+  const normalizedAction = normalizeAction(action);
+  const requestMeta = normalizeReelbotRequestMeta(normalizedAction, req.body || {});
 
   if (!hasExplicitUserTrigger(req)) {
     return res.status(400).json({
@@ -3799,8 +3830,20 @@ app.post("/movies/:id/reelbot", async (req, res) => {
     });
   }
 
+  if (requestMovieId && requestMovieId !== String(movieId)) {
+    return res.status(400).json({
+      error: "ReelBot request movie id did not match the detail page movie.",
+    });
+  }
+
+  if (SPOILER_ACTION_IDS.has(normalizedAction) && !requestMeta.spoiler_mode) {
+    return res.status(400).json({
+      error: "Spoiler Mode must be on for spoiler ReelBot answers.",
+    });
+  }
+
   try {
-    const payload = await generateReelbotPayload(movieId, action);
+    const payload = await generateReelbotPayload(movieId, normalizedAction, requestMeta);
     res.json(payload);
   } catch (error) {
     console.error("Error generating ReelBot response:", error.response?.data || error.message);
