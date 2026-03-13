@@ -20,6 +20,7 @@ const pickCache = new Map();
 const tmdbCache = new Map();
 const pickSurfaceTally = new Map();
 const promptLookupCache = new Map();
+const sitemapMovieIndex = new Map();
 
 const CACHE_TTLS = {
   now_playing: 5 * 60 * 1000,
@@ -235,6 +236,37 @@ const PROMPT_STOPWORDS = new Set([
 ]);
 
 const SIGNAL_SCORE_THRESHOLD = 10;
+const SITE_ORIGIN = (process.env.SITE_ORIGIN || process.env.REACT_APP_SITE_URL || "https://reelbot.movie").trim().replace(/\/$/, "");
+
+const slugifyMovieTitle = (title = "movie") =>
+  String(title || "movie")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "movie";
+
+const buildMovieCanonicalPath = (movie = {}) => `/movies/${movie.id}/${slugifyMovieTitle(movie.title)}`;
+
+const escapeXml = (value = "") => String(value || "")
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  .replace(/'/g, "&apos;");
+
+const rememberMovieForSitemap = (movie = {}) => {
+  if (!movie?.id || !movie?.title) {
+    return;
+  }
+
+  sitemapMovieIndex.set(movie.id, {
+    id: movie.id,
+    title: movie.title,
+    release_date: movie.release_date || "",
+    updated_at: new Date().toISOString(),
+  });
+};
 
 console.log(`OpenAI model configured: ${OPENAI_MODEL}`);
 console.log(`OpenAI API key present: ${OPENAI_API_KEY ? "yes" : "no"}`);
@@ -3360,6 +3392,10 @@ app.get("/movies/:id", async (req, res) => {
       append_to_response: "credits,reviews,similar,recommendations,videos,watch/providers",
     });
 
+    rememberMovieForSitemap(movie);
+    (movie.similar?.results || []).slice(0, 6).forEach((item) => rememberMovieForSitemap(item));
+    (movie.recommendations?.results || []).slice(0, 6).forEach((item) => rememberMovieForSitemap(item));
+
     res.json(normalizeMovieDetails(movie));
   } catch (error) {
     console.error("❌ Error fetching movie details:", error.response?.data || error.message);
@@ -3597,6 +3633,73 @@ const buildPickFallbackPayload = async (rawPreferences = {}, message) => {
   };
 };
 
+app.get("/sitemap.xml", async (req, res) => {
+  try {
+    const feedPayloads = await Promise.allSettled([
+      fetchHomepageFeed("latest", 1),
+      fetchHomepageFeed("popular", 1),
+      fetchHomepageFeed("upcoming", 1),
+    ]);
+
+    feedPayloads
+      .filter((response) => response.status === "fulfilled")
+      .flatMap((response) => response.value?.results || [])
+      .slice(0, 120)
+      .forEach((movie) => rememberMovieForSitemap(movie));
+
+    const staticEntries = [
+      { path: "/", priority: "1.0", changefreq: "daily" },
+      { path: "/browse", priority: "0.9", changefreq: "daily" },
+      { path: "/now-playing", priority: "0.9", changefreq: "daily" },
+      { path: "/trending", priority: "0.8", changefreq: "daily" },
+      { path: "/coming-soon", priority: "0.8", changefreq: "daily" },
+      { path: "/how-reelbot-works", priority: "0.6", changefreq: "weekly" },
+    ];
+
+    const movieEntries = Array.from(sitemapMovieIndex.values())
+      .sort((left, right) => new Date(right.updated_at || 0) - new Date(left.updated_at || 0))
+      .slice(0, 500)
+      .map((movie) => ({
+        loc: `${SITE_ORIGIN}${buildMovieCanonicalPath(movie)}`,
+        lastmod: movie.updated_at || undefined,
+        changefreq: "weekly",
+        priority: "0.7",
+      }));
+
+    const xmlEntries = [
+      ...staticEntries.map((entry) => [
+        "  <url>",
+        `    <loc>${escapeXml(`${SITE_ORIGIN}${entry.path}`)}</loc>`,
+        `    <changefreq>${entry.changefreq}</changefreq>`,
+        `    <priority>${entry.priority}</priority>`,
+        "  </url>",
+      ].join("\n")),
+      ...movieEntries.map((entry) => [
+        "  <url>",
+        `    <loc>${escapeXml(entry.loc)}</loc>`,
+        entry.lastmod ? `    <lastmod>${escapeXml(entry.lastmod)}</lastmod>` : null,
+        `    <changefreq>${entry.changefreq}</changefreq>`,
+        `    <priority>${entry.priority}</priority>`,
+        "  </url>",
+      ].filter(Boolean).join("\n")),
+    ].join("\n");
+
+    const xml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      xmlEntries,
+      '</urlset>',
+    ].join("\n");
+
+    res.set("Content-Type", "application/xml; charset=utf-8");
+    res.set("Cache-Control", "public, s-maxage=1800, stale-while-revalidate=300");
+    res.send(xml);
+  } catch (error) {
+    console.error("❌ Error generating sitemap:", error.response?.data || error.message);
+    res.status(500).send('<?xml version="1.0" encoding="UTF-8"?><error>Failed to generate sitemap</error>');
+  }
+});
+
 app.get("/movies", async (req, res) => {
   const { type = "latest", page = 1, genre = "", runtime = "any", fill = 0 } = req.query;
   const pageNumber = Math.max(1, Number.parseInt(page, 10) || 1);
@@ -3608,6 +3711,7 @@ app.get("/movies", async (req, res) => {
       runtime,
     }, fill);
 
+    (payload.results || []).slice(0, 48).forEach((movie) => rememberMovieForSitemap(movie));
     res.set("Cache-Control", buildFeedCacheControlHeader(normalizedType));
     res.json(payload);
   } catch (error) {
@@ -3648,6 +3752,7 @@ app.get("/search", async (req, res) => {
     const rankedResults = rankSearchResults(payload.results || [], query);
     const topMatch = rankedResults[0] || null;
     const relatedResults = topMatch ? rankedResults.slice(1) : rankedResults;
+    rankedResults.slice(0, 24).forEach((movie) => rememberMovieForSitemap(movie));
     res.set("Cache-Control", "public, s-maxage=300, stale-while-revalidate=60");
     res.json({
       ...payload,
