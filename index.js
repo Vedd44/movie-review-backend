@@ -2528,6 +2528,33 @@ const normalizeWatchProviders = (watchProviderPayload) => {
   };
 };
 
+const buildProviderBadges = (availability) => {
+  if (!availability) {
+    return [];
+  }
+
+  const seen = new Set();
+  return [
+    ...(Array.isArray(availability.subscription) ? availability.subscription : []),
+    ...(Array.isArray(availability.rent) ? availability.rent : []),
+    ...(Array.isArray(availability.buy) ? availability.buy : []),
+  ]
+    .filter((provider) => {
+      if (!provider?.id || seen.has(provider.id)) {
+        return false;
+      }
+      seen.add(provider.id);
+      return true;
+    })
+    .slice(0, 3)
+    .map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      logo_path: provider.logo_path || null,
+      access_type: provider.access_type || null,
+    }));
+};
+
 const normalizeMovieDetails = (movie) => {
   const reviewHighlights = getReviewHighlights(movie.reviews?.results);
 
@@ -3533,6 +3560,42 @@ const buildPickFallbackPayload = async (rawPreferences = {}, message) => {
     degraded: true,
   };
 };
+
+app.get("/movies/watch-providers", async (req, res) => {
+  const ids = String(req.query.ids || "")
+    .split(",")
+    .map((value) => Number.parseInt(value, 10))
+    .filter(Boolean)
+    .slice(0, 24);
+
+  if (!ids.length) {
+    return res.json({ results: [] });
+  }
+
+  try {
+    const responses = await Promise.allSettled(
+      ids.map(async (movieId) => {
+        const payload = await fetchTmdbCached(`/movie/${movieId}/watch/providers`, {}, CACHE_TTLS.movie_details);
+        const availability = normalizeWatchProviders(payload);
+        return {
+          id: movieId,
+          watch_providers: availability,
+          provider_badges: buildProviderBadges(availability),
+        };
+      })
+    );
+
+    res.set("Cache-Control", "public, s-maxage=21600, stale-while-revalidate=3600");
+    res.json({
+      results: responses
+        .filter((response) => response.status === "fulfilled")
+        .map((response) => response.value),
+    });
+  } catch (error) {
+    console.error("❌ Error fetching movie watch providers:", error.response?.data || error.message);
+    res.status(500).json({ error: "Failed to fetch watch providers" });
+  }
+});
 
 app.get("/movies", async (req, res) => {
   const { type = "latest", page = 1, genre = "", runtime = "any", fill = 0 } = req.query;
