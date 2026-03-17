@@ -82,12 +82,21 @@ const classifyPromptType = (prompt = "") => {
     /similar to\s+(.+)/i,
     /more movies? like\s+(.+)/i,
   ]);
+  const explicitPersonAnchor = extractWithPatterns(rawPrompt, [
+    /(?:movies|films)\s+(?:with|starring|featuring)\s+(.+)/i,
+    /^(.+?)\s+(?:movies|films)$/i,
+    /directed by\s+(.+)/i,
+  ]);
 
   const hasModifier = /\bbut\b|\bwith\b|\bunder\b|\bless\b|\bmore\b|\bnot\b|\bdarker\b|\blighter\b/i.test(rawPrompt);
   const looksLikePersonName = /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}$/.test(rawPrompt) || /^[a-z]+\s+[a-z]+$/.test(normalizedPrompt);
 
   if (titleAnchor) {
     return hasModifier ? "mixed_anchor_modifiers" : "title_similarity";
+  }
+
+  if (explicitPersonAnchor) {
+    return hasModifier ? "mixed_anchor_modifiers" : "person_anchor";
   }
 
   if (looksLikePersonName && !/movie|movies|watch|something|comedy|drama|thriller|sci-fi|scifi|mystery/i.test(normalizedPrompt)) {
@@ -111,7 +120,14 @@ const parseReelbotIntent = (prompt = "") => {
     /similar to\s+(.+)/i,
     /more movies? like\s+(.+)/i,
   ]);
-  const personAnchor = promptType.includes("anchor") && !titleAnchor ? rawPrompt.split(/\bbut\b|\bwith\b|\bunder\b/i)[0].trim() : "";
+  const explicitPersonAnchor = extractWithPatterns(rawPrompt, [
+    /(?:movies|films)\s+(?:with|starring|featuring)\s+(.+)/i,
+    /^(.+?)\s+(?:movies|films)$/i,
+    /directed by\s+(.+)/i,
+  ]);
+  const personAnchor = promptType.includes("anchor") && !titleAnchor
+    ? (explicitPersonAnchor || rawPrompt.split(/\bbut\b|\bwith\b|\bunder\b/i)[0].trim())
+    : "";
 
   const avoid = [];
   if (/not miserable|not bleak|not depressing|without being miserable|without being bleak|not too heavy/i.test(rawPrompt)) {

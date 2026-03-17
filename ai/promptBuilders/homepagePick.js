@@ -47,6 +47,7 @@ const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
       "Role rules:",
       "- Do not write user-facing copy.",
       "- Rank only from the provided candidate ids.",
+      "- Never infer or reference movies outside the provided candidate pool.",
       "- Honor the parsed intent lane more than generic popularity.",
       "- Backup choices must stay in the same high-level lane while varying role.",
     ].join("\n\n"),
@@ -73,6 +74,7 @@ const buildPickWriterPrompts = ({ preferences, intent, primary, backups }) => ({
     "Role rules:",
     "- Explain the chosen movie and backup roles. Do not change the ranking.",
     "- Keep it concise, specific, and decision-first.",
+    "- Explain only from the provided movie metadata and parsed intent. Do not invent plot points, awards, countries, or credits.",
     "- Do not use banned filler or generic praise.",
   ].join("\n\n"),
   userPrompt: [

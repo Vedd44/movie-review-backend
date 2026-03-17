@@ -3,6 +3,7 @@ const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 const { parseReelbotIntent, isIntentSnapshotValid } = require("./ai/intentParser");
+const { detectStructuredQuery } = require("./ai/queryInterpreter");
 const { buildPickRankerPrompts, buildPickWriterPrompts } = require("./ai/promptBuilders/homepagePick");
 const { buildDetailPrompts } = require("./ai/promptBuilders/detailPage");
 const { pickRankingSchema, pickWriterSchema, getDetailSchema } = require("./ai/aiSchemas");
@@ -595,10 +596,123 @@ const countPromptMatches = (textValue = "", promptTokens = []) => {
   return promptTokens.reduce((count, token) => (haystack.includes(token) ? count + 1 : count), 0);
 };
 
+const escapeRegex = (value = "") => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const decodeHtmlEntities = (value = "") =>
+  String(value || "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+
+const htmlToTextLines = (html = "") =>
+  decodeHtmlEntities(
+    String(html || "")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<\/(p|div|section|article|li|h1|h2|h3|h4|h5|h6|br)>/gi, "\n")
+      .replace(/<[^>]+>/g, " ")
+  )
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+const uniqueStrings = (values = []) => [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean))];
+
+const uniqueMoviesById = (movies = []) => {
+  const seen = new Set();
+  return (Array.isArray(movies) ? movies : []).filter((movie) => {
+    if (!movie?.id || seen.has(movie.id)) {
+      return false;
+    }
+    seen.add(movie.id);
+    return true;
+  });
+};
+
+const sanitizeAwardTitle = (value = "") =>
+  String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "")
+    .trim();
+
+const mergeGenreIds = (...collections) =>
+  Array.from(
+    new Set(
+      collections
+        .flat()
+        .map((entry) => Number.parseInt(entry, 10))
+        .filter(Boolean)
+    )
+  );
+
+const getTextTermScore = (textValue = "", terms = []) => {
+  const normalizedText = normalizeSearchText(textValue);
+  if (!normalizedText) {
+    return 0;
+  }
+
+  return uniqueStrings(terms).reduce((score, term) => {
+    const normalizedTerm = normalizeSearchText(term);
+    if (!normalizedTerm) {
+      return score;
+    }
+
+    if (normalizedText === normalizedTerm) {
+      return score + 80;
+    }
+
+    if (new RegExp(`\\b${escapeRegex(normalizedTerm)}\\b`, "i").test(normalizedText)) {
+      return score + 40;
+    }
+
+    if (normalizedText.includes(normalizedTerm)) {
+      return score + 18;
+    }
+
+    return score;
+  }, 0);
+};
+
+const normalizeStructuredCandidate = (movie = {}, overrides = {}) => ({
+  ...movie,
+  genre_ids: Array.isArray(movie.genre_ids)
+    ? movie.genre_ids
+    : Array.isArray(movie.genres)
+      ? movie.genres.map((genre) => genre.id)
+      : [],
+  genre_names: Array.isArray(movie.genre_names)
+    ? movie.genre_names
+    : Array.isArray(movie.genres)
+      ? movie.genres.map((genre) => genre.name)
+      : [],
+  production_countries: Array.isArray(movie.production_countries)
+    ? movie.production_countries.map((entry) => (typeof entry === "string" ? entry : entry?.name)).filter(Boolean)
+    : [],
+  production_country_codes: Array.isArray(movie.production_countries)
+    ? movie.production_countries.map((entry) => (typeof entry === "string" ? null : entry?.iso_3166_1)).filter(Boolean)
+    : Array.isArray(movie.production_country_codes)
+      ? movie.production_country_codes
+      : [],
+  spoken_language_codes: Array.isArray(movie.spoken_languages)
+    ? movie.spoken_languages.map((entry) => entry?.iso_639_1).filter(Boolean)
+    : Array.isArray(movie.spoken_language_codes)
+      ? movie.spoken_language_codes
+      : [],
+  structured_match_score: overrides.structured_match_score || movie.structured_match_score || 0,
+  structured_match_reasons: uniqueStrings(overrides.structured_match_reasons || movie.structured_match_reasons || []),
+  source_type: overrides.source_type || movie.source_type || "structured_search",
+  source_endpoint: overrides.source_endpoint || movie.source_endpoint || "/discover/movie",
+});
+
 const PERSON_WITH_PATTERNS = [
   /(?:movies|films)\s+with\s+(.+)/i,
   /starring\s+(.+)/i,
   /with\s+(.+)/i,
+  /^(.+?)\s+(?:movies|films)$/i,
   /(?:movies|films)\s+by\s+(.+)/i,
   /directed by\s+(.+)/i,
   /from\s+(.+)/i,
@@ -648,7 +762,7 @@ const resolveEntityAnchor = async (prompt = "", parsedIntent = null) => {
   const extracted = extractPromptEntityText(promptText);
   const lowerPrompt = promptText.toLowerCase();
   const wantsDirector = /directed by|director|from\s+[A-Z]/i.test(promptText);
-  const wantsActor = /movies? with|films? with|starring/i.test(promptText);
+  const wantsActor = /movies? with|films? with|starring|^[A-Za-z.' -]+(?:movies|films)$/i.test(promptText);
   const franchiseHint = /franchise|series|saga|universe/i.test(promptText);
   const franchiseQuery = String(extracted.text || promptText).replace(/(franchise|series|saga|universe|movies|films)/gi, " ").replace(/\s+/g, " ").trim() || String(extracted.text || promptText).trim();
 
@@ -728,6 +842,9 @@ const resolveEntityAnchor = async (prompt = "", parsedIntent = null) => {
 };
 
 const getIntentQueryType = (intent = {}) => {
+  if (intent?.structured_query?.type === "country") return "COUNTRY";
+  if (intent?.structured_query?.type === "awards") return "AWARDS";
+  if (intent?.structured_query?.type === "genre_theme") return "GENRE_THEME";
   if (intent?.entity_anchor?.kind === "actor") return "PERSON";
   if (intent?.entity_anchor?.kind === "director") return "DIRECTOR";
   if (intent?.entity_anchor?.kind === "franchise") return "FRANCHISE";
@@ -772,6 +889,10 @@ const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}) => {
     return Boolean(promptBoosts?.titleSimilarMovieIds?.has(movie.id) || promptBoosts?.constrainedAnchorMovieIds?.has(movie.id));
   }
 
+  if (queryType === "COUNTRY" || queryType === "AWARDS" || queryType === "GENRE_THEME") {
+    return Boolean(promptBoosts?.structuredMovieIds?.has(movie.id));
+  }
+
   return true;
 };
 
@@ -791,6 +912,7 @@ const getPromptMovieBoosts = async (prompt = "", intent = null) => {
       anchorGenreIds: [],
       promptTokens: [],
       entityAnchor: intent?.entity_anchor || null,
+      structuredMovieIds: new Set(),
     };
   }
 
@@ -813,6 +935,11 @@ const getPromptMovieBoosts = async (prompt = "", intent = null) => {
     anchorGenreIds: [],
     promptTokens,
     entityAnchor: intent?.entity_anchor || null,
+    structuredMovieIds: new Set(
+      Array.isArray(intent?.structured_query?.movie_ids)
+        ? intent.structured_query.movie_ids.map((value) => Number.parseInt(value, 10)).filter(Boolean)
+        : []
+    ),
   };
   const queries = getPromptSearchQueries(prompt);
 
@@ -1785,6 +1912,7 @@ const scorePickCandidate = (movie, preferences, promptBoosts = { personMovieIds:
   score += Math.min(movie.vote_count || 0, 1800) / 38;
   score += Math.min(movie.popularity || 0, 800) / 48;
   score += Math.min(getMovieSignalScore(movie), 42) / 4;
+  score += Math.min(movie.structured_match_score || 0, 220);
   score += getQualityFitBoost(movie);
   score -= getExposurePenalty(movie);
   score -= getMoodMismatchPenalty(movie, preferences);
@@ -2068,6 +2196,10 @@ const fetchPickDetail = async (movieId) => {
     genre_ids: Array.isArray(payload.genres) ? payload.genres.map((genre) => genre.id) : [],
     genre_names: Array.isArray(payload.genres) ? payload.genres.map((genre) => genre.name) : [],
     original_language: payload.original_language || "",
+    production_countries: Array.isArray(payload.production_countries) ? payload.production_countries : [],
+    production_country_codes: Array.isArray(payload.production_countries) ? payload.production_countries.map((country) => country.iso_3166_1).filter(Boolean) : [],
+    spoken_languages: Array.isArray(payload.spoken_languages) ? payload.spoken_languages : [],
+    spoken_language_codes: Array.isArray(payload.spoken_languages) ? payload.spoken_languages.map((language) => language.iso_639_1).filter(Boolean) : [],
     vote_average: payload.vote_average || 0,
     vote_count: payload.vote_count || 0,
     popularity: payload.popularity || 0,
@@ -2092,6 +2224,509 @@ const fetchMoviesByIds = async (movieIds = []) => {
       source_type: response.value.source_type || "constrained_pool",
       source_endpoint: response.value.source_endpoint || "/movie",
     }));
+};
+
+const fetchStructuredMoviesByIds = async (movieIds = [], overrides = {}) => {
+  const ids = Array.from(new Set((Array.isArray(movieIds) ? movieIds : []).map((value) => Number.parseInt(value, 10)).filter(Boolean)));
+  if (!ids.length) {
+    return [];
+  }
+
+  const responses = await Promise.allSettled(ids.map((movieId) => fetchTmdbCached(`/movie/${movieId}`, {}, CACHE_TTLS.movie_details)));
+  return responses
+    .filter((response) => response.status === "fulfilled")
+    .map((response) => normalizeStructuredCandidate(response.value, overrides));
+};
+
+const resolveTmdbMovieByTitle = async (title = "") => {
+  const query = String(title || "").trim();
+  if (!query) {
+    return null;
+  }
+
+  try {
+    const payload = await fetchTmdb("/search/movie", { query, include_adult: "false", page: 1 });
+    const movie = pickBestNamedResult(payload.results, query, "title");
+    return movie?.id ? movie : null;
+  } catch (error) {
+    console.error("Error resolving TMDB movie by title:", error.response?.data || error.message);
+    return null;
+  }
+};
+
+const resolveTmdbKeywordIds = async (terms = []) => {
+  const keywordEntries = [];
+
+  for (const term of uniqueStrings(terms)) {
+    try {
+      const payload = await fetchTmdb("/search/keyword", { query: term, page: 1 });
+      (payload.results || []).slice(0, 6).forEach((keyword) => {
+        if (!keyword?.id || !keyword?.name) {
+          return;
+        }
+
+        const keywordName = normalizeSearchText(keyword.name);
+        const normalizedTerm = normalizeSearchText(term);
+        let score = 0;
+        if (keywordName === normalizedTerm) {
+          score += 120;
+        } else if (new RegExp(`\\b${escapeRegex(normalizedTerm)}\\b`, "i").test(keywordName)) {
+          score += 70;
+        } else if (keywordName.includes(normalizedTerm)) {
+          score += 40;
+        }
+
+        keywordEntries.push({
+          id: keyword.id,
+          name: keyword.name,
+          score,
+        });
+      });
+    } catch (error) {
+      console.error("Error resolving TMDB keywords:", error.response?.data || error.message);
+    }
+  }
+
+  return keywordEntries
+    .sort((left, right) => right.score - left.score)
+    .filter((entry, index, list) => list.findIndex((candidate) => candidate.id === entry.id) === index)
+    .slice(0, 6);
+};
+
+const scoreCountryCandidate = (movie = {}, structuredQuery = {}) => {
+  const country = structuredQuery.country || {};
+  const aliases = country.aliases || [];
+  const locationTerms = country.location_terms || [];
+  const combinedTerms = [...aliases, ...locationTerms, country.display_name];
+  const searchableText = [movie.title, movie.overview, movie.tagline].filter(Boolean).join(" ");
+
+  let score = 0;
+  const reasons = [];
+
+  if ((movie.production_country_codes || []).includes(country.iso_3166_1)) {
+    score += 120;
+    reasons.push("TMDB lists the target production country.");
+  }
+
+  if ((movie.spoken_language_codes || []).some((code) => (country.language_codes || []).includes(code))) {
+    score += 28;
+    reasons.push("Language metadata supports the country match.");
+  }
+
+  const textScore = getTextTermScore(searchableText, combinedTerms);
+  if (textScore) {
+    score += textScore;
+    reasons.push("Title or overview mentions the country directly.");
+  }
+
+  const keywordScore = getTextTermScore((movie.structured_match_reasons || []).join(" "), aliases);
+  if (keywordScore) {
+    score += Math.round(keywordScore / 2);
+    reasons.push("Matched TMDB keyword cues for the country.");
+  }
+
+  score += Math.min(movie.popularity || 0, 120) / 4;
+  score += Math.min(movie.vote_count || 0, 500) / 20;
+  score += (movie.vote_average || 0) * 3;
+
+  return {
+    score,
+    reasons: uniqueStrings(reasons),
+  };
+};
+
+const scoreGenreThemeCandidate = (movie = {}, structuredQuery = {}) => {
+  const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
+  const expectedGenres = structuredQuery.genre_ids || [];
+  const searchableText = [movie.title, movie.overview, movie.tagline].filter(Boolean).join(" ");
+  const themeTerms = (structuredQuery.themes || []).flatMap((theme) => theme.keyword_terms || []);
+
+  let score = 0;
+  const reasons = [];
+
+  if (expectedGenres.length && matchesAnyGenre(genreIds, expectedGenres)) {
+    score += 90;
+    reasons.push("TMDB genre tags match the requested lane.");
+  }
+
+  const textScore = getTextTermScore(searchableText, themeTerms);
+  if (textScore) {
+    score += textScore;
+    reasons.push("Title or overview reinforces the requested theme.");
+  }
+
+  const keywordScore = getTextTermScore((movie.structured_match_reasons || []).join(" "), themeTerms);
+  if (keywordScore) {
+    score += Math.round(keywordScore / 2);
+    reasons.push("Matched TMDB keyword cues for the theme.");
+  }
+
+  score += Math.min(movie.popularity || 0, 140) / 4;
+  score += Math.min(movie.vote_count || 0, 600) / 18;
+  score += (movie.vote_average || 0) * 3;
+
+  return {
+    score,
+    reasons: uniqueStrings(reasons),
+  };
+};
+
+const OSCAR_CATEGORY_HEADINGS = new Set([
+  "Actor in a Leading Role",
+  "Actor in a Supporting Role",
+  "Actress in a Leading Role",
+  "Actress in a Supporting Role",
+  "Animated Feature Film",
+  "Best Picture",
+  "Cinematography",
+  "Costume Design",
+  "Directing",
+  "Documentary Feature Film",
+  "Film Editing",
+  "International Feature Film",
+  "Makeup and Hairstyling",
+  "Music (Original Score)",
+  "Music (Original Song)",
+  "Production Design",
+  "Sound",
+  "Visual Effects",
+  "Writing (Adapted Screenplay)",
+  "Writing (Original Screenplay)",
+]);
+
+const OSCAR_SECOND_LINE_CATEGORIES = new Set([
+  "Actor in a Leading Role",
+  "Actor in a Supporting Role",
+  "Actress in a Leading Role",
+  "Actress in a Supporting Role",
+  "Directing",
+  "International Feature Film",
+  "Music (Original Song)",
+]);
+
+const parseOscarTitlesFromHtml = (html = "") => {
+  const lines = htmlToTextLines(html);
+  const startIndex = lines.findIndex((line) => /winners?\s*&\s*nominees|nominees/i.test(line));
+  const relevantLines = startIndex >= 0 ? lines.slice(startIndex + 1) : lines;
+  const tallies = new Map();
+
+  let currentCategory = "";
+  let nominationBuffer = [];
+
+  const flushBuffer = () => {
+    if (!currentCategory || !nominationBuffer.length) {
+      nominationBuffer = [];
+      return;
+    }
+
+    const stride = OSCAR_SECOND_LINE_CATEGORIES.has(currentCategory) ? 2 : 1;
+
+    for (let index = 0; index < nominationBuffer.length; index += stride) {
+      let title = stride === 2 ? nominationBuffer[index + 1] : nominationBuffer[index];
+
+      if (currentCategory === "Music (Original Song)" && /^from\s+/i.test(String(title || ""))) {
+        title = String(title).replace(/^from\s+/i, "").split(/[;:-]/)[0].trim();
+      }
+
+      const normalizedTitle = sanitizeAwardTitle(title);
+      if (!normalizedTitle || normalizedTitle.length < 2 || /^\d/.test(normalizedTitle)) {
+        continue;
+      }
+
+      const current = tallies.get(normalizedTitle) || {
+        title: normalizedTitle,
+        nomination_count: 0,
+        categories: [],
+        score: 0,
+      };
+
+      current.nomination_count += 1;
+      current.categories = uniqueStrings([...current.categories, currentCategory]);
+      current.score += currentCategory === "Best Picture" ? 120 : 36;
+      tallies.set(normalizedTitle, current);
+    }
+
+    nominationBuffer = [];
+  };
+
+  relevantLines.forEach((line) => {
+    if (OSCAR_CATEGORY_HEADINGS.has(line)) {
+      flushBuffer();
+      currentCategory = line;
+      return;
+    }
+
+    if (/^(winner|nominees?)$/i.test(line)) {
+      flushBuffer();
+      return;
+    }
+
+    if (!currentCategory) {
+      return;
+    }
+
+    if (/^oscars death race podcast/i.test(line)) {
+      flushBuffer();
+      currentCategory = "";
+      return;
+    }
+
+    nominationBuffer.push(line);
+  });
+
+  flushBuffer();
+
+  return Array.from(tallies.values()).sort((left, right) => right.score - left.score || right.nomination_count - left.nomination_count);
+};
+
+const resolveCountryQueryCandidates = async (structuredQuery) => {
+  const country = structuredQuery.country || {};
+  const keywordTerms = uniqueStrings([country.display_name, ...(country.aliases || []), ...(country.location_terms || [])]);
+  const keywordMatches = await resolveTmdbKeywordIds(keywordTerms);
+  const candidateMap = new Map();
+
+  const rememberCandidate = (movie = {}, metadata = {}) => {
+    if (!movie?.id) {
+      return;
+    }
+
+    const existing = candidateMap.get(movie.id) || normalizeStructuredCandidate(movie, {
+      source_type: "country_search",
+      source_endpoint: metadata.source_endpoint || "/search/movie",
+    });
+    candidateMap.set(
+      movie.id,
+      normalizeStructuredCandidate(
+        {
+          ...existing,
+          structured_match_reasons: uniqueStrings([
+            ...(existing.structured_match_reasons || []),
+            ...(metadata.match_reasons || []),
+          ]),
+        },
+        {
+          source_type: "country_search",
+          source_endpoint: metadata.source_endpoint || existing.source_endpoint || "/search/movie",
+        }
+      )
+    );
+  };
+
+  for (const term of keywordTerms) {
+    try {
+      const payload = await fetchTmdb("/search/movie", { query: term, include_adult: "false", page: 1 });
+      (payload.results || []).slice(0, 10).forEach((movie) => {
+        rememberCandidate(movie, {
+          source_endpoint: "/search/movie",
+          match_reasons: [`TMDB search query matched "${term}".`],
+        });
+      });
+    } catch (error) {
+      console.error("Error fetching country search candidates:", error.response?.data || error.message);
+    }
+  }
+
+  for (const keyword of keywordMatches) {
+    try {
+      const payload = await fetchTmdb("/discover/movie", {
+        with_keywords: keyword.id,
+        sort_by: "popularity.desc",
+        include_adult: "false",
+        page: 1,
+      });
+      (payload.results || []).slice(0, 12).forEach((movie) => {
+        rememberCandidate(movie, {
+          source_endpoint: "/discover/movie",
+          match_reasons: [`TMDB keyword matched "${keyword.name}".`],
+        });
+      });
+    } catch (error) {
+      console.error("Error fetching country keyword candidates:", error.response?.data || error.message);
+    }
+  }
+
+  const detailedCandidates = await fetchStructuredMoviesByIds(Array.from(candidateMap.keys()), {
+    source_type: "country_search",
+    source_endpoint: "/discover/movie",
+  });
+
+  return detailedCandidates
+    .map((movie) => {
+      const merged = normalizeStructuredCandidate({
+        ...movie,
+        structured_match_reasons: uniqueStrings([
+          ...(movie.structured_match_reasons || []),
+          ...((candidateMap.get(movie.id)?.structured_match_reasons) || []),
+        ]),
+      });
+      const scored = scoreCountryCandidate(merged, structuredQuery);
+      return normalizeStructuredCandidate(merged, {
+        structured_match_score: scored.score,
+        structured_match_reasons: scored.reasons.length ? scored.reasons : merged.structured_match_reasons,
+      });
+    })
+    .filter((movie) => movie.structured_match_score >= 70)
+    .sort((left, right) => right.structured_match_score - left.structured_match_score)
+    .slice(0, 28);
+};
+
+const resolveGenreThemeCandidates = async (structuredQuery) => {
+  const keywordTerms = uniqueStrings((structuredQuery.themes || []).flatMap((theme) => theme.keyword_terms || []));
+  const keywordMatches = await resolveTmdbKeywordIds(keywordTerms);
+  const discoverGenreIds = mergeGenreIds(structuredQuery.genre_ids, (structuredQuery.themes || []).flatMap((theme) => theme.genre_ids || []));
+  const candidateMap = new Map();
+
+  const rememberCandidate = (movie = {}, metadata = {}) => {
+    if (!movie?.id) {
+      return;
+    }
+
+    const existing = candidateMap.get(movie.id) || normalizeStructuredCandidate(movie, {
+      source_type: "genre_theme_search",
+      source_endpoint: metadata.source_endpoint || "/discover/movie",
+    });
+    candidateMap.set(
+      movie.id,
+      normalizeStructuredCandidate(
+        {
+          ...existing,
+          structured_match_reasons: uniqueStrings([
+            ...(existing.structured_match_reasons || []),
+            ...(metadata.match_reasons || []),
+          ]),
+        },
+        {
+          source_type: "genre_theme_search",
+          source_endpoint: metadata.source_endpoint || existing.source_endpoint || "/discover/movie",
+        }
+      )
+    );
+  };
+
+  if (discoverGenreIds.length) {
+    try {
+      const payload = await fetchTmdb("/discover/movie", {
+        with_genres: discoverGenreIds.join(","),
+        sort_by: "popularity.desc",
+        include_adult: "false",
+        page: 1,
+      });
+      (payload.results || []).slice(0, 18).forEach((movie) => {
+        rememberCandidate(movie, {
+          source_endpoint: "/discover/movie",
+          match_reasons: ["TMDB genre filters matched the request."],
+        });
+      });
+    } catch (error) {
+      console.error("Error fetching genre-theme discover candidates:", error.response?.data || error.message);
+    }
+  }
+
+  for (const keyword of keywordMatches) {
+    try {
+      const payload = await fetchTmdb("/discover/movie", {
+        with_keywords: keyword.id,
+        with_genres: discoverGenreIds.length ? discoverGenreIds.join(",") : undefined,
+        sort_by: "popularity.desc",
+        include_adult: "false",
+        page: 1,
+      });
+      (payload.results || []).slice(0, 14).forEach((movie) => {
+        rememberCandidate(movie, {
+          source_endpoint: "/discover/movie",
+          match_reasons: [`TMDB keyword matched "${keyword.name}".`],
+        });
+      });
+    } catch (error) {
+      console.error("Error fetching genre-theme keyword candidates:", error.response?.data || error.message);
+    }
+  }
+
+  const detailedCandidates = await fetchStructuredMoviesByIds(Array.from(candidateMap.keys()), {
+    source_type: "genre_theme_search",
+    source_endpoint: "/discover/movie",
+  });
+
+  return detailedCandidates
+    .map((movie) => {
+      const merged = normalizeStructuredCandidate({
+        ...movie,
+        structured_match_reasons: uniqueStrings([
+          ...(movie.structured_match_reasons || []),
+          ...((candidateMap.get(movie.id)?.structured_match_reasons) || []),
+        ]),
+      });
+      const scored = scoreGenreThemeCandidate(merged, structuredQuery);
+      return normalizeStructuredCandidate(merged, {
+        structured_match_score: scored.score,
+        structured_match_reasons: scored.reasons.length ? scored.reasons : merged.structured_match_reasons,
+      });
+    })
+    .filter((movie) => movie.structured_match_score >= 65)
+    .sort((left, right) => right.structured_match_score - left.structured_match_score)
+    .slice(0, 28);
+};
+
+const resolveAwardsCandidates = async (structuredQuery) => {
+  try {
+    const response = await axios.get(`https://www.oscars.org/oscars/ceremonies/${structuredQuery.year}`, {
+      timeout: 8000,
+      headers: {
+        "User-Agent": "ReelBot/1.0",
+      },
+    });
+
+    const tallies = parseOscarTitlesFromHtml(response.data).slice(0, 40);
+    const resolvedMovies = [];
+
+    for (const tally of tallies) {
+      const resolvedMovie = await resolveTmdbMovieByTitle(tally.title);
+      if (!resolvedMovie?.id) {
+        continue;
+      }
+
+      resolvedMovies.push({
+        ...resolvedMovie,
+        structured_match_score: tally.score + tally.nomination_count * 10,
+        structured_match_reasons: uniqueStrings([
+          `Academy Awards ${structuredQuery.year} nominee list matched "${tally.title}".`,
+          ...(tally.categories.includes("Best Picture") ? ["Best Picture nomination carries extra weight."] : []),
+        ]),
+        source_type: "awards_search",
+        source_endpoint: "/search/movie",
+      });
+    }
+
+    return uniqueMoviesById(resolvedMovies).slice(0, 28);
+  } catch (error) {
+    console.error("Error resolving Oscar candidates:", error.response?.data || error.message);
+    return [];
+  }
+};
+
+const resolveStructuredQueryCandidates = async (prompt = "") => {
+  const structuredQuery = detectStructuredQuery(prompt);
+
+  if (!structuredQuery) {
+    return null;
+  }
+
+  if (structuredQuery.type === "awards") {
+    const movies = await resolveAwardsCandidates(structuredQuery);
+    return movies.length ? { structuredQuery, movies } : null;
+  }
+
+  if (structuredQuery.type === "country") {
+    const movies = await resolveCountryQueryCandidates(structuredQuery);
+    return movies.length ? { structuredQuery, movies } : null;
+  }
+
+  if (structuredQuery.type === "genre_theme") {
+    const movies = await resolveGenreThemeCandidates(structuredQuery);
+    return movies.length ? { structuredQuery, movies } : null;
+  }
+
+  return null;
 };
 
 const enrichCandidatesWithDetails = async (movies = []) => {
@@ -2123,6 +2758,10 @@ const buildCompactCandidate = (movie) => ({
   popularity: Math.round(movie.popularity || 0),
   vote_count: movie.vote_count || 0,
   signal_score: Number(getMovieSignalScore(movie).toFixed(1)),
+  production_countries: Array.isArray(movie.production_countries) ? movie.production_countries : [],
+  spoken_language_codes: Array.isArray(movie.spoken_language_codes) ? movie.spoken_language_codes : [],
+  structured_match_score: movie.structured_match_score || 0,
+  structured_match_reasons: Array.isArray(movie.structured_match_reasons) ? movie.structured_match_reasons : [],
   source_type: movie.source_type || "discover",
   overview: truncateText(movie.overview || "", 180),
 });
@@ -2193,6 +2832,18 @@ const isWeakAiCopy = (value = "") => {
 const getBackupRoleLabelFromKey = (roleKey = "similar_tone") => BACKUP_ROLE_LABELS[roleKey] || "Another angle";
 
 const buildPromptContextLine = (intent = {}, preferences = {}) => {
+  if (intent.query_type === "COUNTRY" && intent.structured_query?.country?.display_name) {
+    return `Here are strong films connected to ${intent.structured_query.country.display_name} through TMDB metadata such as country tags, language, keywords, or story cues.`;
+  }
+
+  if (intent.query_type === "AWARDS" && intent.structured_query?.year) {
+    return `These picks stay inside the Oscars ${intent.structured_query.year} lane, then ReelBot chooses the strongest starting point from that grounded set.`;
+  }
+
+  if (intent.query_type === "GENRE_THEME") {
+    return "These picks stay inside the detected genre-and-theme lane instead of widening into a generic vibe match.";
+  }
+
   if (intent.entity_anchor?.kind === "actor" || intent.entity_anchor?.kind === "director") {
     return `Staying in the ${intent.entity_anchor.name} lane, but aiming for the strongest watch decision.`;
   }
@@ -2213,6 +2864,10 @@ const buildPromptContextLine = (intent = {}, preferences = {}) => {
 };
 
 const buildFallbackPickSummaryLine = (movie) => {
+  if ((movie.structured_match_reasons || []).length) {
+    return `${movie.title} rose to the top because its TMDB metadata stays closely tied to this request instead of only matching loosely by vibe.`;
+  }
+
   const genreNames = Array.isArray(movie.genre_names) ? movie.genre_names : [];
   const genreText = genreNames.slice(0, 2).join(" / ");
   if (genreText && movie.runtime) {
@@ -2227,7 +2882,10 @@ const buildFallbackPickSummaryLine = (movie) => {
 };
 
 const buildFallbackWhyThisWorks = (movie, preferences) => {
-  const bullets = [buildPickReason(movie, preferences)];
+  const bullets = [
+    ...(Array.isArray(movie.structured_match_reasons) ? movie.structured_match_reasons.slice(0, 1) : []),
+    buildPickReason(movie, preferences),
+  ];
 
   if ((movie.runtime || 0) > 0) {
     bullets.push(movie.runtime <= 115 ? "Lean runtime keeps the commitment manageable." : movie.runtime >= 140 ? "Longer runtime suggests a fuller sit-down watch rather than background viewing." : "Runtime lands in a comfortable middle." );
@@ -2303,7 +2961,7 @@ const rankCandidatesWithOpenAI = async (preferences, intent, candidates) => {
 };
 
 const writePickPresentationWithOpenAI = async (preferences, intent, primaryMovie, backups = [], rankedBackups = []) => {
-  if (!OPENAI_API_KEY || !primaryMovie) {
+  if (!OPENAI_API_KEY || !primaryMovie || backups.length < 4) {
     return null;
   }
 
@@ -2363,7 +3021,31 @@ const buildMatchScore = (score, topScore) => {
 
 const generatePickPayload = async (rawPreferences = {}) => {
   const preferences = resolvePickPreferences(rawPreferences);
-  const resolvedIntent = await hydrateResolvedIntent(preferences, rawPreferences);
+  let resolvedIntent = await hydrateResolvedIntent(preferences, rawPreferences);
+  const structuredResolution = preferences.prompt ? await resolveStructuredQueryCandidates(preferences.prompt) : null;
+
+  if (structuredResolution?.structuredQuery) {
+    resolvedIntent = {
+      ...resolvedIntent,
+      lane_key:
+        structuredResolution.structuredQuery.type === "country"
+          ? `country:${structuredResolution.structuredQuery.country.canonical}`
+          : structuredResolution.structuredQuery.type === "awards"
+            ? `awards:oscars:${structuredResolution.structuredQuery.year}`
+            : `genre_theme:${normalizeSearchText(preferences.prompt)}`,
+      structured_query: {
+        ...structuredResolution.structuredQuery,
+        movie_ids: structuredResolution.movies.map((movie) => movie.id),
+      },
+      query_type:
+        structuredResolution.structuredQuery.type === "country"
+          ? "COUNTRY"
+          : structuredResolution.structuredQuery.type === "awards"
+            ? "AWARDS"
+            : "GENRE_THEME",
+    };
+  }
+
   const queryType = resolvedIntent.query_type || getIntentQueryType(resolvedIntent);
   const excludedIds = normalizeExcludedIds(rawPreferences.excluded_ids);
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
@@ -2377,14 +3059,19 @@ const generatePickPayload = async (rawPreferences = {}) => {
   }
 
   const promptBoosts = await getPromptMovieBoosts(preferences.prompt, resolvedIntent);
+  if (structuredResolution?.movies?.length) {
+    promptBoosts.structuredMovieIds = new Set(structuredResolution.movies.map((movie) => movie.id));
+  }
   const providedCandidatePoolIds = Array.isArray(rawPreferences.candidate_pool_ids)
     ? rawPreferences.candidate_pool_ids.map((value) => Number.parseInt(value, 10)).filter(Boolean)
     : [];
   const hasProvidedCandidatePool = providedCandidatePoolIds.length > 0;
-  const usesHardEntityPool = ["PERSON", "DIRECTOR", "FRANCHISE", "TITLE_SIMILARITY"].includes(queryType);
+  const usesHardEntityPool = ["PERSON", "DIRECTOR", "FRANCHISE", "TITLE_SIMILARITY", "COUNTRY", "AWARDS", "GENRE_THEME"].includes(queryType);
 
   const candidatePool = hasProvidedCandidatePool
     ? await fetchMoviesByIds(providedCandidatePoolIds)
+    : structuredResolution?.movies?.length
+      ? structuredResolution.movies
     : await getPickCandidatePool(preferences, resolvedIntent, promptBoosts);
   const fallbackPool = !candidatePool.length && !usesHardEntityPool && (preferences.mood !== "all" || preferences.runtime !== "any")
     ? await getPickCandidatePool({ ...preferences, mood: "all", runtime: "any" }, resolvedIntent, promptBoosts)
