@@ -59,9 +59,10 @@ const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
       "Task:",
       "1. Choose exactly 1 top pick and 4 backup picks.",
       "2. Preserve the original lane for anchor prompts, title-similarity prompts, and swap requests.",
-      "3. Reward tone fit, pacing fit, emotional fit, accessibility fit, prompt fidelity, and non-obviousness.",
+      "3. Reward audience fit, context fit, tone fit, pacing fit, emotional fit, accessibility fit, prompt fidelity, and non-obviousness.",
       "4. Avoid famous default classics unless they are still clearly the best fit after prompt fidelity.",
-      "5. Give the backups distinct role keys such as safer_option, lighter_option, darker_option, wildcard, more_action_forward, more_demanding, or similar_tone.",
+      "5. Treat child/family comfort contexts as safety-critical: do not elevate anything scary, distressing, violent, or adult-coded.",
+      "6. Give the backups distinct role keys such as safer_option, lighter_option, darker_option, wildcard, more_action_forward, more_demanding, or similar_tone.",
     ].join("\n\n"),
   };
 };
@@ -74,8 +75,9 @@ const buildPickWriterPrompts = ({ preferences, intent, primary, backups }) => ({
     "Role rules:",
     "- Explain the chosen movie and backup roles. Do not change the ranking.",
     "- Keep it concise, specific, and decision-first.",
-    "- Explain only from the provided movie metadata and parsed intent. Do not invent plot points, awards, countries, or credits.",
+    "- Explain only from the provided movie information and parsed intent. Do not invent plot points, awards, countries, or credits.",
     "- Do not use banned filler or generic praise.",
+    "- Never mention metadata, tags, ranking logic, candidate pools, or other internal system language.",
   ].join("\n\n"),
   userPrompt: [
     `Resolved preferences: ${stableStringify(preferences)}`,
@@ -83,10 +85,10 @@ const buildPickWriterPrompts = ({ preferences, intent, primary, backups }) => ({
     `Primary pick: ${stableStringify(primary)}`,
     `Backups: ${stableStringify(backups)}`,
     "Task:",
-    "1. Write a prompt-specific context line.",
+    "1. Write a prompt-specific context line in plain, human language.",
     "2. Write one concise summary line about the winning movie itself.",
-    "3. Write exactly 2 short 'why this works' bullets focused on concrete movie qualities.",
-    "4. Give each backup a short role label and one-line rationale that keeps it inside the same lane.",
+    "3. Write exactly 2 short reasons focused on what the movie feels like and why it fits.",
+    "4. Give each backup a short role label and one-line rationale that keeps it close to the same vibe from a different angle.",
     "5. Keep the voice restrained, intelligent, and useful for a fast decision.",
   ].join("\n\n"),
 });

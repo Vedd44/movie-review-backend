@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
+    "test:intent": "node scripts/evaluateReelbotPrompts.js",
     "inspect:sitemap": "node scripts/inspectSitemap.js"
   },
   "keywords": [],

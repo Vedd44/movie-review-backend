@@ -1,4 +1,5 @@
 const { getMatchedRubricKeys } = require("./recommendationRubrics");
+const { getAudienceIntentSignals } = require("./audienceSignals");
 
 const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim();
 const lower = (value = "") => compact(value).toLowerCase();
@@ -30,12 +31,13 @@ const inferPreferredGenreIds = (prompt = "") => {
   if (/mystery|whodunit|detective/i.test(normalizedPrompt)) addUnique(genreIds, [9648]);
   if (/thriller|tense|suspense/i.test(normalizedPrompt)) addUnique(genreIds, [53]);
   if (/drama|emotional|moving|heavy/i.test(normalizedPrompt)) addUnique(genreIds, [18]);
-  if (/comedy|funny|laugh|easy watch/i.test(normalizedPrompt)) addUnique(genreIds, [35]);
+  if (/comedy|funny|laugh/i.test(normalizedPrompt)) addUnique(genreIds, [35]);
   if (/romance|romantic|date-night|date night/i.test(normalizedPrompt)) addUnique(genreIds, [10749]);
   if (/action/i.test(normalizedPrompt)) addUnique(genreIds, [28]);
   if (/fantasy/i.test(normalizedPrompt)) addUnique(genreIds, [14]);
   if (/animation|animated/i.test(normalizedPrompt)) addUnique(genreIds, [16]);
   if (/family|kids/i.test(normalizedPrompt)) addUnique(genreIds, [10751]);
+  if (/toddler|child|children|kid|kids|young child|young kid|family movie|family-friendly|family friendly/i.test(normalizedPrompt)) addUnique(genreIds, [16, 10751, 35]);
   if (/crime|heist|gangster/i.test(normalizedPrompt)) addUnique(genreIds, [80]);
   if (/courtroom|legal|trial|lawyer/i.test(normalizedPrompt)) addUnique(genreIds, [18, 80, 9648]);
 
@@ -50,6 +52,9 @@ const inferAvoidGenreIds = (prompt = "") => {
   if (/smart sci-?fi/i.test(normalizedPrompt)) addUnique(genreIds, [10751]);
   if (/emotionally heavy drama/i.test(normalizedPrompt)) addUnique(genreIds, [10751, 35]);
   if (/less accessible|rewarding/i.test(normalizedPrompt)) addUnique(genreIds, [10751]);
+  if (/toddler|child|children|kid|kids|young child|young kid|family movie|family-friendly|family friendly|home sick|sick kid|sick child/i.test(normalizedPrompt)) {
+    addUnique(genreIds, [27, 53, 80, 10752]);
+  }
 
   return genreIds;
 };
@@ -114,6 +119,7 @@ const parseReelbotIntent = (prompt = "") => {
   const rawPrompt = compact(prompt);
   const normalizedPrompt = rawPrompt.toLowerCase();
   const promptType = classifyPromptType(rawPrompt);
+  const audienceSignals = getAudienceIntentSignals(rawPrompt);
   const titleAnchor = extractWithPatterns(rawPrompt, [
     /movies? like\s+(.+)/i,
     /something like\s+(.+)/i,
@@ -136,6 +142,9 @@ const parseReelbotIntent = (prompt = "") => {
   if (/not too scary|not terrifying/i.test(rawPrompt)) {
     avoid.push("full-horror punishment");
   }
+  if (audienceSignals.guardrails.child_family_safe) {
+    avoid.push("horror", "violence", "adult themes", "distress");
+  }
 
   const tone = [];
   if (/tense|suspense|thriller/i.test(rawPrompt)) tone.push("tense");
@@ -151,13 +160,18 @@ const parseReelbotIntent = (prompt = "") => {
   if (/tense.*not miserable|not too heavy|rewarding/i.test(rawPrompt)) emotionalWeight = "medium-dark";
 
   let pacing = null;
-  if (/brisk|fast|action|lively|easy watch/i.test(rawPrompt)) pacing = "brisk";
+  if (/brisk|fast|action|lively/i.test(rawPrompt)) pacing = "brisk";
   if (/patient|slow|deliberate|rewarding|less accessible/i.test(rawPrompt)) pacing = "deliberate";
   if (!pacing && /tense|smart|mystery/i.test(rawPrompt)) pacing = "moderate_to_brisk";
+  if (audienceSignals.friction_level === "low" && !pacing) pacing = "easygoing";
 
   let accessibility = "fairly_accessible";
   if (/less accessible|challenging|demanding|arthouse|rewarding/i.test(rawPrompt)) accessibility = "demanding";
   if (/easy|comfort|breezy|date night|date-night|crowd-pleaser/i.test(rawPrompt)) accessibility = "accessible";
+
+  let energyLevel = "medium";
+  if (/easy watch|comfort|cozy|gentle|relaxed|sick day|low stress|easy/i.test(rawPrompt)) energyLevel = "low";
+  if (/action|intense|thriller|lively|fast|adrenaline|party/i.test(rawPrompt)) energyLevel = "high";
 
   const constraints = {
     max_runtime_minutes: /under\s*2\s*hours|under\s*two\s*hours|under\s*120/i.test(rawPrompt) ? 120 : null,
@@ -172,6 +186,7 @@ const parseReelbotIntent = (prompt = "") => {
   if (constraints.under_two_hours && !rubricKeys.includes("under_two_hours")) rubricKeys.push("under_two_hours");
   if (constraints.strong_acting && !rubricKeys.includes("strong_acting")) rubricKeys.push("strong_acting");
   if (constraints.date_night && !rubricKeys.includes("date_night")) rubricKeys.push("date_night");
+  if (audienceSignals.guardrails.child_family_safe && !rubricKeys.includes("family_comfort")) rubricKeys.push("family_comfort");
 
   return {
     raw_prompt: rawPrompt,
@@ -185,6 +200,14 @@ const parseReelbotIntent = (prompt = "") => {
     emotional_weight: emotionalWeight,
     pacing,
     accessibility,
+    energy_level: energyLevel,
+    audience: audienceSignals.audience,
+    age_suitability: audienceSignals.age_suitability,
+    watch_context: audienceSignals.watch_context,
+    comfort_needs: audienceSignals.comfort_needs,
+    avoidance_signals: audienceSignals.avoidance_signals,
+    friction_level: audienceSignals.friction_level,
+    guardrails: audienceSignals.guardrails,
     constraints,
     avoid,
     rubric_keys: rubricKeys,

@@ -95,6 +95,14 @@ const RUBRICS = {
     avoid: ["abrasive heaviness", "punishment"],
     rankingEffect: "Reward warmth and rewatchability.",
   },
+  family_comfort: {
+    label: "family comfort",
+    keywords: ["toddler", "kid", "kids", "child", "children", "family movie", "family-friendly", "family friendly", "home sick", "sick kid", "young child"],
+    implies: ["young audience", "comfort context", "emotionally safe", "gentle watch"],
+    reward: ["warmth", "playfulness", "clarity", "family-safe tone"],
+    avoid: ["horror", "distress", "adult drama", "intense action", "heavy emotional material"],
+    rankingEffect: "Strongly prefer gentle, child-appropriate, comfort-oriented titles.",
+  },
 };
 
 const getMatchedRubricKeys = (prompt = "") => {

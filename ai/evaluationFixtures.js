@@ -28,6 +28,7 @@ module.exports = [
     expected: {
       prompt_type: "vibe",
       rubric_keys: ["easy_watch", "funny"],
+      friction_level: "low",
     },
   },
   {
@@ -76,6 +77,70 @@ module.exports = [
     prompt: "great courtroom drama",
     expected: {
       prompt_type: "explicit_constraints",
+    },
+  },
+  {
+    prompt: "easy watch for my toddler daughter",
+    expected: {
+      prompt_type: "vibe",
+      rubric_keys: ["easy_watch", "family_comfort"],
+      audiencePrimary: "young_child",
+      age_suitability: "very_young",
+      watch_context: ["comfort_watch"],
+      comfort_needs: ["gentle", "emotionally_safe", "low_friction"],
+      avoidance_signals: ["horror", "violence", "adult_themes"],
+      preferred_genre_ids: [16, 10751],
+      avoid_genre_ids: [27, 53],
+      guardrailActive: true,
+      friction_level: "low",
+    },
+  },
+  {
+    prompt: "something for a sick kid at home",
+    expected: {
+      prompt_type: "vibe",
+      rubric_keys: ["family_comfort"],
+      audiencePrimary: "child",
+      watch_context: ["sick_day", "comfort_watch"],
+      comfort_needs: ["low_stress", "emotionally_safe", "easy_to_follow"],
+      avoidance_signals: ["distress", "heavy_emotion"],
+      preferred_genre_ids: [16, 10751],
+      avoid_genre_ids: [27, 53],
+      guardrailActive: true,
+    },
+  },
+  {
+    prompt: "comforting movie for a young child",
+    expected: {
+      prompt_type: "vibe",
+      rubric_keys: ["comfort_movie", "family_comfort"],
+      audiencePrimary: "young_child",
+      comfort_needs: ["gentle", "emotionally_safe", "playful"],
+      preferred_genre_ids: [16, 10751],
+      avoid_genre_ids: [27, 53],
+      guardrailActive: true,
+    },
+  },
+  {
+    prompt: "family-friendly easy watch",
+    expected: {
+      prompt_type: "vibe",
+      rubric_keys: ["easy_watch", "family_comfort"],
+      audiencePrimary: "family",
+      comfort_needs: ["gentle", "emotionally_safe"],
+      guardrailActive: true,
+      friction_level: "low",
+    },
+  },
+  {
+    prompt: "something gentle and fun for kids",
+    expected: {
+      prompt_type: "vibe",
+      rubric_keys: ["family_comfort"],
+      audiencePrimary: "child",
+      comfort_needs: ["gentle", "playful"],
+      preferred_genre_ids: [16, 10751],
+      guardrailActive: true,
     },
   },
 ];

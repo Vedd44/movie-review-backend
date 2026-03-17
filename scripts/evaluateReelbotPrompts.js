@@ -27,6 +27,33 @@ fixtures.forEach((fixture) => {
     if (Array.isArray(expected.avoid)) {
       expected.avoid.forEach((value) => assert(parsed.avoid.includes(value), `${fixture.prompt} missing avoid ${value}`));
     }
+    if (expected.audiencePrimary) {
+      assert.strictEqual(parsed.audience?.primary, expected.audiencePrimary);
+    }
+    if (expected.age_suitability) {
+      assert.strictEqual(parsed.age_suitability, expected.age_suitability);
+    }
+    if (Array.isArray(expected.watch_context)) {
+      expected.watch_context.forEach((value) => assert(parsed.watch_context?.includes(value), `${fixture.prompt} missing watch context ${value}`));
+    }
+    if (Array.isArray(expected.comfort_needs)) {
+      expected.comfort_needs.forEach((value) => assert(parsed.comfort_needs?.includes(value), `${fixture.prompt} missing comfort need ${value}`));
+    }
+    if (Array.isArray(expected.avoidance_signals)) {
+      expected.avoidance_signals.forEach((value) => assert(parsed.avoidance_signals?.includes(value), `${fixture.prompt} missing avoidance signal ${value}`));
+    }
+    if (Array.isArray(expected.preferred_genre_ids)) {
+      expected.preferred_genre_ids.forEach((value) => assert(parsed.preferred_genre_ids?.includes(value), `${fixture.prompt} missing preferred genre ${value}`));
+    }
+    if (Array.isArray(expected.avoid_genre_ids)) {
+      expected.avoid_genre_ids.forEach((value) => assert(parsed.avoid_genre_ids?.includes(value), `${fixture.prompt} missing avoid genre ${value}`));
+    }
+    if (typeof expected.guardrailActive === "boolean") {
+      assert.strictEqual(Boolean(parsed.guardrails?.child_family_safe), expected.guardrailActive);
+    }
+    if (expected.friction_level) {
+      assert.strictEqual(parsed.friction_level, expected.friction_level);
+    }
   } catch (error) {
     failures.push({ prompt: fixture.prompt, error: error.message, parsed });
   }

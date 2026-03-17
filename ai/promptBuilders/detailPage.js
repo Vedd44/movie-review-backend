@@ -22,6 +22,26 @@ const compactContext = (context = {}) => ({
   adjacent_titles: Array.isArray(context.similarMovies) ? context.similarMovies.map((movie) => movie.title) : [],
 });
 
+const compactIntent = (intent = null) => {
+  if (!intent || typeof intent !== "object") {
+    return null;
+  }
+
+  return {
+    raw_prompt: intent.raw_prompt,
+    tone: intent.tone,
+    emotional_weight: intent.emotional_weight,
+    pacing: intent.pacing,
+    accessibility: intent.accessibility,
+    energy_level: intent.energy_level,
+    audience: intent.audience,
+    watch_context: intent.watch_context,
+    avoidance_signals: intent.avoidance_signals,
+    guardrails: intent.guardrails,
+    rubric_keys: intent.rubric_keys,
+  };
+};
+
 const DETAIL_ACTION_GUIDES = {
   quick_take: "Answer: what does this feel like, and who is it for?",
   is_this_for_me: "Answer: who will like this, and who may not?",
@@ -57,6 +77,7 @@ const buildDetailPrompts = ({ action, context, previewMode = false, requestMeta 
       "Role rules:",
       "- Stay grounded in the specific movie provided.",
       "- Be spoiler-light unless the action explicitly asks for spoilers.",
+      "- If a user vibe or intent is provided, judge the movie against that vibe instead of giving a generic answer.",
       previewMode
         ? "- If the movie is unreleased, treat this as an informed preview rather than a finished-view verdict."
         : "- Use the available movie context to help the viewer decide whether and how to watch.",
@@ -68,6 +89,8 @@ const buildDetailPrompts = ({ action, context, previewMode = false, requestMeta 
       `Spoiler mode: ${spoilerMode ? "on" : "off"}`,
       `Prompt template: ${promptTemplate}`,
       `Requested use case: ${useCase}`,
+      `User prompt: ${requestMeta.user_prompt || "none"}`,
+      `User intent: ${JSON.stringify(compactIntent(requestMeta.intent_snapshot))}`,
       `Movie context: ${JSON.stringify(compactContext(context))}`,
       "Write only the structured fields required by the schema.",
     ].join("\n\n"),

@@ -3,6 +3,7 @@ const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 const { parseReelbotIntent, isIntentSnapshotValid } = require("./ai/intentParser");
+const { hasChildFamilyGuardrails, passesAudienceGuardrails, getAudienceContextFitScore } = require("./ai/audienceSignals");
 const { detectStructuredQuery } = require("./ai/queryInterpreter");
 const { buildPickRankerPrompts, buildPickWriterPrompts } = require("./ai/promptBuilders/homepagePick");
 const { buildDetailPrompts } = require("./ai/promptBuilders/detailPage");
@@ -873,6 +874,10 @@ const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}) => {
     return false;
   }
 
+  if (!passesAudienceGuardrails(movie, intent)) {
+    return false;
+  }
+
   if (queryType === "PERSON") {
     return Boolean(promptBoosts?.actorMovieIds?.has(movie.id));
   }
@@ -1144,8 +1149,8 @@ const getPromptSpecificFitScore = (movie, promptProfile = {}) => {
 
   if (promptProfile.easyWatch) {
     if (matchesAnyGenre(genreIds, [35, 10749, 12, 16, 10751])) score += 22;
-    if (matchesAnyGenre(genreIds, [27, 10752, 80])) score -= 18;
-    if (runtime && runtime > 140) score -= 10;
+    if (matchesAnyGenre(genreIds, [27, 53, 10752, 80])) score -= 20;
+    if (runtime && runtime > 140) score -= 8;
   }
 
   if (promptProfile.smartTwisty) {
@@ -1301,6 +1306,8 @@ const getIntentSpecificFitScore = (movie, intent = {}, promptBoosts = {}) => {
   if (intent.accessibility === "accessible") {
     if (runtime && runtime <= 125) score += 6;
   }
+
+  score += getAudienceContextFitScore(movie, intent);
 
   if (intent.normalized_prompt?.includes("courtroom") || intent.normalized_prompt?.includes("legal") || intent.normalized_prompt?.includes("trial")) {
     const courtroomSignal = /court|trial|lawyer|legal|attorney|judge|jury/i.test(String(movie.title || "") + " " + String(movie.overview || ""));
@@ -1566,7 +1573,7 @@ const getPromptTonePenalty = (movie, preferences) => {
     return 18;
   }
 
-  if (/not depressing|not miserable|easy|light|comfort|breezy/.test(prompt) && matchesAnyGenre(genreIds, [27])) {
+  if (/not depressing|not miserable|easy watch|light|comfort|breezy|gentle/.test(prompt) && matchesAnyGenre(genreIds, [27, 53])) {
     return 16;
   }
 
@@ -2045,6 +2052,11 @@ const buildPickReason = (movie, preferences) => {
   const genreNames = (movie.genre_ids || []).map((genreId) => TMDB_MOVIE_GENRE_LOOKUP[genreId]).filter(Boolean);
   const leadingGenres = genreNames.slice(0, 2).join(" / ");
   const promptProfile = getPromptPreferenceProfile(preferences.prompt);
+  const parsedIntent = parseReelbotIntent(preferences.prompt);
+
+  if (hasChildFamilyGuardrails(parsedIntent) && matchesAnyGenre(movie.genre_ids || [], [16, 10751, 35, 12, 14, 10402])) {
+    return "It stays gentle, kid-friendly, and easy to settle into, which fits a comfort-watch lane better than something intense or demanding.";
+  }
 
   if (promptProfile.visuallyStunning && matchesAnyGenre(movie.genre_ids || [], [878, 14, 12, 16, 36, 18, 28])) {
     return "Visual ambition is a real part of the appeal here, so it feels closer to a true spectacle pick than a generic fallback.";
@@ -2833,23 +2845,23 @@ const getBackupRoleLabelFromKey = (roleKey = "similar_tone") => BACKUP_ROLE_LABE
 
 const buildPromptContextLine = (intent = {}, preferences = {}) => {
   if (intent.query_type === "COUNTRY" && intent.structured_query?.country?.display_name) {
-    return `Here are strong films connected to ${intent.structured_query.country.display_name} through TMDB metadata such as country tags, language, keywords, or story cues.`;
+    return `These picks stay closely tied to ${intent.structured_query.country.display_name} in setting, perspective, or story details.`;
   }
 
   if (intent.query_type === "AWARDS" && intent.structured_query?.year) {
-    return `These picks stay inside the Oscars ${intent.structured_query.year} lane, then ReelBot chooses the strongest starting point from that grounded set.`;
+    return `These picks stay focused on the Oscars ${intent.structured_query.year}, then ReelBot starts with the strongest watch right now.`;
   }
 
   if (intent.query_type === "GENRE_THEME") {
-    return "These picks stay inside the detected genre-and-theme lane instead of widening into a generic vibe match.";
+    return "These picks stay close to the kind of movie you asked for instead of drifting broader.";
   }
 
   if (intent.entity_anchor?.kind === "actor" || intent.entity_anchor?.kind === "director") {
-    return `Staying in the ${intent.entity_anchor.name} lane, but aiming for the strongest watch decision.`;
+    return `Staying close to ${intent.entity_anchor.name}, but aiming for the strongest watch decision.`;
   }
 
   if (intent.entity_anchor?.kind === "franchise") {
-    return `Keeping the ${intent.entity_anchor.name} franchise lane intact while looking for the best option.`;
+    return `Keeping the ${intent.entity_anchor.name} franchise feel intact while looking for the best option.`;
   }
 
   if (intent.entity_anchor?.kind === "movie_title" || intent.anchors?.title) {
@@ -2857,7 +2869,7 @@ const buildPromptContextLine = (intent = {}, preferences = {}) => {
   }
 
   if (preferences.prompt) {
-    return `${truncateText(preferences.prompt.trim(), 72)} — interpreted with ReelBot's stricter tone and fit rules.`;
+    return `${truncateText(preferences.prompt.trim(), 72)} — read with tone, audience, and overall fit in mind.`;
   }
 
   return "A sharper first pass from the current candidate pool.";
@@ -2865,7 +2877,7 @@ const buildPromptContextLine = (intent = {}, preferences = {}) => {
 
 const buildFallbackPickSummaryLine = (movie) => {
   if ((movie.structured_match_reasons || []).length) {
-    return `${movie.title} rose to the top because its TMDB metadata stays closely tied to this request instead of only matching loosely by vibe.`;
+    return `${movie.title} rose to the top because it stays close to what you asked for instead of just feeling vaguely similar.`;
   }
 
   const genreNames = Array.isArray(movie.genre_names) ? movie.genre_names : [];
@@ -2903,13 +2915,13 @@ const buildFallbackBackupReason = (movie, roleKey, preferences) => {
 
   switch (roleKey) {
     case "safer_option":
-      return `Leans broader and easier to say yes to, but stays in the same lane. ${reason}`;
+      return `Broader and easier to say yes to, while staying close to the same vibe. ${reason}`;
     case "lighter_option":
       return `Keeps more air in the experience if you want less weight. ${reason}`;
     case "darker_option":
-      return `Pushes the mood further without leaving the original lane. ${reason}`;
+      return `Pushes the mood further without leaving the original vibe. ${reason}`;
     case "more_action_forward":
-      return `A better move if you want the same lane with more propulsion. ${reason}`;
+      return `A better move if you want the same vibe with more propulsion. ${reason}`;
     case "more_demanding":
       return `Asks for a little more patience, but pays it back with specificity. ${reason}`;
     case "wildcard":
@@ -3078,7 +3090,9 @@ const generatePickPayload = async (rawPreferences = {}) => {
     : candidatePool;
 
   const locallyFilteredPool = fallbackPool.filter((movie) => !excludedIds.has(movie.id) && !isLowSignalMovie(movie));
-  const preliminaryRanked = dedupeMoviesById(locallyFilteredPool)
+  const intentFilteredPool = locallyFilteredPool.filter((movie) => isMovieValidForIntent(movie, resolvedIntent, promptBoosts));
+  const baseRankingPool = intentFilteredPool.length ? intentFilteredPool : locallyFilteredPool;
+  const preliminaryRanked = dedupeMoviesById(baseRankingPool)
     .map((movie) => ({ movie, score: scorePickCandidate(movie, preferences, promptBoosts, resolvedIntent) }))
     .sort((left, right) => right.score - left.score);
 
@@ -3341,6 +3355,8 @@ const normalizeReelbotRequestMeta = (requestedAction, requestBody = {}) => {
     spoiler_mode: spoilerMode,
     use_case: useCase,
     prompt_template: promptTemplate,
+    user_prompt: typeof requestBody?.user_prompt === "string" ? requestBody.user_prompt.trim() : "",
+    intent_snapshot: isIntentSnapshotValid(requestBody?.intent_snapshot) ? requestBody.intent_snapshot : null,
   };
 };
 
@@ -3825,10 +3841,13 @@ const buildFallbackContent = (action, context) => {
   }
 };
 
-const buildFallbackStructuredDetailContent = (action, context) => {
+const buildFallbackStructuredDetailContent = (action, context, requestMeta = {}) => {
   const { movie, genres, director, similarMovies } = context;
   const genreText = String(genres || "").toLowerCase() || "movie";
   const previewMode = isUpcomingMovie(movie);
+  const intent = requestMeta.intent_snapshot || null;
+  const promptLabel = String(requestMeta.user_prompt || "").trim();
+  const hasIntentContext = Boolean(intent && promptLabel);
   const nearbyPicks = similarMovies.slice(0, 3).map((similarMovie, index) => ({
     title: similarMovie.title,
     role_label: index === 0 ? "Safer next watch" : index === 1 ? "Darker next watch" : "Wildcard next watch",
@@ -3855,11 +3874,11 @@ const buildFallbackStructuredDetailContent = (action, context) => {
           }
         : {
             best_for: [
-              `People who want a ${genreText} watch with a clear point of view.`,
+              hasIntentContext ? `Viewers whose current vibe still lines up with ${movie.title}'s ${genreText} lane.` : `People who want a ${genreText} watch with a clear point of view.`,
               "Viewers willing to meet the movie on its own tonal terms.",
             ],
             maybe_not_for: [
-              "Anyone hoping for a purely passive background watch.",
+              hasIntentContext ? "Anyone looking for a much lighter or easier fit than this movie suggests." : "Anyone hoping for a purely passive background watch.",
               "Viewers whose mood is far lighter or broader than the movie's lane.",
             ],
             commitment: movie.runtime ? `${movie.runtime} minutes, with best results if you give it real attention.` : "Works best if you give it active attention rather than treating it as background noise.",
@@ -3955,9 +3974,15 @@ const buildFallbackStructuredDetailContent = (action, context) => {
             caution: "Treat this as a preview read, not a finished-audience verdict.",
           }
         : {
-            summary: `${movie.title} plays more like a deliberate ${genreText} choice than a generic fallback.`,
-            fit: "Best for viewers who want a clear tonal lane and can meet the movie on its own terms.",
-            caution: "Less ideal if you want pure background ease or a broader crowd-pleaser.",
+            summary: hasIntentContext
+              ? `${movie.title} is ${intent?.emotional_weight === "light" ? "more selective than pure comfort viewing" : `a deliberate ${genreText} choice`} against the vibe you gave ReelBot.`
+              : `${movie.title} plays more like a deliberate ${genreText} choice than a generic fallback.`,
+            fit: hasIntentContext
+              ? `Best if your current mood still matches ${promptLabel}.`
+              : "Best for viewers who want a clear tonal lane and can meet the movie on its own terms.",
+            caution: hasIntentContext
+              ? "If you wanted something easier, lighter, or lower-friction, this may feel like more of a commitment."
+              : "Less ideal if you want pure background ease or a broader crowd-pleaser.",
           };
   }
 };
@@ -3996,7 +4021,7 @@ const renderStructuredReelbotContent = (action, content = {}) => {
 
 const generateStructuredDetailContent = async (action, context, requestMeta = {}) => {
   const previewMode = isUpcomingMovie(context.movie);
-  const fallbackStructuredContent = buildFallbackStructuredDetailContent(action, context);
+  const fallbackStructuredContent = buildFallbackStructuredDetailContent(action, context, requestMeta);
 
   if (!OPENAI_API_KEY) {
     return fallbackStructuredContent;
@@ -4029,7 +4054,8 @@ const generateReelbotPayload = async (movieId, requestedAction = "quick_take", r
     prompt_template: requestMeta.prompt_template || (previewMode ? "detail_preview" : SPOILER_ACTION_IDS.has(action) ? "detail_spoiler" : "detail_standard"),
     use_case: requestMeta.use_case || action,
   };
-  const cacheKey = `${movieId}:${action}:${normalizedRequestMeta.prompt_template}:${normalizedRequestMeta.use_case}:${normalizedRequestMeta.spoiler_mode ? "spoilers-on" : "spoilers-off"}`;
+  const intentCacheKey = normalizedRequestMeta.intent_snapshot?.lane_key || normalizedRequestMeta.user_prompt?.toLowerCase() || "generic";
+  const cacheKey = `${movieId}:${action}:${normalizedRequestMeta.prompt_template}:${normalizedRequestMeta.use_case}:${normalizedRequestMeta.spoiler_mode ? "spoilers-on" : "spoilers-off"}:${intentCacheKey}`;
 
   if (reelbotCache.has(cacheKey)) {
     return { ...reelbotCache.get(cacheKey), cached: true };
@@ -4048,6 +4074,10 @@ const generateReelbotPayload = async (movieId, requestedAction = "quick_take", r
     spoiler_mode: normalizedRequestMeta.spoiler_mode,
     prompt_template: normalizedRequestMeta.prompt_template,
     use_case: normalizedRequestMeta.use_case,
+    request_context: {
+      user_prompt: normalizedRequestMeta.user_prompt || "",
+      intent_snapshot: normalizedRequestMeta.intent_snapshot || null,
+    },
     structured_content: structuredContent,
     content,
     ai_name: AI_NAME,
