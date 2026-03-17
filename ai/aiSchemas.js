@@ -138,7 +138,10 @@ const DETAIL_SCHEMAS = {
           type: "object",
           additionalProperties: false,
           properties: {
+            id: { type: "integer" },
             title: { type: "string" },
+            poster_path: { type: "string" },
+            release_date: { type: "string" },
             role_label: { type: "string" },
             reason: { type: "string" },
           },

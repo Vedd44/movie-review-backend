@@ -3423,6 +3423,7 @@ const getMovieContext = async (movieId) => {
   const similarMovies = nearbyMovies.slice(0, 8).map((similarMovie) => ({
     title: similarMovie.title,
     id: similarMovie.id,
+    poster_path: similarMovie.poster_path || "",
     release_date: similarMovie.release_date || "",
     overview: similarMovie.overview || "",
   }));
@@ -3849,7 +3850,10 @@ const buildFallbackStructuredDetailContent = (action, context, requestMeta = {})
   const promptLabel = String(requestMeta.user_prompt || "").trim();
   const hasIntentContext = Boolean(intent && promptLabel);
   const nearbyPicks = similarMovies.slice(0, 3).map((similarMovie, index) => ({
+    id: similarMovie.id,
     title: similarMovie.title,
+    poster_path: similarMovie.poster_path || "",
+    release_date: similarMovie.release_date || "",
     role_label: index === 0 ? "Safer next watch" : index === 1 ? "Darker next watch" : "Wildcard next watch",
     reason: index === 0
       ? "The most direct nearby option if you want a lower-risk follow-up."
@@ -3903,9 +3907,9 @@ const buildFallbackStructuredDetailContent = (action, context, requestMeta = {})
       return {
         intro: previewMode ? `While you wait for ${movie.title}, these are the closest nearby lanes.` : `If you want to stay near what ${movie.title} does well, start here.`,
         picks: nearbyPicks.length ? nearbyPicks : [
-          { title: movie.title, role_label: "Similar tone", reason: "No strong nearby titles were available, so ReelBot is holding the lane rather than guessing." },
-          { title: movie.title, role_label: "Safer option", reason: "No strong nearby titles were available, so ReelBot is holding the lane rather than guessing." },
-          { title: movie.title, role_label: "Wildcard", reason: "No strong nearby titles were available, so ReelBot is holding the lane rather than guessing." },
+          { id: movie.id, title: movie.title, poster_path: movie.poster_path || "", release_date: movie.release_date || "", role_label: "Similar tone", reason: "No strong nearby titles were available, so ReelBot is holding the lane rather than guessing." },
+          { id: movie.id, title: movie.title, poster_path: movie.poster_path || "", release_date: movie.release_date || "", role_label: "Safer option", reason: "No strong nearby titles were available, so ReelBot is holding the lane rather than guessing." },
+          { id: movie.id, title: movie.title, poster_path: movie.poster_path || "", release_date: movie.release_date || "", role_label: "Wildcard", reason: "No strong nearby titles were available, so ReelBot is holding the lane rather than guessing." },
         ],
       };
     case "scary_check":
@@ -3987,6 +3991,31 @@ const buildFallbackStructuredDetailContent = (action, context, requestMeta = {})
   }
 };
 
+const normalizeTitleKey = (value = "") => String(value || "").trim().toLowerCase();
+
+const enrichSimilarPickEntries = (entries = [], context = {}) => {
+  const similarMovies = Array.isArray(context.similarMovies) ? context.similarMovies : [];
+  const movie = context.movie || {};
+  const similarMovieLookup = new Map(similarMovies.map((similarMovie) => [normalizeTitleKey(similarMovie.title), similarMovie]));
+
+  return (Array.isArray(entries) ? entries : []).map((entry, index) => {
+    const matchedMovie =
+      (entry?.id && similarMovies.find((similarMovie) => similarMovie.id === entry.id)) ||
+      similarMovieLookup.get(normalizeTitleKey(entry?.title)) ||
+      similarMovies[index] ||
+      null;
+
+    return {
+      id: matchedMovie?.id || entry?.id || movie.id,
+      title: normalizeAiCopy(entry?.title) || matchedMovie?.title || movie.title,
+      poster_path: matchedMovie?.poster_path || entry?.poster_path || movie.poster_path || "",
+      release_date: matchedMovie?.release_date || entry?.release_date || movie.release_date || "",
+      role_label: normalizeAiCopy(entry?.role_label) || "Nearby pick",
+      reason: normalizeAiCopy(entry?.reason) || "Keeps a recognizable connection without repeating the exact same lane.",
+    };
+  }).slice(0, 3);
+};
+
 const renderStructuredReelbotContent = (action, content = {}) => {
   switch (action) {
     case "quick_take":
@@ -4037,8 +4066,16 @@ const generateStructuredDetailContent = async (action, context, requestMeta = {}
       maxTokens: REELBOT_ACTIONS[action]?.maxTokens || 320,
       temperature: 0.35,
     });
+    const structuredPayload = aiPayload || fallbackStructuredContent;
 
-    return aiPayload || fallbackStructuredContent;
+    if (action === "similar_picks") {
+      return {
+        ...structuredPayload,
+        picks: enrichSimilarPickEntries(structuredPayload?.picks, context),
+      };
+    }
+
+    return structuredPayload;
   } catch (error) {
     console.error("OpenAI detail assistant failed:", error.response?.data || error.message);
     return fallbackStructuredContent;
