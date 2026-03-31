@@ -1914,7 +1914,185 @@ const balanceCandidatesByEra = (rankedCandidates = [], targetCount = 24) => {
   return curated.slice(0, targetCount);
 };
 
-const scorePickCandidate = (movie, preferences, promptBoosts = { personMovieIds: new Set(), titleSimilarMovieIds: new Set(), anchorMovieIds: new Set(), promptTokens: [] }, intent = null) => {
+const BEHAVIOR_LANE_GENRE_MAP = {
+  light: [35, 10751, 16, 12, 10749],
+  heavy: [18, 36, 10752, 80],
+  dark: [27, 53, 80],
+  funny: [35],
+  emotional: [18, 10749, 10402, 16],
+  easy_watch: [35, 10751, 16, 10749, 12],
+  smart_twisty: [878, 9648, 53],
+};
+
+const BEHAVIOR_DEBUG_ENABLED = process.env.REELBOT_DEBUG_BEHAVIOR === "1";
+
+const normalizeBehavioralMap = (value = {}, maxEntries = 12) =>
+  Object.fromEntries(
+    Object.entries(value && typeof value === "object" ? value : {})
+      .map(([key, amount]) => [String(key), Number(amount || 0)])
+      .filter(([, amount]) => Number.isFinite(amount) && amount > 0)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, maxEntries)
+  );
+
+const normalizeBehavioralIdSet = (values = []) =>
+  new Set((Array.isArray(values) ? values : []).map((value) => Number.parseInt(value, 10)).filter(Boolean));
+
+const getBehaviorRuntimeBucket = (runtime) => {
+  const normalizedRuntime = Number(runtime || 0);
+
+  if (!normalizedRuntime) {
+    return "";
+  }
+
+  if (normalizedRuntime < 100) {
+    return "short";
+  }
+
+  if (normalizedRuntime <= 130) {
+    return "medium";
+  }
+
+  return "long";
+};
+
+const getBehaviorToneLanes = (movie = {}) =>
+  Object.entries(BEHAVIOR_LANE_GENRE_MAP)
+    .filter(([, genreIds]) => matchesAnyGenre(movie.genre_ids || [], genreIds))
+    .map(([lane]) => lane);
+
+const normalizeBehavioralMemory = (memory = {}) => ({
+  preferredGenres: normalizeBehavioralMap(memory.preferredGenres, 12),
+  avoidedGenres: normalizeBehavioralMap(memory.avoidedGenres, 12),
+  tonePreferences: normalizeBehavioralMap(memory.tonePreferences, 8),
+  runtimePreference: normalizeBehavioralMap(memory.runtimePreference, 3),
+  swapPatterns: {
+    genres: normalizeBehavioralMap(memory.swapPatterns?.genres, 8),
+    tones: normalizeBehavioralMap(memory.swapPatterns?.tones, 6),
+    runtime: normalizeBehavioralMap(memory.swapPatterns?.runtime, 3),
+  },
+  recentPatterns: {
+    genres: Array.isArray(memory.recentPatterns?.genres) ? memory.recentPatterns.genres.map((value) => Number.parseInt(value, 10)).filter(Boolean).slice(0, 4) : [],
+    tones: Array.isArray(memory.recentPatterns?.tones) ? memory.recentPatterns.tones.map((value) => String(value)).filter(Boolean).slice(0, 4) : [],
+    runtime: typeof memory.recentPatterns?.runtime === "string" ? memory.recentPatterns.runtime : "",
+  },
+  interactionStats: memory.interactionStats && typeof memory.interactionStats === "object" ? memory.interactionStats : {},
+  hiddenMovieIds: normalizeBehavioralIdSet(memory.hiddenMovieIds),
+  seenMovieIds: normalizeBehavioralIdSet(memory.seenMovieIds),
+  savedMovieIds: normalizeBehavioralIdSet(memory.savedMovieIds),
+  recentMovieIds: normalizeBehavioralIdSet(memory.recentMovieIds),
+  updatedAt: typeof memory.updatedAt === "string" ? memory.updatedAt : "",
+});
+
+const getBehavioralMemoryCacheKey = (memory = {}) => {
+  const normalizedMemory = normalizeBehavioralMemory(memory);
+
+  return [
+    Object.entries(normalizedMemory.preferredGenres).slice(0, 4).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
+    Object.entries(normalizedMemory.avoidedGenres).slice(0, 4).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
+    Object.entries(normalizedMemory.tonePreferences).slice(0, 3).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
+    Object.entries(normalizedMemory.runtimePreference).slice(0, 2).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
+    `hidden:${normalizedMemory.hiddenMovieIds.size}`,
+    `seen:${normalizedMemory.seenMovieIds.size}`,
+    `updated:${normalizedMemory.updatedAt || "na"}`,
+  ].join("::");
+};
+
+const getBehavioralMemoryScore = (movie = {}, memory = {}) => {
+  const normalizedMemory = normalizeBehavioralMemory(memory);
+  const movieId = Number(movie?.id || 0);
+
+  if (normalizedMemory.hiddenMovieIds.has(movieId) || normalizedMemory.seenMovieIds.has(movieId)) {
+    return {
+      score: -1000,
+      reasons: ["hard_excluded"],
+    };
+  }
+
+  const reasons = [];
+  let score = 0;
+  const runtimeBucket = getBehaviorRuntimeBucket(movie.runtime);
+  const toneLanes = getBehaviorToneLanes(movie);
+
+  (movie.genre_ids || []).forEach((genreId) => {
+    const preferredWeight = Number(normalizedMemory.preferredGenres[String(genreId)] || 0);
+    const avoidedWeight = Number(normalizedMemory.avoidedGenres[String(genreId)] || 0);
+    const swapWeight = Number(normalizedMemory.swapPatterns.genres[String(genreId)] || 0);
+
+    if (preferredWeight) {
+      score += preferredWeight * 1.05;
+      reasons.push(`genre+${genreId}`);
+    }
+
+    if (avoidedWeight) {
+      score -= avoidedWeight * 1.1;
+      reasons.push(`genre-${genreId}`);
+    }
+
+    if (swapWeight) {
+      score -= swapWeight * 0.85;
+      reasons.push(`swap-genre-${genreId}`);
+    }
+  });
+
+  toneLanes.forEach((lane) => {
+    const toneWeight = Number(normalizedMemory.tonePreferences[lane] || 0);
+    const swapWeight = Number(normalizedMemory.swapPatterns.tones[lane] || 0);
+
+    if (toneWeight) {
+      score += toneWeight * 1.25;
+      reasons.push(`tone+${lane}`);
+    }
+
+    if (swapWeight) {
+      score -= swapWeight * 0.8;
+      reasons.push(`swap-tone-${lane}`);
+    }
+  });
+
+  if (runtimeBucket) {
+    const runtimeWeight = Number(normalizedMemory.runtimePreference[runtimeBucket] || 0);
+    const runtimeSwapWeight = Number(normalizedMemory.swapPatterns.runtime[runtimeBucket] || 0);
+
+    if (runtimeWeight) {
+      score += runtimeWeight * 0.85;
+      reasons.push(`runtime+${runtimeBucket}`);
+    }
+
+    if (runtimeSwapWeight) {
+      score -= runtimeSwapWeight * 0.65;
+      reasons.push(`swap-runtime-${runtimeBucket}`);
+    }
+  }
+
+  if (normalizedMemory.recentPatterns.genres.some((genreId) => (movie.genre_ids || []).includes(genreId))) {
+    score += 1.8;
+    reasons.push("recent-genre");
+  }
+
+  if (normalizedMemory.recentPatterns.tones.some((lane) => toneLanes.includes(lane))) {
+    score += 2.1;
+    reasons.push("recent-tone");
+  }
+
+  if (normalizedMemory.recentPatterns.runtime && normalizedMemory.recentPatterns.runtime === runtimeBucket) {
+    score += 1.2;
+    reasons.push("recent-runtime");
+  }
+
+  return {
+    score: Math.max(-28, Math.min(28, Number(score.toFixed(2)))),
+    reasons,
+  };
+};
+
+const scorePickCandidate = (
+  movie,
+  preferences,
+  promptBoosts = { personMovieIds: new Set(), titleSimilarMovieIds: new Set(), anchorMovieIds: new Set(), promptTokens: [] },
+  intent = null,
+  behavioralMemory = {}
+) => {
   let score = (movie.vote_average || 0) * 10;
   score += Math.min(movie.vote_count || 0, 1800) / 38;
   score += Math.min(movie.popularity || 0, 800) / 48;
@@ -1986,7 +2164,14 @@ const scorePickCandidate = (movie, preferences, promptBoosts = { personMovieIds:
     }
   }
 
-  return score;
+  const behavioralResult = getBehavioralMemoryScore(movie, behavioralMemory);
+  score += behavioralResult.score;
+
+  return {
+    score,
+    behavioralAdjustment: behavioralResult.score,
+    behavioralReasons: behavioralResult.reasons,
+  };
 };
 
 const getPickMoodReason = (moodId) => {
@@ -3033,6 +3218,7 @@ const buildMatchScore = (score, topScore) => {
 
 const generatePickPayload = async (rawPreferences = {}) => {
   const preferences = resolvePickPreferences(rawPreferences);
+  const behavioralMemory = normalizeBehavioralMemory(rawPreferences.behavioral_memory);
   let resolvedIntent = await hydrateResolvedIntent(preferences, rawPreferences);
   const structuredResolution = preferences.prompt ? await resolveStructuredQueryCandidates(preferences.prompt) : null;
 
@@ -3060,8 +3246,10 @@ const generatePickPayload = async (rawPreferences = {}) => {
 
   const queryType = resolvedIntent.query_type || getIntentQueryType(resolvedIntent);
   const excludedIds = normalizeExcludedIds(rawPreferences.excluded_ids);
+  behavioralMemory.hiddenMovieIds.forEach((movieId) => excludedIds.add(movieId));
+  behavioralMemory.seenMovieIds.forEach((movieId) => excludedIds.add(movieId));
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
-  const cacheKey = `pick:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}`;
+  const cacheKey = `pick:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);
@@ -3093,14 +3281,30 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const intentFilteredPool = locallyFilteredPool.filter((movie) => isMovieValidForIntent(movie, resolvedIntent, promptBoosts));
   const baseRankingPool = intentFilteredPool.length ? intentFilteredPool : locallyFilteredPool;
   const preliminaryRanked = dedupeMoviesById(baseRankingPool)
-    .map((movie) => ({ movie, score: scorePickCandidate(movie, preferences, promptBoosts, resolvedIntent) }))
+    .map((movie) => {
+      const scoring = scorePickCandidate(movie, preferences, promptBoosts, resolvedIntent, behavioralMemory);
+      return {
+        movie,
+        score: scoring.score,
+        behavioral_adjustment: scoring.behavioralAdjustment,
+        behavioral_reasons: scoring.behavioralReasons,
+      };
+    })
     .sort((left, right) => right.score - left.score);
 
   const topPreliminaryCandidates = preliminaryRanked.slice(0, 36).map((entry) => entry.movie);
   const detailedCandidates = await enrichCandidatesWithDetails(topPreliminaryCandidates);
   const finalRankedCandidates = detailedCandidates
     .filter((movie) => !isLowSignalMovie(movie) && !excludedIds.has(movie.id))
-    .map((movie) => ({ movie, score: scorePickCandidate(movie, preferences, promptBoosts, resolvedIntent) }))
+    .map((movie) => {
+      const scoring = scorePickCandidate(movie, preferences, promptBoosts, resolvedIntent, behavioralMemory);
+      return {
+        movie,
+        score: scoring.score,
+        behavioral_adjustment: scoring.behavioralAdjustment,
+        behavioral_reasons: scoring.behavioralReasons,
+      };
+    })
     .sort((left, right) => right.score - left.score);
 
   const validatedRankedCandidates = finalRankedCandidates.filter((entry) => isMovieValidForIntent(entry.movie, resolvedIntent, promptBoosts));
@@ -3109,6 +3313,20 @@ const generatePickPayload = async (rawPreferences = {}) => {
     ? rankingSourceEntries.slice(0, Math.max(8, Math.min(rankingSourceEntries.length, 40)))
     : balanceCandidatesByEra(rankingSourceEntries, 22);
   const rankingPool = curatedRankingEntries.map((entry) => entry.movie);
+  if (BEHAVIOR_DEBUG_ENABLED) {
+    console.log(
+      "[ReelBot behavioral memory]",
+      curatedRankingEntries
+        .filter((entry) => entry.behavioral_adjustment)
+        .slice(0, 6)
+        .map((entry) => ({
+          title: entry.movie?.title,
+          score: Number(entry.score.toFixed(2)),
+          behavioral_adjustment: entry.behavioral_adjustment,
+          behavioral_reasons: entry.behavioral_reasons,
+        }))
+    );
+  }
   const aiRanking = rankingPool.length >= 5 ? await rankCandidatesWithOpenAI(preferences, resolvedIntent, rankingPool).catch((error) => {
     console.error("OpenAI ranking failed:", error.response?.data || error.message);
     return null;
@@ -3177,6 +3395,12 @@ const generatePickPayload = async (rawPreferences = {}) => {
       hard_lock_applied: usesHardEntityPool,
       primary_valid: isMovieValidForIntent(primaryPick, resolvedIntent, promptBoosts),
       alternates_valid: alternatePicks.every((movie) => isMovieValidForIntent(movie, resolvedIntent, promptBoosts)),
+      behavioral_memory_applied: Boolean(
+        Object.keys(behavioralMemory.preferredGenres).length ||
+        Object.keys(behavioralMemory.avoidedGenres).length ||
+        behavioralMemory.hiddenMovieIds.size ||
+        behavioralMemory.seenMovieIds.size
+      ),
     },
     candidate_pool_ids: rankingPool.map((movie) => movie.id),
     rationale: {
