@@ -130,6 +130,7 @@ const AWARD_PATTERN = /\b(?:oscar|oscars|academy award|academy awards)\b/i;
 const sanitizeEntityText = (value = "") =>
   compact(
     String(value || "")
+      .replace(/\b(?:under|over|but|that are|that's|that is|for|from)\b.*$/gi, " ")
       .replace(/\b(?:movies|films|filmography|please|recommend|show me)\b/gi, " ")
       .replace(/[?.!,]+$/g, "")
   );

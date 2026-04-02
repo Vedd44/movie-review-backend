@@ -3,6 +3,7 @@ const BACKUP_ROLE_KEYS = [
   "lighter_option",
   "darker_option",
   "wildcard",
+  "stretch_option",
   "more_action_forward",
   "more_demanding",
   "similar_tone",

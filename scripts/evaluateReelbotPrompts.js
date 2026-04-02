@@ -54,6 +54,30 @@ fixtures.forEach((fixture) => {
     if (expected.friction_level) {
       assert.strictEqual(parsed.friction_level, expected.friction_level);
     }
+    if (expected.attentionLevel) {
+      assert.strictEqual(parsed.attention_profile?.level, expected.attentionLevel);
+    }
+    if (Array.isArray(expected.audienceWatchCompany)) {
+      expected.audienceWatchCompany.forEach((value) =>
+        assert(parsed.audience_context?.watch_company?.includes(value), `${fixture.prompt} missing watch company ${value}`));
+    }
+    if (expected.countryHint) {
+      assert.strictEqual(parsed.specificity?.country_hint, expected.countryHint);
+    }
+    if (expected.placeTheme !== undefined) {
+      assert.strictEqual(Boolean(parsed.specificity?.place_theme), expected.placeTheme);
+    }
+    if (expected.awardsHint) {
+      assert.deepStrictEqual(parsed.specificity?.awards_hint, expected.awardsHint);
+    }
+    if (expected.emotionalTolerance) {
+      Object.entries(expected.emotionalTolerance).forEach(([key, value]) =>
+        assert.strictEqual(parsed.emotional_tolerance?.[key], value, `${fixture.prompt} emotional tolerance ${key} mismatch`));
+    }
+    if (expected.pacingProfile) {
+      Object.entries(expected.pacingProfile).forEach(([key, value]) =>
+        assert.strictEqual(parsed.pacing_energy?.[key], value, `${fixture.prompt} pacing profile ${key} mismatch`));
+    }
   } catch (error) {
     failures.push({ prompt: fixture.prompt, error: error.message, parsed });
   }

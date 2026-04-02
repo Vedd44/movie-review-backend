@@ -96,6 +96,17 @@ module.exports = [
     },
   },
   {
+    prompt: "toddler daughter home sick",
+    expected: {
+      prompt_type: "vibe",
+      audiencePrimary: "young_child",
+      watch_context: ["sick_day", "comfort_watch"],
+      comfort_needs: ["low_stress", "emotionally_safe"],
+      guardrailActive: true,
+      emotionalTolerance: { low_stress: true, emotionally_safe: true },
+    },
+  },
+  {
     prompt: "something for a sick kid at home",
     expected: {
       prompt_type: "vibe",
@@ -141,6 +152,36 @@ module.exports = [
       comfort_needs: ["gentle", "playful"],
       preferred_genre_ids: [16, 10751],
       guardrailActive: true,
+    },
+  },
+  {
+    prompt: "background watch with my parents",
+    expected: {
+      prompt_type: "vibe",
+      attentionLevel: "background",
+      audienceWatchCompany: ["with_parents"],
+    },
+  },
+  {
+    prompt: "gripping from the first 10 minutes",
+    expected: {
+      prompt_type: "vibe",
+      pacingProfile: { immediate_hook: true },
+    },
+  },
+  {
+    prompt: "movies about Ireland",
+    expected: {
+      prompt_type: "vibe",
+      countryHint: "ireland",
+      placeTheme: true,
+    },
+  },
+  {
+    prompt: "Oscar 2026 movies",
+    expected: {
+      prompt_type: "vibe",
+      awardsHint: { award: "oscars", year: 2026 },
     },
   },
 ];

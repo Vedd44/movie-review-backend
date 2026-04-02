@@ -5,6 +5,7 @@ const cors = require("cors");
 const { parseReelbotIntent, isIntentSnapshotValid } = require("./ai/intentParser");
 const { hasChildFamilyGuardrails, passesAudienceGuardrails, getAudienceContextFitScore } = require("./ai/audienceSignals");
 const { detectStructuredQuery } = require("./ai/queryInterpreter");
+const { getKnownBadPatternAdjustments, summarizeAppliedConstraints } = require("./ai/knownBadPatterns");
 const { buildPickRankerPrompts, buildPickWriterPrompts } = require("./ai/promptBuilders/homepagePick");
 const { buildDetailPrompts } = require("./ai/promptBuilders/detailPage");
 const { pickRankingSchema, pickWriterSchema, getDetailSchema } = require("./ai/aiSchemas");
@@ -17,6 +18,8 @@ const AI_NAME = "ReelBot";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY?.trim();
 const TMDB_API_KEY = process.env.TMDB_API_KEY?.trim();
 const OPENAI_MODEL = (process.env.OPENAI_MODEL || "gpt-5-mini").trim();
+const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.REACT_APP_SUPABASE_URL || "").trim();
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 const reelbotCache = new Map();
 const pickCache = new Map();
 const tmdbCache = new Map();
@@ -278,6 +281,34 @@ console.log(`TMDB API key present: ${TMDB_API_KEY ? "yes" : "no"}`);
 
 app.use(cors());
 app.use(express.json());
+
+const fetchSupabaseUser = async (accessToken = "") => {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !accessToken) {
+    return null;
+  }
+
+  const response = await axios.get(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  return response.data || null;
+};
+
+const deleteSupabaseUser = async (userId) => {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !userId) {
+    return;
+  }
+
+  await axios.delete(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+    },
+  });
+};
 
 const fetchTmdb = async (path, params = {}) => {
   const searchParams = new URLSearchParams({
@@ -856,16 +887,142 @@ const getIntentQueryType = (intent = {}) => {
   return "GENRE_OR_VIBE";
 };
 
+const normalizePickRefinement = (rawRefinement = {}) => {
+  if (!rawRefinement || typeof rawRefinement !== "object") {
+    return null;
+  }
+
+  const id = String(rawRefinement.id || "").trim().toLowerCase();
+  if (!id) {
+    return null;
+  }
+
+  const allowedIds = new Set(["lighter", "darker", "shorter", "funnier", "less_intense", "more_like_this", "different_angle"]);
+  if (!allowedIds.has(id)) {
+    return null;
+  }
+
+  return {
+    id,
+    label: String(rawRefinement.label || id).trim(),
+    source_movie_id: Number.parseInt(rawRefinement.source_movie_id, 10) || null,
+    source_movie_title: String(rawRefinement.source_movie_title || "").trim(),
+  };
+};
+
+const appendUnique = (list = [], values = []) => Array.from(new Set([...(Array.isArray(list) ? list : []), ...(Array.isArray(values) ? values : [])].filter(Boolean)));
+
+const applyRefinementToIntent = (intent = {}, refinement = null) => {
+  if (!refinement?.id) {
+    return intent;
+  }
+
+  const nextIntent = {
+    ...intent,
+    tone: Array.isArray(intent.tone) ? intent.tone.slice() : [],
+    rubric_keys: Array.isArray(intent.rubric_keys) ? intent.rubric_keys.slice() : [],
+    preferred_genre_ids: Array.isArray(intent.preferred_genre_ids) ? intent.preferred_genre_ids.slice() : [],
+    avoid_genre_ids: Array.isArray(intent.avoid_genre_ids) ? intent.avoid_genre_ids.slice() : [],
+    hard_filters: { ...(intent.hard_filters || {}) },
+    emotional_tolerance: { ...(intent.emotional_tolerance || {}) },
+    attention_profile: { ...(intent.attention_profile || {}) },
+    pacing_energy: { ...(intent.pacing_energy || {}) },
+    runtime_commitment: { ...(intent.runtime_commitment || {}) },
+    soft_preferences: { ...(intent.soft_preferences || {}) },
+    refinement,
+  };
+
+  switch (refinement.id) {
+    case "lighter":
+      nextIntent.tone = nextIntent.tone.filter((value) => value !== "dark");
+      nextIntent.tone = appendUnique(nextIntent.tone, ["comforting"]);
+      nextIntent.rubric_keys = appendUnique(nextIntent.rubric_keys, ["easy_watch", "comfort_movie"]);
+      nextIntent.preferred_genre_ids = appendUnique(nextIntent.preferred_genre_ids, [35, 10749, 16, 10751, 12]);
+      nextIntent.avoid_genre_ids = appendUnique(nextIntent.avoid_genre_ids, [27, 53]);
+      nextIntent.emotional_tolerance = {
+        ...nextIntent.emotional_tolerance,
+        level: "light",
+        low_stress: true,
+        avoid_depressing: true,
+      };
+      nextIntent.energy_level = "low";
+      break;
+    case "darker":
+      nextIntent.tone = appendUnique(nextIntent.tone, ["dark"]);
+      nextIntent.preferred_genre_ids = appendUnique(nextIntent.preferred_genre_ids, [53, 80, 9648]);
+      nextIntent.emotional_tolerance = {
+        ...nextIntent.emotional_tolerance,
+        level: "heavy",
+        low_stress: false,
+      };
+      nextIntent.energy_level = "medium";
+      break;
+    case "shorter":
+      nextIntent.runtime_commitment = {
+        ...nextIntent.runtime_commitment,
+        max_runtime_minutes: Math.min(Number(nextIntent.runtime_commitment?.max_runtime_minutes || 110) || 110, 110),
+        preference: "short",
+      };
+      nextIntent.hard_filters.max_runtime_minutes = nextIntent.runtime_commitment.max_runtime_minutes;
+      nextIntent.rubric_keys = appendUnique(nextIntent.rubric_keys, ["under_two_hours"]);
+      break;
+    case "funnier":
+      nextIntent.tone = appendUnique(nextIntent.tone, ["funny"]);
+      nextIntent.rubric_keys = appendUnique(nextIntent.rubric_keys, ["funny", "easy_watch"]);
+      nextIntent.preferred_genre_ids = appendUnique(nextIntent.preferred_genre_ids, [35, 10749, 16]);
+      nextIntent.avoid_genre_ids = appendUnique(nextIntent.avoid_genre_ids, [27]);
+      break;
+    case "less_intense":
+      nextIntent.rubric_keys = appendUnique(nextIntent.rubric_keys, ["easy_watch", "comfort_movie"]);
+      nextIntent.preferred_genre_ids = appendUnique(nextIntent.preferred_genre_ids, [35, 10749, 16, 10751, 12]);
+      nextIntent.avoid_genre_ids = appendUnique(nextIntent.avoid_genre_ids, [27, 53, 80, 10752]);
+      nextIntent.emotional_tolerance = {
+        ...nextIntent.emotional_tolerance,
+        level: "light",
+        low_stress: true,
+        avoid_depressing: true,
+      };
+      nextIntent.pacing_energy = {
+        ...nextIntent.pacing_energy,
+        not_exhausting: true,
+      };
+      break;
+    case "more_like_this":
+      nextIntent.soft_preferences = {
+        ...nextIntent.soft_preferences,
+        prefer_similarity: true,
+      };
+      break;
+    case "different_angle":
+      nextIntent.soft_preferences = {
+        ...nextIntent.soft_preferences,
+        prefer_lane_diversity: true,
+      };
+      break;
+    default:
+      break;
+  }
+
+  nextIntent.lane_key = `${intent.lane_key || "generic"}:refine:${refinement.id}`;
+  return nextIntent;
+};
+
 const hydrateResolvedIntent = async (preferences = {}, rawPreferences = {}) => {
+  const refinement = normalizePickRefinement(rawPreferences.refinement);
+
   if (isIntentSnapshotValid(rawPreferences.intent_snapshot)) {
     const snapshot = rawPreferences.intent_snapshot;
-    return snapshot.query_type ? snapshot : { ...snapshot, query_type: getIntentQueryType(snapshot) };
+    const hydratedSnapshot = snapshot.query_type ? snapshot : { ...snapshot, query_type: getIntentQueryType(snapshot) };
+    return applyRefinementToIntent(hydratedSnapshot, refinement);
   }
 
   const parsedIntent = parseReelbotIntent(preferences.prompt);
   const entityAnchor = await resolveEntityAnchor(preferences.prompt, parsedIntent);
+  const structuredQuery = parsedIntent.structured_query_hint || null;
   const hydratedIntent = entityAnchor ? { ...parsedIntent, entity_anchor: entityAnchor } : parsedIntent;
-  return { ...hydratedIntent, query_type: getIntentQueryType(hydratedIntent) };
+  const intentWithStructuredHint = structuredQuery ? { ...hydratedIntent, structured_query: structuredQuery } : hydratedIntent;
+  const finalIntent = { ...intentWithStructuredHint, query_type: getIntentQueryType(intentWithStructuredHint) };
+  return applyRefinementToIntent(finalIntent, refinement);
 };
 
 const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}) => {
@@ -875,6 +1032,26 @@ const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}) => {
   }
 
   if (!passesAudienceGuardrails(movie, intent)) {
+    return false;
+  }
+
+  const runtime = Number(movie.runtime || 0);
+  const hardFilters = intent.hard_filters || {};
+  const knownBadPatternResult = getKnownBadPatternAdjustments(movie, intent);
+
+  if (knownBadPatternResult.hardReject) {
+    return false;
+  }
+
+  if (hardFilters.max_runtime_minutes && runtime && runtime > hardFilters.max_runtime_minutes) {
+    return false;
+  }
+
+  if (hardFilters.min_runtime_minutes && runtime && runtime < hardFilters.min_runtime_minutes) {
+    return false;
+  }
+
+  if (Array.isArray(hardFilters.exclude_genre_ids) && matchesAnyGenre(movie.genre_ids || [], hardFilters.exclude_genre_ids)) {
     return false;
   }
 
@@ -1278,11 +1455,18 @@ const getIntentSpecificFitScore = (movie, intent = {}, promptBoosts = {}) => {
     if ((movie.vote_average || 0) >= 7.2) score += 6;
   }
 
+  if (intent.rubric_keys?.includes("funny") && matchesAnyGenre(genreIds, [35])) score += 20;
+  if (intent.rubric_keys?.includes("comfort_movie")) {
+    if (matchesAnyGenre(genreIds, [35, 16, 10749, 10751, 12])) score += 18;
+    if (matchesAnyGenre(genreIds, [27, 53, 80])) score -= 24;
+  }
+
   if (intent.tone?.includes("funny") && matchesAnyGenre(genreIds, [35])) score += 18;
   if (intent.tone?.includes("dark") && matchesAnyGenre(genreIds, [53, 80, 27])) score += 18;
   if (intent.tone?.includes("tense") && matchesAnyGenre(genreIds, [53, 9648, 28])) score += 18;
   if (intent.tone?.includes("visual") && matchesAnyGenre(genreIds, [878, 14, 12, 16, 36, 28])) score += 18;
   if (intent.tone?.includes("idea-driven") && matchesAnyGenre(genreIds, [878, 9648, 53])) score += 20;
+  if (intent.tone?.includes("comforting") && matchesAnyGenre(genreIds, [35, 16, 10749, 10751, 12])) score += 18;
 
   if (intent.emotional_weight === "light") {
     if (matchesAnyGenre(genreIds, [35, 12, 10749, 16, 10751])) score += 16;
@@ -1307,6 +1491,40 @@ const getIntentSpecificFitScore = (movie, intent = {}, promptBoosts = {}) => {
     if (runtime && runtime <= 125) score += 6;
   }
 
+  if (intent.attention_profile?.level === "background") {
+    if (matchesAnyGenre(genreIds, [35, 16, 10749, 10751, 12])) score += 18;
+    if (matchesAnyGenre(genreIds, [9648, 53, 80]) && !matchesAnyGenre(genreIds, [35])) score -= 18;
+  }
+
+  if (intent.attention_profile?.level === "easy") {
+    if (runtime && runtime <= 120) score += 10;
+    if (matchesAnyGenre(genreIds, [35, 16, 10749, 10751, 12])) score += 10;
+  }
+
+  if (intent.attention_profile?.level === "immersive") {
+    if (matchesAnyGenre(genreIds, [878, 14, 12, 18, 53])) score += 14;
+    if (runtime >= 115) score += 8;
+  }
+
+  if (intent.pacing_energy?.pacing === "slow_burn") {
+    if (matchesAnyGenre(genreIds, [18, 9648, 80])) score += 12;
+    if (matchesAnyGenre(genreIds, [35, 10751]) && !matchesAnyGenre(genreIds, [18, 9648])) score -= 10;
+  }
+
+  if (intent.pacing_energy?.pacing === "fast_moving") {
+    if (matchesAnyGenre(genreIds, [53, 28, 12])) score += 16;
+    if (runtime && runtime > 150) score -= 10;
+  }
+
+  if (intent.pacing_energy?.immediate_hook) {
+    if (matchesAnyGenre(genreIds, [53, 28, 12, 35])) score += 10;
+  }
+
+  if (intent.pacing_energy?.not_exhausting) {
+    if (matchesAnyGenre(genreIds, [27, 10752])) score -= 16;
+    if (matchesAnyGenre(genreIds, [35, 16, 10749, 10751, 12])) score += 10;
+  }
+
   score += getAudienceContextFitScore(movie, intent);
 
   if (intent.normalized_prompt?.includes("courtroom") || intent.normalized_prompt?.includes("legal") || intent.normalized_prompt?.includes("trial")) {
@@ -1329,8 +1547,36 @@ const getIntentSpecificFitScore = (movie, intent = {}, promptBoosts = {}) => {
     score -= 24;
   }
 
+  if (intent.runtime_commitment?.preference === "short" && runtime) {
+    if (runtime <= 95) score += 18;
+    if (runtime > 120) score -= 24;
+  }
+
+  if (intent.runtime_commitment?.preference === "manageable" && runtime) {
+    if (runtime <= 120) score += 14;
+    if (runtime > 140) score -= 14;
+  }
+
+  if (intent.runtime_commitment?.preference === "epic" && runtime) {
+    if (runtime >= 140) score += 16;
+    if (runtime && runtime < 110) score -= 10;
+  }
+
+  if (intent.refinement?.id === "more_like_this") {
+    if (intent.soft_preferences?.prefer_similarity) {
+      if (promptBoosts.titleSimilarMovieIds?.has(movie.id)) score += 20;
+      if (promptBoosts.constrainedAnchorMovieIds?.has(movie.id)) score += 14;
+    }
+  }
+
+  if (intent.refinement?.id === "different_angle") {
+    if (matchesAnyGenre(genreIds, intent.preferred_genre_ids || [])) score += 10;
+    if (promptBoosts.titleSimilarMovieIds?.has(movie.id)) score -= 6;
+  }
+
   score += titleMatches * 10;
   score += overviewMatches * 4;
+  score += getKnownBadPatternAdjustments(movie, intent).scoreAdjustment;
 
   return score;
 };
@@ -1354,6 +1600,8 @@ const resolvePickPreferences = (preferences = {}) => {
     company,
     genre,
     prompt,
+    request_mode: preferences.is_swap ? "swap" : "fresh",
+    behavioral_memory: normalizeBehavioralMemory(preferences.behavioral_memory),
   };
 };
 
@@ -1961,14 +2209,57 @@ const getBehaviorToneLanes = (movie = {}) =>
     .filter(([, genreIds]) => matchesAnyGenre(movie.genre_ids || [], genreIds))
     .map(([lane]) => lane);
 
+const getBehaviorPaceLanes = (movie = {}) => {
+  const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
+  const runtime = Number(movie.runtime || 0);
+
+  if (matchesAnyGenre(genreIds, [28, 12, 53])) {
+    return ["fast"];
+  }
+
+  if (matchesAnyGenre(genreIds, [18, 36, 99]) || runtime >= 135) {
+    return ["slow"];
+  }
+
+  if (matchesAnyGenre(genreIds, [35, 10749, 16, 10751])) {
+    return ["easy"];
+  }
+
+  return ["steady"];
+};
+
+const normalizeBehaviorUserProfile = (profile = {}) => ({
+  likedGenres: Array.isArray(profile.likedGenres) ? profile.likedGenres.map((value) => Number.parseInt(value, 10)).filter(Boolean).slice(0, 5) : [],
+  dislikedGenres: Array.isArray(profile.dislikedGenres) ? profile.dislikedGenres.map((value) => Number.parseInt(value, 10)).filter(Boolean).slice(0, 5) : [],
+  preferredTraits: {
+    pace: Array.isArray(profile.preferredTraits?.pace) ? profile.preferredTraits.pace.map((value) => String(value)).filter(Boolean).slice(0, 3) : [],
+    tone: Array.isArray(profile.preferredTraits?.tone) ? profile.preferredTraits.tone.map((value) => String(value)).filter(Boolean).slice(0, 4) : [],
+    runtime: Array.isArray(profile.preferredTraits?.runtime) ? profile.preferredTraits.runtime.map((value) => String(value)).filter(Boolean).slice(0, 2) : [],
+  },
+  avoidTraits: {
+    pace: Array.isArray(profile.avoidTraits?.pace) ? profile.avoidTraits.pace.map((value) => String(value)).filter(Boolean).slice(0, 3) : [],
+    tone: Array.isArray(profile.avoidTraits?.tone) ? profile.avoidTraits.tone.map((value) => String(value)).filter(Boolean).slice(0, 4) : [],
+    runtime: Array.isArray(profile.avoidTraits?.runtime) ? profile.avoidTraits.runtime.map((value) => String(value)).filter(Boolean).slice(0, 2) : [],
+  },
+  recentlyViewed: Array.isArray(profile.recentlyViewed)
+    ? profile.recentlyViewed.map((entry) => ({
+        id: Number.parseInt(entry?.id, 10) || null,
+        title: String(entry?.title || "").trim(),
+      })).filter((entry) => entry.id || entry.title).slice(0, 6)
+    : [],
+  hardAvoidMovieIds: normalizeBehavioralIdSet(profile.hardAvoidMovieIds),
+});
+
 const normalizeBehavioralMemory = (memory = {}) => ({
   preferredGenres: normalizeBehavioralMap(memory.preferredGenres, 12),
   avoidedGenres: normalizeBehavioralMap(memory.avoidedGenres, 12),
   tonePreferences: normalizeBehavioralMap(memory.tonePreferences, 8),
+  pacePreferences: normalizeBehavioralMap(memory.pacePreferences, 4),
   runtimePreference: normalizeBehavioralMap(memory.runtimePreference, 3),
   swapPatterns: {
     genres: normalizeBehavioralMap(memory.swapPatterns?.genres, 8),
     tones: normalizeBehavioralMap(memory.swapPatterns?.tones, 6),
+    pace: normalizeBehavioralMap(memory.swapPatterns?.pace, 3),
     runtime: normalizeBehavioralMap(memory.swapPatterns?.runtime, 3),
   },
   recentPatterns: {
@@ -1981,6 +2272,7 @@ const normalizeBehavioralMemory = (memory = {}) => ({
   seenMovieIds: normalizeBehavioralIdSet(memory.seenMovieIds),
   savedMovieIds: normalizeBehavioralIdSet(memory.savedMovieIds),
   recentMovieIds: normalizeBehavioralIdSet(memory.recentMovieIds),
+  userProfile: normalizeBehaviorUserProfile(memory.userProfile),
   updatedAt: typeof memory.updatedAt === "string" ? memory.updatedAt : "",
 });
 
@@ -1991,6 +2283,7 @@ const getBehavioralMemoryCacheKey = (memory = {}) => {
     Object.entries(normalizedMemory.preferredGenres).slice(0, 4).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
     Object.entries(normalizedMemory.avoidedGenres).slice(0, 4).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
     Object.entries(normalizedMemory.tonePreferences).slice(0, 3).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
+    Object.entries(normalizedMemory.pacePreferences).slice(0, 2).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
     Object.entries(normalizedMemory.runtimePreference).slice(0, 2).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
     `hidden:${normalizedMemory.hiddenMovieIds.size}`,
     `seen:${normalizedMemory.seenMovieIds.size}`,
@@ -2001,8 +2294,14 @@ const getBehavioralMemoryCacheKey = (memory = {}) => {
 const getBehavioralMemoryScore = (movie = {}, memory = {}) => {
   const normalizedMemory = normalizeBehavioralMemory(memory);
   const movieId = Number(movie?.id || 0);
+  const userProfile = normalizedMemory.userProfile;
+  const paceLanes = getBehaviorPaceLanes(movie);
+  const toneLanes = getBehaviorToneLanes(movie);
+  const runtimeBucket = getBehaviorRuntimeBucket(movie.runtime);
+  const swapCount = Number(normalizedMemory.interactionStats?.swaps || 0);
+  const explorationFactor = swapCount >= 3 ? 0.82 : 1;
 
-  if (normalizedMemory.hiddenMovieIds.has(movieId) || normalizedMemory.seenMovieIds.has(movieId)) {
+  if (normalizedMemory.hiddenMovieIds.has(movieId) || userProfile.hardAvoidMovieIds.has(movieId)) {
     return {
       score: -1000,
       reasons: ["hard_excluded"],
@@ -2011,8 +2310,6 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}) => {
 
   const reasons = [];
   let score = 0;
-  const runtimeBucket = getBehaviorRuntimeBucket(movie.runtime);
-  const toneLanes = getBehaviorToneLanes(movie);
 
   (movie.genre_ids || []).forEach((genreId) => {
     const preferredWeight = Number(normalizedMemory.preferredGenres[String(genreId)] || 0);
@@ -2020,12 +2317,12 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}) => {
     const swapWeight = Number(normalizedMemory.swapPatterns.genres[String(genreId)] || 0);
 
     if (preferredWeight) {
-      score += preferredWeight * 1.05;
+      score += preferredWeight * 1.12 * explorationFactor;
       reasons.push(`genre+${genreId}`);
     }
 
     if (avoidedWeight) {
-      score -= avoidedWeight * 1.1;
+      score -= avoidedWeight * 1.18 * explorationFactor;
       reasons.push(`genre-${genreId}`);
     }
 
@@ -2038,9 +2335,11 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}) => {
   toneLanes.forEach((lane) => {
     const toneWeight = Number(normalizedMemory.tonePreferences[lane] || 0);
     const swapWeight = Number(normalizedMemory.swapPatterns.tones[lane] || 0);
+    const explicitTonePreference = userProfile.preferredTraits.tone.includes(lane);
+    const explicitToneAvoid = userProfile.avoidTraits.tone.includes(lane);
 
     if (toneWeight) {
-      score += toneWeight * 1.25;
+      score += toneWeight * 1.25 * explorationFactor;
       reasons.push(`tone+${lane}`);
     }
 
@@ -2048,14 +2347,53 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}) => {
       score -= swapWeight * 0.8;
       reasons.push(`swap-tone-${lane}`);
     }
+
+    if (explicitTonePreference) {
+      score += 4.9;
+      reasons.push(`profile-tone+${lane}`);
+    }
+
+    if (explicitToneAvoid) {
+      score -= 6;
+      reasons.push(`profile-tone-${lane}`);
+    }
+  });
+
+  paceLanes.forEach((lane) => {
+    const paceWeight = Number(normalizedMemory.pacePreferences[lane] || 0);
+    const swapWeight = Number(normalizedMemory.swapPatterns.pace[lane] || 0);
+    const explicitPacePreference = userProfile.preferredTraits.pace.includes(lane);
+    const explicitPaceAvoid = userProfile.avoidTraits.pace.includes(lane);
+
+    if (paceWeight) {
+      score += paceWeight * 1.05 * explorationFactor;
+      reasons.push(`pace+${lane}`);
+    }
+
+    if (swapWeight) {
+      score -= swapWeight * 0.65;
+      reasons.push(`swap-pace-${lane}`);
+    }
+
+    if (explicitPacePreference) {
+      score += 3.9;
+      reasons.push(`profile-pace+${lane}`);
+    }
+
+    if (explicitPaceAvoid) {
+      score -= 5;
+      reasons.push(`profile-pace-${lane}`);
+    }
   });
 
   if (runtimeBucket) {
     const runtimeWeight = Number(normalizedMemory.runtimePreference[runtimeBucket] || 0);
     const runtimeSwapWeight = Number(normalizedMemory.swapPatterns.runtime[runtimeBucket] || 0);
+    const explicitRuntimePreference = userProfile.preferredTraits.runtime.includes(runtimeBucket);
+    const explicitRuntimeAvoid = userProfile.avoidTraits.runtime.includes(runtimeBucket);
 
     if (runtimeWeight) {
-      score += runtimeWeight * 0.85;
+      score += runtimeWeight * 0.85 * explorationFactor;
       reasons.push(`runtime+${runtimeBucket}`);
     }
 
@@ -2063,6 +2401,26 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}) => {
       score -= runtimeSwapWeight * 0.65;
       reasons.push(`swap-runtime-${runtimeBucket}`);
     }
+
+    if (explicitRuntimePreference) {
+      score += 3.1;
+      reasons.push(`profile-runtime+${runtimeBucket}`);
+    }
+
+    if (explicitRuntimeAvoid) {
+      score -= 4.1;
+      reasons.push(`profile-runtime-${runtimeBucket}`);
+    }
+  }
+
+  if (userProfile.likedGenres.some((genreId) => (movie.genre_ids || []).includes(genreId))) {
+    score += 5.4;
+    reasons.push("profile-liked-genre");
+  }
+
+  if (userProfile.dislikedGenres.some((genreId) => (movie.genre_ids || []).includes(genreId))) {
+    score -= 7.4;
+    reasons.push("profile-disliked-genre");
   }
 
   if (normalizedMemory.recentPatterns.genres.some((genreId) => (movie.genre_ids || []).includes(genreId))) {
@@ -2080,10 +2438,83 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}) => {
     reasons.push("recent-runtime");
   }
 
+  if (normalizedMemory.savedMovieIds.has(movieId)) {
+    score += 5.5;
+    reasons.push("saved-positive");
+  }
+
+  if (normalizedMemory.seenMovieIds.has(movieId)) {
+    score -= 12;
+    reasons.push("seen-deprioritized");
+  }
+
+  if (normalizedMemory.recentMovieIds.has(movieId) || userProfile.recentlyViewed.some((entry) => entry.id === movieId)) {
+    score -= 9;
+    reasons.push("recently-viewed");
+  }
+
   return {
     score: Math.max(-28, Math.min(28, Number(score.toFixed(2)))),
     reasons,
   };
+};
+
+const BEHAVIOR_TONE_REASON_LABELS = {
+  light: "lighter",
+  heavy: "heavier",
+  dark: "darker",
+  funny: "funnier",
+  emotional: "more emotional",
+  easy_watch: "easy-watch",
+  smart_twisty: "smart, twisty",
+};
+
+const BEHAVIOR_PACE_REASON_LABELS = {
+  fast: "faster-moving",
+  slow: "slower-burn",
+  easy: "easygoing",
+  steady: "steady",
+};
+
+const BEHAVIOR_RUNTIME_REASON_LABELS = {
+  short: "shorter",
+  medium: "manageable",
+  long: "longer sit-down",
+};
+
+const buildBehavioralPreferenceReason = (movie = {}, memory = {}) => {
+  const normalizedMemory = normalizeBehavioralMemory(memory);
+  const userProfile = normalizedMemory.userProfile;
+  const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
+  const toneLanes = getBehaviorToneLanes(movie);
+  const paceLanes = getBehaviorPaceLanes(movie);
+  const runtimeBucket = getBehaviorRuntimeBucket(movie.runtime);
+
+  const likedGenreId = userProfile.likedGenres.find((genreId) => genreIds.includes(genreId));
+  if (likedGenreId && TMDB_MOVIE_GENRE_LOOKUP[likedGenreId]) {
+    return `This stays close to the kinds of ${TMDB_MOVIE_GENRE_LOOKUP[likedGenreId].toLowerCase()} picks you've been saving.`;
+  }
+
+  const preferredTone = userProfile.preferredTraits.tone.find((lane) => toneLanes.includes(lane));
+  if (preferredTone) {
+    return `It leans toward the ${BEHAVIOR_TONE_REASON_LABELS[preferredTone] || preferredTone} lane you've been responding to best.`;
+  }
+
+  const preferredPace = userProfile.preferredTraits.pace.find((lane) => paceLanes.includes(lane));
+  if (preferredPace) {
+    return `It keeps the ${BEHAVIOR_PACE_REASON_LABELS[preferredPace] || preferredPace} feel you've been liking lately.`;
+  }
+
+  if (runtimeBucket && userProfile.preferredTraits.runtime.includes(runtimeBucket)) {
+    return `The ${BEHAVIOR_RUNTIME_REASON_LABELS[runtimeBucket] || runtimeBucket} runtime also tracks with the nights you've been choosing lately.`;
+  }
+
+  const recentGenreId = normalizedMemory.recentPatterns.genres.find((genreId) => genreIds.includes(Number(genreId)));
+  if (recentGenreId) {
+    return "It stays near the lane you've been circling lately without just repeating the same title.";
+  }
+
+  return "";
 };
 
 const scorePickCandidate = (
@@ -2910,17 +3341,17 @@ const resolveStructuredQueryCandidates = async (prompt = "") => {
 
   if (structuredQuery.type === "awards") {
     const movies = await resolveAwardsCandidates(structuredQuery);
-    return movies.length ? { structuredQuery, movies } : null;
+    return { structuredQuery, movies };
   }
 
   if (structuredQuery.type === "country") {
     const movies = await resolveCountryQueryCandidates(structuredQuery);
-    return movies.length ? { structuredQuery, movies } : null;
+    return { structuredQuery, movies };
   }
 
   if (structuredQuery.type === "genre_theme") {
     const movies = await resolveGenreThemeCandidates(structuredQuery);
-    return movies.length ? { structuredQuery, movies } : null;
+    return { structuredQuery, movies };
   }
 
   return null;
@@ -3010,6 +3441,7 @@ const BACKUP_ROLE_LABELS = {
   lighter_option: "Lighter option",
   darker_option: "Darker option",
   wildcard: "Wildcard",
+  stretch_option: "Stretch option",
   more_action_forward: "More action-forward",
   more_demanding: "More demanding",
   similar_tone: "Similar tone",
@@ -3029,20 +3461,48 @@ const isWeakAiCopy = (value = "") => {
 const getBackupRoleLabelFromKey = (roleKey = "similar_tone") => BACKUP_ROLE_LABELS[roleKey] || "Another angle";
 
 const buildPromptContextLine = (intent = {}, preferences = {}) => {
+  if (intent.refinement?.id === "lighter") {
+    return "Staying in the same lane, but easing the weight so the next option feels simpler to settle into.";
+  }
+
+  if (intent.refinement?.id === "darker") {
+    return "Keeping the same lane, but pushing it into a moodier and heavier direction.";
+  }
+
+  if (intent.refinement?.id === "shorter") {
+    return "Keeping the same lane, but tightening the commitment so this feels easier to fit into the night.";
+  }
+
+  if (intent.refinement?.id === "funnier") {
+    return "Keeping the core vibe, but looking for more lift and comic relief this time.";
+  }
+
+  if (intent.refinement?.id === "less_intense") {
+    return "Staying close to the original ask, but softening the pressure and intensity.";
+  }
+
+  if (intent.refinement?.id === "more_like_this") {
+    return "Staying right next to the last pick instead of restarting from a different idea.";
+  }
+
+  if (intent.refinement?.id === "different_angle") {
+    return "Keeping the lane intact, but taking a nearby angle instead of repeating the same answer.";
+  }
+
   if (intent.query_type === "COUNTRY" && intent.structured_query?.country?.display_name) {
-    return `These picks stay closely tied to ${intent.structured_query.country.display_name} in setting, perspective, or story details.`;
+    return `These picks stay genuinely tied to ${intent.structured_query.country.display_name} in setting, perspective, or story, rather than drifting into loose overlap.`;
   }
 
   if (intent.query_type === "AWARDS" && intent.structured_query?.year) {
-    return `These picks stay focused on the Oscars ${intent.structured_query.year}, then ReelBot starts with the strongest watch right now.`;
+    return `These picks stay focused on Oscars ${intent.structured_query.year} relevance first, then start with the strongest watch from that lane.`;
   }
 
   if (intent.query_type === "GENRE_THEME") {
-    return "These picks stay close to the kind of movie you asked for instead of drifting broader.";
+    return "These picks stay close to the specific lane you asked for instead of drifting broader.";
   }
 
   if (intent.entity_anchor?.kind === "actor" || intent.entity_anchor?.kind === "director") {
-    return `Staying close to ${intent.entity_anchor.name}, but aiming for the strongest watch decision.`;
+    return `Staying close to ${intent.entity_anchor.name}, but still choosing the strongest watch for this moment.`;
   }
 
   if (intent.entity_anchor?.kind === "franchise") {
@@ -3053,14 +3513,38 @@ const buildPromptContextLine = (intent = {}, preferences = {}) => {
     return `Keeping close to ${(intent.entity_anchor?.name || intent.anchors?.title)} without just repeating it.`;
   }
 
+  if (intent.guardrails?.child_family_safe) {
+    return "This stays in a gentler lane so it is easier to throw on without worrying about anything distressing or intense.";
+  }
+
+  if (intent.attention_profile?.level === "background") {
+    return "This stays easy to live with in the room, so it does not ask for full locked-in attention.";
+  }
+
+  if (intent.attention_profile?.level === "immersive") {
+    return "This leans toward a fuller sit-down watch instead of something disposable.";
+  }
+
   if (preferences.prompt) {
-    return `${truncateText(preferences.prompt.trim(), 72)} — read with tone, audience, and overall fit in mind.`;
+    return `${truncateText(preferences.prompt.trim(), 72)} — read for the moment behind the ask, not just the surface keywords.`;
   }
 
   return "A sharper first pass from the current candidate pool.";
 };
 
-const buildFallbackPickSummaryLine = (movie) => {
+const buildFallbackPickSummaryLine = (movie, intent = {}) => {
+  if (intent.guardrails?.child_family_safe) {
+    return `${movie.title} feels safer, gentler, and easier to put on in this context than a pick that would add stress or intensity.`;
+  }
+
+  if (intent.query_type === "COUNTRY" && intent.structured_query?.country?.display_name) {
+    return `${movie.title} stays genuinely connected to ${intent.structured_query.country.display_name} instead of only matching the prompt loosely.`;
+  }
+
+  if (intent.query_type === "AWARDS" && intent.structured_query?.year) {
+    return `${movie.title} stays inside the Oscars ${intent.structured_query.year} lane while still feeling like a real watch choice, not just a nominee list entry.`;
+  }
+
   if ((movie.structured_match_reasons || []).length) {
     return `${movie.title} rose to the top because it stays close to what you asked for instead of just feeling vaguely similar.`;
   }
@@ -3078,11 +3562,25 @@ const buildFallbackPickSummaryLine = (movie) => {
   return `${movie.title} feels specific enough to choose on purpose instead of defaulting to something broader.`;
 };
 
-const buildFallbackWhyThisWorks = (movie, preferences) => {
+const buildFallbackWhyThisWorks = (movie, preferences, intent = {}, behavioralMemory = {}) => {
+  const personalizationLine = buildBehavioralPreferenceReason(movie, behavioralMemory);
   const bullets = [
-    ...(Array.isArray(movie.structured_match_reasons) ? movie.structured_match_reasons.slice(0, 1) : []),
     buildPickReason(movie, preferences),
   ];
+
+  if (personalizationLine) {
+    bullets.unshift(personalizationLine);
+  }
+
+  if (intent.guardrails?.child_family_safe) {
+    bullets.unshift("It stays in a gentler, lower-stress lane, which matters more here than edge or intensity.");
+  } else if (intent.attention_profile?.level === "background") {
+    bullets.unshift("It is easier to settle into without needing full locked-in attention.");
+  } else if (intent.attention_profile?.level === "immersive") {
+    bullets.unshift("It feels more like a real sit-down watch than background filler.");
+  } else if (Array.isArray(movie.structured_match_reasons) && movie.structured_match_reasons.length) {
+    bullets.unshift(movie.structured_match_reasons[0]);
+  }
 
   if ((movie.runtime || 0) > 0) {
     bullets.push(movie.runtime <= 115 ? "Lean runtime keeps the commitment manageable." : movie.runtime >= 140 ? "Longer runtime suggests a fuller sit-down watch rather than background viewing." : "Runtime lands in a comfortable middle." );
@@ -3095,12 +3593,14 @@ const buildFallbackWhyThisWorks = (movie, preferences) => {
   return bullets.map((item) => normalizeAiCopy(item)).filter(Boolean).slice(0, 2);
 };
 
-const buildFallbackBackupReason = (movie, roleKey, preferences) => {
+const buildFallbackBackupReason = (movie, roleKey, preferences, intent = {}) => {
   const reason = buildPickReason(movie, preferences);
 
   switch (roleKey) {
     case "safer_option":
       return `Broader and easier to say yes to, while staying close to the same vibe. ${reason}`;
+    case "stretch_option":
+      return `Still tracks the same intent, but pushes slightly outside the safest version of it. ${reason}`;
     case "lighter_option":
       return `Keeps more air in the experience if you want less weight. ${reason}`;
     case "darker_option":
@@ -3116,20 +3616,23 @@ const buildFallbackBackupReason = (movie, roleKey, preferences) => {
   }
 };
 
-const buildFallbackPickPresentation = (preferences, intent, primaryMovie, backups = [], rankedBackups = []) => {
+const buildFallbackPickPresentation = (preferences, intent, primaryMovie, backups = [], rankedBackups = [], behavioralMemory = {}) => {
   const backupEntries = backups.map((movie, index) => {
-    const roleKey = rankedBackups[index]?.role_key || (index === 0 ? "safer_option" : index === 1 ? "lighter_option" : index === 2 ? "darker_option" : "wildcard");
+    const roleKey = rankedBackups[index]?.role_key
+      || (preferences.request_mode === "swap"
+        ? (index === 0 ? "safer_option" : index === 1 ? "stretch_option" : index === 2 ? "wildcard" : "similar_tone")
+        : (index === 0 ? "safer_option" : index === 1 ? "lighter_option" : index === 2 ? "darker_option" : "wildcard"));
     return {
       id: movie.id,
       role_label: getBackupRoleLabelFromKey(roleKey),
-      reason: buildFallbackBackupReason(movie, roleKey, preferences),
+      reason: buildFallbackBackupReason(movie, roleKey, preferences, intent),
     };
   });
 
   return {
     context_line: buildPromptContextLine(intent, preferences),
-    summary_line: buildFallbackPickSummaryLine(primaryMovie),
-    why_this_works: buildFallbackWhyThisWorks(primaryMovie, preferences),
+    summary_line: buildFallbackPickSummaryLine(primaryMovie, intent),
+    why_this_works: buildFallbackWhyThisWorks(primaryMovie, preferences, intent, behavioralMemory),
     assistant_note: "ReelBot kept the same intent lane, then widened the surrounding options on purpose.",
     primary_reason: buildPickReason(primaryMovie, preferences),
     backups: backupEntries,
@@ -3157,7 +3660,7 @@ const rankCandidatesWithOpenAI = async (preferences, intent, candidates) => {
   });
 };
 
-const writePickPresentationWithOpenAI = async (preferences, intent, primaryMovie, backups = [], rankedBackups = []) => {
+const writePickPresentationWithOpenAI = async (preferences, intent, primaryMovie, backups = [], rankedBackups = [], behavioralMemory = {}) => {
   if (!OPENAI_API_KEY || !primaryMovie || backups.length < 4) {
     return null;
   }
@@ -3186,21 +3689,29 @@ const writePickPresentationWithOpenAI = async (preferences, intent, primaryMovie
   }
 
   payload.context_line = isWeakAiCopy(payload.context_line) ? buildPromptContextLine(intent, preferences) : payload.context_line;
-  payload.summary_line = isWeakAiCopy(payload.summary_line) ? buildFallbackPickSummaryLine(primaryMovie) : payload.summary_line;
+  payload.summary_line = isWeakAiCopy(payload.summary_line) ? buildFallbackPickSummaryLine(primaryMovie, intent) : payload.summary_line;
   payload.primary_reason = isWeakAiCopy(payload.primary_reason) ? buildPickReason(primaryMovie, preferences) : payload.primary_reason;
   payload.why_this_works = Array.isArray(payload.why_this_works)
     ? payload.why_this_works.map((item) => normalizeAiCopy(item)).filter((item) => item && !isWeakAiCopy(item)).slice(0, 2)
     : [];
 
   if (payload.why_this_works.length < 2) {
-    payload.why_this_works = buildFallbackWhyThisWorks(primaryMovie, preferences);
+    payload.why_this_works = buildFallbackWhyThisWorks(primaryMovie, preferences, intent, behavioralMemory);
+  }
+
+  const personalizationLine = buildBehavioralPreferenceReason(primaryMovie, behavioralMemory);
+  if (personalizationLine) {
+    payload.why_this_works = [personalizationLine, ...payload.why_this_works]
+      .map((item) => normalizeAiCopy(item))
+      .filter((item, index, items) => item && items.indexOf(item) === index)
+      .slice(0, 2);
   }
 
   payload.backups = Array.isArray(payload.backups)
     ? payload.backups.map((entry, index) => ({
         id: entry.id,
         role_label: normalizeAiCopy(entry.role_label) || getBackupRoleLabelFromKey(rankedBackups[index]?.role_key),
-        reason: isWeakAiCopy(entry.reason) ? buildFallbackBackupReason(backups[index], rankedBackups[index]?.role_key, preferences) : normalizeAiCopy(entry.reason),
+        reason: isWeakAiCopy(entry.reason) ? buildFallbackBackupReason(backups[index], rankedBackups[index]?.role_key, preferences, intent) : normalizeAiCopy(entry.reason),
       }))
     : [];
 
@@ -3219,18 +3730,20 @@ const buildMatchScore = (score, topScore) => {
 const generatePickPayload = async (rawPreferences = {}) => {
   const preferences = resolvePickPreferences(rawPreferences);
   const behavioralMemory = normalizeBehavioralMemory(rawPreferences.behavioral_memory);
+  const refinement = normalizePickRefinement(rawPreferences.refinement);
   let resolvedIntent = await hydrateResolvedIntent(preferences, rawPreferences);
   const structuredResolution = preferences.prompt ? await resolveStructuredQueryCandidates(preferences.prompt) : null;
 
   if (structuredResolution?.structuredQuery) {
+    const baseLaneKey =
+      structuredResolution.structuredQuery.type === "country"
+        ? `country:${structuredResolution.structuredQuery.country.canonical}`
+        : structuredResolution.structuredQuery.type === "awards"
+          ? `awards:oscars:${structuredResolution.structuredQuery.year}`
+          : `genre_theme:${normalizeSearchText(preferences.prompt)}`;
     resolvedIntent = {
       ...resolvedIntent,
-      lane_key:
-        structuredResolution.structuredQuery.type === "country"
-          ? `country:${structuredResolution.structuredQuery.country.canonical}`
-          : structuredResolution.structuredQuery.type === "awards"
-            ? `awards:oscars:${structuredResolution.structuredQuery.year}`
-            : `genre_theme:${normalizeSearchText(preferences.prompt)}`,
+      lane_key: refinement?.id ? `${baseLaneKey}:refine:${refinement.id}` : baseLaneKey,
       structured_query: {
         ...structuredResolution.structuredQuery,
         movie_ids: structuredResolution.movies.map((movie) => movie.id),
@@ -3247,9 +3760,12 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const queryType = resolvedIntent.query_type || getIntentQueryType(resolvedIntent);
   const excludedIds = normalizeExcludedIds(rawPreferences.excluded_ids);
   behavioralMemory.hiddenMovieIds.forEach((movieId) => excludedIds.add(movieId));
-  behavioralMemory.seenMovieIds.forEach((movieId) => excludedIds.add(movieId));
+  if (preferences.request_mode !== "swap") {
+    behavioralMemory.seenMovieIds.forEach((movieId) => excludedIds.add(movieId));
+  }
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
-  const cacheKey = `pick:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
+  const cacheKey = `pick:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);
@@ -3270,9 +3786,9 @@ const generatePickPayload = async (rawPreferences = {}) => {
 
   const candidatePool = hasProvidedCandidatePool
     ? await fetchMoviesByIds(providedCandidatePoolIds)
-    : structuredResolution?.movies?.length
+    : structuredResolution
       ? structuredResolution.movies
-    : await getPickCandidatePool(preferences, resolvedIntent, promptBoosts);
+      : await getPickCandidatePool(preferences, resolvedIntent, promptBoosts);
   const fallbackPool = !candidatePool.length && !usesHardEntityPool && (preferences.mood !== "all" || preferences.runtime !== "any")
     ? await getPickCandidatePool({ ...preferences, mood: "all", runtime: "any" }, resolvedIntent, promptBoosts)
     : candidatePool;
@@ -3362,6 +3878,18 @@ const generatePickPayload = async (rawPreferences = {}) => {
       candidate_pool_ids: rankingPool.map((movie) => movie.id),
       primary: null,
       alternates: [],
+      resolved_refinement: refinement,
+      debug_trace: {
+        prompt: preferences.prompt,
+        refinement,
+        parsed_intent: resolvedIntent,
+        applied_constraints: summarizeAppliedConstraints(resolvedIntent, refinement),
+        ranked_candidates: rankingSourceEntries.slice(0, 8).map((entry) => ({
+          id: entry.movie.id,
+          title: entry.movie.title,
+          score: Number(entry.score.toFixed(2)),
+        })),
+      },
       cached: false,
     };
   }
@@ -3374,15 +3902,31 @@ const generatePickPayload = async (rawPreferences = {}) => {
     : alternatePicks.map((movie, index) => ({
         id: movie.id,
         fit_score: buildMatchScore(rankingSourceEntries.find((entry) => entry.movie.id === movie.id)?.score || topScore, topScore),
-        role_key: index === 0 ? "safer_option" : index === 1 ? "lighter_option" : index === 2 ? "darker_option" : "wildcard",
+        role_key: preferences.request_mode === "swap"
+          ? (index === 0 ? "safer_option" : index === 1 ? "stretch_option" : index === 2 ? "wildcard" : "similar_tone")
+          : (index === 0 ? "safer_option" : index === 1 ? "lighter_option" : index === 2 ? "darker_option" : "wildcard"),
       }));
 
-  const presentation = await writePickPresentationWithOpenAI(preferences, resolvedIntent, primaryPick, alternatePicks, rankedBackups).catch((error) => {
+  const presentation = await writePickPresentationWithOpenAI(preferences, resolvedIntent, primaryPick, alternatePicks, rankedBackups, behavioralMemory).catch((error) => {
     console.error("OpenAI pick writer failed:", error.response?.data || error.message);
     return null;
-  }) || buildFallbackPickPresentation(preferences, resolvedIntent, primaryPick, alternatePicks, rankedBackups);
+  }) || buildFallbackPickPresentation(preferences, resolvedIntent, primaryPick, alternatePicks, rankedBackups, behavioralMemory);
 
   const backupPresentationLookup = new Map((presentation.backups || []).map((entry) => [entry.id, entry]));
+  const primaryRankingEntry = rankingSourceEntries.find((entry) => entry.movie.id === primaryPick.id) || null;
+  const debugTrace = {
+    prompt: preferences.prompt,
+    refinement,
+    parsed_intent: resolvedIntent,
+    applied_constraints: summarizeAppliedConstraints(resolvedIntent, refinement),
+    ranked_candidates: rankingSourceEntries.slice(0, 8).map((entry) => ({
+      id: entry.movie.id,
+      title: entry.movie.title,
+      score: Number(entry.score.toFixed(2)),
+      behavioral_adjustment: entry.behavioral_adjustment,
+      known_bad_pattern_adjustments: getKnownBadPatternAdjustments(entry.movie, resolvedIntent),
+    })),
+  };
   const payload = {
     label: "Pick for Me",
     summary: presentation.summary_line || buildPickSuccessSummary(primaryPick),
@@ -3390,6 +3934,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
     match_score: aiRanking?.primary?.fit_score || buildMatchScore(rankingSourceEntries.find((entry) => entry.movie.id === primaryPick.id)?.score || topScore, topScore),
     resolved_preferences: preferences,
     resolved_intent: resolvedIntent,
+    resolved_refinement: refinement,
     validation: {
       query_type: queryType,
       hard_lock_applied: usesHardEntityPool,
@@ -3409,18 +3954,30 @@ const generatePickPayload = async (rawPreferences = {}) => {
       whyTitle: "Why ReelBot picked this",
       whyRecommended: presentation.why_this_works || [],
       summaryLine: presentation.summary_line,
+      primary_reason: presentation.primary_reason,
+      personalization_hint: buildBehavioralPreferenceReason(primaryPick, behavioralMemory) || null,
     },
     primary: normalizePickMovie(primaryPick, preferences, {
       reason: presentation.primary_reason,
       match_score: aiRanking?.primary?.fit_score || buildMatchScore(rankingSourceEntries.find((entry) => entry.movie.id === primaryPick.id)?.score || topScore, topScore),
     }),
     alternates: alternatePicks.map((movie, index) => normalizePickMovie(movie, preferences, {
-      reason: backupPresentationLookup.get(movie.id)?.reason || buildFallbackBackupReason(movie, rankedBackups[index]?.role_key, preferences),
+      reason: backupPresentationLookup.get(movie.id)?.reason || buildFallbackBackupReason(movie, rankedBackups[index]?.role_key, preferences, resolvedIntent),
       backupRole: backupPresentationLookup.get(movie.id)?.role_label || getBackupRoleLabelFromKey(rankedBackups[index]?.role_key),
       match_score: buildMatchScore(rankingSourceEntries.find((entry) => entry.movie.id === movie.id)?.score || topScore, topScore),
     })),
     candidate_count: candidatePool.length,
     curated_candidate_count: rankingPool.length,
+    debug_trace: {
+      ...debugTrace,
+      final_pick: {
+        id: primaryPick.id,
+        title: primaryPick.title,
+        reason: presentation.primary_reason,
+        behavioral_adjustment: primaryRankingEntry?.behavioral_adjustment || 0,
+        behavioral_reasons: primaryRankingEntry?.behavioral_reasons || [],
+      },
+    },
   };
 
   [primaryPick, ...alternatePicks].filter(Boolean).forEach((movie) => {
@@ -3581,6 +4138,7 @@ const normalizeReelbotRequestMeta = (requestedAction, requestBody = {}) => {
     prompt_template: promptTemplate,
     user_prompt: typeof requestBody?.user_prompt === "string" ? requestBody.user_prompt.trim() : "",
     intent_snapshot: isIntentSnapshotValid(requestBody?.intent_snapshot) ? requestBody.intent_snapshot : null,
+    behavioral_memory: normalizeBehavioralMemory(requestBody?.behavioral_memory),
   };
 };
 
@@ -4316,7 +4874,8 @@ const generateReelbotPayload = async (movieId, requestedAction = "quick_take", r
     use_case: requestMeta.use_case || action,
   };
   const intentCacheKey = normalizedRequestMeta.intent_snapshot?.lane_key || normalizedRequestMeta.user_prompt?.toLowerCase() || "generic";
-  const cacheKey = `${movieId}:${action}:${normalizedRequestMeta.prompt_template}:${normalizedRequestMeta.use_case}:${normalizedRequestMeta.spoiler_mode ? "spoilers-on" : "spoilers-off"}:${intentCacheKey}`;
+  const behaviorCacheKey = normalizedRequestMeta.behavioral_memory?.updatedAt || "no-memory";
+  const cacheKey = `${movieId}:${action}:${normalizedRequestMeta.prompt_template}:${normalizedRequestMeta.use_case}:${normalizedRequestMeta.spoiler_mode ? "spoilers-on" : "spoilers-off"}:${intentCacheKey}:${behaviorCacheKey}`;
 
   if (reelbotCache.has(cacheKey)) {
     return { ...reelbotCache.get(cacheKey), cached: true };
@@ -4739,6 +5298,32 @@ app.get("/genres", async (req, res) => {
   } catch (error) {
     console.error("❌ Error fetching genres:", error.response?.data || error.message);
     res.status(500).json({ error: "Failed to fetch genres" });
+  }
+});
+
+app.post("/auth/delete-account", async (req, res) => {
+  try {
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      return res.status(503).json({ error: "Account deletion is not configured yet." });
+    }
+
+    const authorizationHeader = String(req.headers.authorization || "");
+    const accessToken = authorizationHeader.startsWith("Bearer ") ? authorizationHeader.slice(7).trim() : "";
+
+    if (!accessToken) {
+      return res.status(401).json({ error: "Missing account session." });
+    }
+
+    const user = await fetchSupabaseUser(accessToken);
+    if (!user?.id) {
+      return res.status(401).json({ error: "Could not verify this account session." });
+    }
+
+    await deleteSupabaseUser(user.id);
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Error deleting ReelBot account:", error?.response?.data || error.message || error);
+    return res.status(500).json({ error: "We couldn't delete this account right now." });
   }
 });
 

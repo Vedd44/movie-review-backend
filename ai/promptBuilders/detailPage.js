@@ -31,14 +31,34 @@ const compactIntent = (intent = null) => {
     raw_prompt: intent.raw_prompt,
     tone: intent.tone,
     emotional_weight: intent.emotional_weight,
+    emotional_tolerance: intent.emotional_tolerance,
     pacing: intent.pacing,
+    pacing_energy: intent.pacing_energy,
     accessibility: intent.accessibility,
     energy_level: intent.energy_level,
     audience: intent.audience,
+    audience_context: intent.audience_context,
     watch_context: intent.watch_context,
+    attention_profile: intent.attention_profile,
     avoidance_signals: intent.avoidance_signals,
     guardrails: intent.guardrails,
     rubric_keys: intent.rubric_keys,
+  };
+};
+
+const compactUserProfile = (behavioralMemory = {}) => {
+  const profile = behavioralMemory?.userProfile;
+  if (!profile) {
+    return null;
+  }
+
+  return {
+    liked_genres: profile.likedGenres,
+    disliked_genres: profile.dislikedGenres,
+    preferred_traits: profile.preferredTraits,
+    avoid_traits: profile.avoidTraits,
+    recently_viewed: profile.recentlyViewed,
+    hard_avoid_movie_ids: profile.hardAvoidMovieIds instanceof Set ? Array.from(profile.hardAvoidMovieIds) : profile.hardAvoidMovieIds,
   };
 };
 
@@ -78,6 +98,7 @@ const buildDetailPrompts = ({ action, context, previewMode = false, requestMeta 
       "- Stay grounded in the specific movie provided.",
       "- Be spoiler-light unless the action explicitly asks for spoilers.",
       "- If a user vibe or intent is provided, judge the movie against that vibe instead of giving a generic answer.",
+      "- If a user context is provided, answer the real decision underneath it: mood, audience, attention level, and emotional tolerance.",
       previewMode
         ? "- If the movie is unreleased, treat this as an informed preview rather than a finished-view verdict."
         : "- Use the available movie context to help the viewer decide whether and how to watch.",
@@ -91,6 +112,7 @@ const buildDetailPrompts = ({ action, context, previewMode = false, requestMeta 
       `Requested use case: ${useCase}`,
       `User prompt: ${requestMeta.user_prompt || "none"}`,
       `User intent: ${JSON.stringify(compactIntent(requestMeta.intent_snapshot))}`,
+      `User preference signals: ${JSON.stringify(compactUserProfile(requestMeta.behavioral_memory))}`,
       `Movie context: ${JSON.stringify(compactContext(context))}`,
       "Write only the structured fields required by the schema.",
     ].join("\n\n"),

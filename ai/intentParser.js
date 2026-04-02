@@ -1,14 +1,20 @@
 const { getMatchedRubricKeys } = require("./recommendationRubrics");
 const { getAudienceIntentSignals } = require("./audienceSignals");
+const { detectStructuredQuery } = require("./queryInterpreter");
 
 const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim();
 const lower = (value = "") => compact(value).toLowerCase();
+const sanitizeAnchorText = (value = "") =>
+  compact(
+    String(value || "")
+      .replace(/\b(?:under|over|but|that are|that's|that is|for|from)\b.*$/i, " ")
+  );
 
 const extractWithPatterns = (prompt, patterns = []) => {
   for (const pattern of patterns) {
     const match = prompt.match(pattern);
     if (match?.[1]) {
-      return compact(match[1]);
+      return sanitizeAnchorText(match[1]);
     }
   }
   return "";
@@ -22,6 +28,21 @@ const addUnique = (list = [], values = []) => {
   });
   return list;
 };
+
+const hasMatch = (prompt = "", pattern) => pattern.test(prompt);
+
+const PERSON_ANCHOR_PATTERNS = [
+  /(?:movies|films)\s+(?:with|starring|featuring)\s+(.+)/i,
+  /^(.+?)\s+(?:movies|films)$/i,
+  /directed by\s+(.+)/i,
+];
+
+const TITLE_ANCHOR_PATTERNS = [
+  /movies? like\s+(.+)/i,
+  /something like\s+(.+)/i,
+  /similar to\s+(.+)/i,
+  /more movies? like\s+(.+)/i,
+];
 
 const inferPreferredGenreIds = (prompt = "") => {
   const normalizedPrompt = lower(prompt);
@@ -37,9 +58,13 @@ const inferPreferredGenreIds = (prompt = "") => {
   if (/fantasy/i.test(normalizedPrompt)) addUnique(genreIds, [14]);
   if (/animation|animated/i.test(normalizedPrompt)) addUnique(genreIds, [16]);
   if (/family|kids/i.test(normalizedPrompt)) addUnique(genreIds, [10751]);
-  if (/toddler|child|children|kid|kids|young child|young kid|family movie|family-friendly|family friendly/i.test(normalizedPrompt)) addUnique(genreIds, [16, 10751, 35]);
+  if (/toddler|child|children|kid|kids|young child|young kid|family movie|family-friendly|family friendly/i.test(normalizedPrompt)) {
+    addUnique(genreIds, [16, 10751, 35, 12]);
+  }
   if (/crime|heist|gangster/i.test(normalizedPrompt)) addUnique(genreIds, [80]);
   if (/courtroom|legal|trial|lawyer/i.test(normalizedPrompt)) addUnique(genreIds, [18, 80, 9648]);
+  if (/slow burn/i.test(normalizedPrompt)) addUnique(genreIds, [18, 9648, 80]);
+  if (/fast-moving|fast moving|gripping/i.test(normalizedPrompt)) addUnique(genreIds, [53, 28, 12]);
 
   return genreIds;
 };
@@ -48,10 +73,15 @@ const inferAvoidGenreIds = (prompt = "") => {
   const normalizedPrompt = lower(prompt);
   const genreIds = [];
 
-  if (/not miserable|not bleak|not depressing|easy watch|comfort|date night/i.test(normalizedPrompt)) addUnique(genreIds, [27, 10752]);
+  if (/not miserable|not bleak|not depressing|easy watch|comfort|date night|low stress|less intense|not exhausting/i.test(normalizedPrompt)) {
+    addUnique(genreIds, [27, 10752]);
+  }
   if (/smart sci-?fi/i.test(normalizedPrompt)) addUnique(genreIds, [10751]);
   if (/emotionally heavy drama/i.test(normalizedPrompt)) addUnique(genreIds, [10751, 35]);
   if (/less accessible|rewarding/i.test(normalizedPrompt)) addUnique(genreIds, [10751]);
+  if (/background watch|don't want to think too hard|dont want to think too hard/i.test(normalizedPrompt)) {
+    addUnique(genreIds, [9648, 53]);
+  }
   if (/toddler|child|children|kid|kids|young child|young kid|family movie|family-friendly|family friendly|home sick|sick kid|sick child/i.test(normalizedPrompt)) {
     addUnique(genreIds, [27, 53, 80, 10752]);
   }
@@ -76,23 +106,18 @@ const inferThematicTerms = (prompt = "") => {
 const classifyPromptType = (prompt = "") => {
   const rawPrompt = compact(prompt);
   const normalizedPrompt = rawPrompt.toLowerCase();
+  const structuredQuery = detectStructuredQuery(rawPrompt);
 
   if (!normalizedPrompt) {
     return "empty";
   }
 
-  const titleAnchor = extractWithPatterns(rawPrompt, [
-    /movies? like\s+(.+)/i,
-    /something like\s+(.+)/i,
-    /similar to\s+(.+)/i,
-    /more movies? like\s+(.+)/i,
-  ]);
-  const explicitPersonAnchor = extractWithPatterns(rawPrompt, [
-    /(?:movies|films)\s+(?:with|starring|featuring)\s+(.+)/i,
-    /^(.+?)\s+(?:movies|films)$/i,
-    /directed by\s+(.+)/i,
-  ]);
+  if (structuredQuery?.type === "awards" || structuredQuery?.type === "country") {
+    return "vibe";
+  }
 
+  const titleAnchor = extractWithPatterns(rawPrompt, TITLE_ANCHOR_PATTERNS);
+  const explicitPersonAnchor = extractWithPatterns(rawPrompt, PERSON_ANCHOR_PATTERNS);
   const hasModifier = /\bbut\b|\bwith\b|\bunder\b|\bless\b|\bmore\b|\bnot\b|\bdarker\b|\blighter\b/i.test(rawPrompt);
   const looksLikePersonName = /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}$/.test(rawPrompt) || /^[a-z]+\s+[a-z]+$/.test(normalizedPrompt);
 
@@ -108,11 +133,154 @@ const classifyPromptType = (prompt = "") => {
     return hasModifier ? "mixed_anchor_modifiers" : "person_anchor";
   }
 
-  if (/under\s*2\s*hours|under\s*two\s*hours|less accessible|accessible|courtroom|legal|trial|lawyer|acting showcase|strong acting|under 120/i.test(normalizedPrompt)) {
+  if (/under\s*2\s*hours|under\s*two\s*hours|under 90|short|manageable runtime|less accessible|accessible|courtroom|legal|trial|lawyer|acting showcase|strong acting|under 120/i.test(normalizedPrompt)) {
     return "explicit_constraints";
   }
 
+  if (structuredQuery?.type === "genre_theme") {
+    return "vibe";
+  }
+
   return "vibe";
+};
+
+const getAudienceContext = (prompt = "") => {
+  const normalizedPrompt = lower(prompt);
+  const watchCompany = [];
+
+  if (/solo|alone|by myself|myself/i.test(normalizedPrompt)) addUnique(watchCompany, ["solo"]);
+  if (/date night|date-night|with my partner|with my wife|with my husband|with my boyfriend|with my girlfriend/i.test(normalizedPrompt)) {
+    addUnique(watchCompany, ["date_night"]);
+  }
+  if (/group watch|with friends|friends over|for a group|crowd/i.test(normalizedPrompt)) addUnique(watchCompany, ["group_watch"]);
+  if (/with parents|my parents|watch with my dad|watch with my mom|watch with my mum/i.test(normalizedPrompt)) addUnique(watchCompany, ["with_parents"]);
+  if (/family/i.test(normalizedPrompt) && !watchCompany.includes("with_parents")) addUnique(watchCompany, ["family"]);
+
+  return {
+    watch_company: watchCompany,
+    primary:
+      watchCompany[0] ||
+      (normalizedPrompt.includes("family") ? "family" : null),
+  };
+};
+
+const getEmotionalTolerance = (prompt = "", audienceSignals = {}) => {
+  const normalizedPrompt = lower(prompt);
+  const darkButManageable = /dark but not depressing|dark without being depressing|dark but not bleak/i.test(normalizedPrompt);
+  const comforting = /comfort(?:ing)?|cozy|warm|soothing|feel good|feel-good/i.test(normalizedPrompt);
+  const lowStress = /low stress|easy watch|gentle|easy|not exhausting|less intense|emotionally safe/i.test(normalizedPrompt)
+    || audienceSignals.friction_level === "low";
+  const heavy = /heavy|dark|bleak|grim|emotionally heavy/i.test(normalizedPrompt);
+  const avoidsDepressing = /not depressing|not miserable|not bleak|without being miserable|without being bleak|not too heavy/i.test(normalizedPrompt);
+
+  return {
+    level: comforting || lowStress ? "light" : heavy ? "heavy" : darkButManageable ? "medium_dark" : "medium",
+    comforting,
+    low_stress: lowStress,
+    emotionally_safe: Boolean(audienceSignals.guardrails?.child_family_safe || comforting || lowStress),
+    avoid_depressing: avoidsDepressing,
+    dark_but_not_depressing: darkButManageable,
+  };
+};
+
+const getAttentionProfile = (prompt = "") => {
+  const normalizedPrompt = lower(prompt);
+
+  if (/background watch|in the background|background movie/i.test(normalizedPrompt)) {
+    return {
+      level: "background",
+      immersive: false,
+      easy_to_follow: true,
+      low_cognitive_load: true,
+    };
+  }
+
+  if (/don't want to think too hard|dont want to think too hard|easy watch|turn my brain off/i.test(normalizedPrompt)) {
+    return {
+      level: "easy",
+      immersive: false,
+      easy_to_follow: true,
+      low_cognitive_load: true,
+    };
+  }
+
+  if (/fully locked in|want something immersive|immersive|locked-in/i.test(normalizedPrompt)) {
+    return {
+      level: "immersive",
+      immersive: true,
+      easy_to_follow: false,
+      low_cognitive_load: false,
+    };
+  }
+
+  return {
+    level: "standard",
+    immersive: false,
+    easy_to_follow: false,
+    low_cognitive_load: false,
+  };
+};
+
+const getPacingEnergyProfile = (prompt = "", emotionalTolerance = {}) => {
+  const normalizedPrompt = lower(prompt);
+  const pacing =
+    /slow burn|slow-burn|patient|deliberate/i.test(normalizedPrompt)
+      ? "slow_burn"
+      : /fast-moving|fast moving|brisk|lively|gripping/i.test(normalizedPrompt)
+        ? "fast_moving"
+        : /not exhausting|easygoing|easy going/i.test(normalizedPrompt)
+          ? "gentle"
+          : "moderate";
+
+  const energy =
+    /background watch|comfort|cozy|gentle|relaxed|sick day|low stress|easy|not exhausting/i.test(normalizedPrompt)
+      ? "low"
+      : /action|intense|thriller|lively|fast|adrenaline|party/i.test(normalizedPrompt)
+        ? "high"
+        : "medium";
+
+  return {
+    pacing,
+    energy,
+    immediate_hook: /gripping from the first 10 minutes|grab me right away|hooks fast|immediately gripping/i.test(normalizedPrompt),
+    not_exhausting: emotionalTolerance.low_stress || /not exhausting|low stress|less intense/i.test(normalizedPrompt),
+  };
+};
+
+const getRuntimeCommitment = (prompt = "") => {
+  const normalizedPrompt = lower(prompt);
+
+  return {
+    max_runtime_minutes:
+      /under\s*90|under ninety|90 minutes or less/i.test(normalizedPrompt)
+        ? 90
+        : /under\s*2\s*hours|under\s*two\s*hours|under\s*120|manageable runtime/i.test(normalizedPrompt)
+          ? 120
+          : null,
+    min_runtime_minutes: /over\s*2\s*hours|over\s*two\s*hours|epic|long/i.test(normalizedPrompt) ? 121 : null,
+    preference:
+      /under\s*90|under ninety|short/i.test(normalizedPrompt)
+        ? "short"
+        : /manageable runtime/i.test(normalizedPrompt)
+          ? "manageable"
+          : /epic|long|over\s*2\s*hours|over\s*two\s*hours/i.test(normalizedPrompt)
+            ? "epic"
+            : "any",
+  };
+};
+
+const getSpecificity = (prompt = "", structuredQuery = null, titleAnchor = "", personAnchor = "") => {
+  const normalizedPrompt = lower(prompt);
+
+  return {
+    title_anchor: titleAnchor || null,
+    person_anchor: personAnchor || null,
+    country_hint: structuredQuery?.type === "country" ? structuredQuery.country?.canonical || null : null,
+    awards_hint: structuredQuery?.type === "awards" ? { award: structuredQuery.award, year: structuredQuery.year } : null,
+    place_theme: /movies?\s+about\s+|movies?\s+set\s+in\s+|stories?\s+about\s+/i.test(prompt),
+    actor_or_director_requested: /starring|with|featuring|directed by/i.test(normalizedPrompt),
+    title_similarity_requested: /movies? like|something like|similar to/i.test(normalizedPrompt),
+  };
 };
 
 const parseReelbotIntent = (prompt = "") => {
@@ -120,23 +288,22 @@ const parseReelbotIntent = (prompt = "") => {
   const normalizedPrompt = rawPrompt.toLowerCase();
   const promptType = classifyPromptType(rawPrompt);
   const audienceSignals = getAudienceIntentSignals(rawPrompt);
-  const titleAnchor = extractWithPatterns(rawPrompt, [
-    /movies? like\s+(.+)/i,
-    /something like\s+(.+)/i,
-    /similar to\s+(.+)/i,
-    /more movies? like\s+(.+)/i,
-  ]);
-  const explicitPersonAnchor = extractWithPatterns(rawPrompt, [
-    /(?:movies|films)\s+(?:with|starring|featuring)\s+(.+)/i,
-    /^(.+?)\s+(?:movies|films)$/i,
-    /directed by\s+(.+)/i,
-  ]);
+  const structuredQuery = detectStructuredQuery(rawPrompt);
+  const titleAnchor = extractWithPatterns(rawPrompt, TITLE_ANCHOR_PATTERNS);
+  const explicitPersonAnchor = extractWithPatterns(rawPrompt, PERSON_ANCHOR_PATTERNS);
   const personAnchor = promptType.includes("anchor") && !titleAnchor
     ? (explicitPersonAnchor || rawPrompt.split(/\bbut\b|\bwith\b|\bunder\b/i)[0].trim())
     : "";
 
+  const audienceContext = getAudienceContext(rawPrompt);
+  const emotionalTolerance = getEmotionalTolerance(rawPrompt, audienceSignals);
+  const attentionProfile = getAttentionProfile(rawPrompt);
+  const pacingEnergy = getPacingEnergyProfile(rawPrompt, emotionalTolerance);
+  const runtimeCommitment = getRuntimeCommitment(rawPrompt);
+  const specificity = getSpecificity(rawPrompt, structuredQuery, titleAnchor, personAnchor);
+
   const avoid = [];
-  if (/not miserable|not bleak|not depressing|without being miserable|without being bleak|not too heavy/i.test(rawPrompt)) {
+  if (emotionalTolerance.avoid_depressing) {
     avoid.push("oppressive hopelessness");
   }
   if (/not too scary|not terrifying/i.test(rawPrompt)) {
@@ -144,6 +311,9 @@ const parseReelbotIntent = (prompt = "") => {
   }
   if (audienceSignals.guardrails.child_family_safe) {
     avoid.push("horror", "violence", "adult themes", "distress");
+  }
+  if (attentionProfile.level === "background") {
+    avoid.push("plot-heavy confusion");
   }
 
   const tone = [];
@@ -153,40 +323,41 @@ const parseReelbotIntent = (prompt = "") => {
   if (/emotional|moving|heartfelt/i.test(rawPrompt)) tone.push("emotional");
   if (/visual|visually stunning|cinematic|gorgeous/i.test(rawPrompt)) tone.push("visual");
   if (/smart|twisty|mind-bending|clever|sci-fi|scifi/i.test(rawPrompt)) tone.push("idea-driven");
-
-  let emotionalWeight = "medium";
-  if (/light|easy|comfort|breezy|fun/i.test(rawPrompt)) emotionalWeight = "light";
-  if (/dark|heavy|bleak|grim/i.test(rawPrompt)) emotionalWeight = "heavy";
-  if (/tense.*not miserable|not too heavy|rewarding/i.test(rawPrompt)) emotionalWeight = "medium-dark";
-
-  let pacing = null;
-  if (/brisk|fast|action|lively/i.test(rawPrompt)) pacing = "brisk";
-  if (/patient|slow|deliberate|rewarding|less accessible/i.test(rawPrompt)) pacing = "deliberate";
-  if (!pacing && /tense|smart|mystery/i.test(rawPrompt)) pacing = "moderate_to_brisk";
-  if (audienceSignals.friction_level === "low" && !pacing) pacing = "easygoing";
+  if (emotionalTolerance.comforting) tone.push("comforting");
 
   let accessibility = "fairly_accessible";
   if (/less accessible|challenging|demanding|arthouse|rewarding/i.test(rawPrompt)) accessibility = "demanding";
-  if (/easy|comfort|breezy|date night|date-night|crowd-pleaser/i.test(rawPrompt)) accessibility = "accessible";
-
-  let energyLevel = "medium";
-  if (/easy watch|comfort|cozy|gentle|relaxed|sick day|low stress|easy/i.test(rawPrompt)) energyLevel = "low";
-  if (/action|intense|thriller|lively|fast|adrenaline|party/i.test(rawPrompt)) energyLevel = "high";
+  if (/easy|comfort|breezy|date night|date-night|crowd-pleaser|background/i.test(rawPrompt)) accessibility = "accessible";
 
   const constraints = {
-    max_runtime_minutes: /under\s*2\s*hours|under\s*two\s*hours|under\s*120/i.test(rawPrompt) ? 120 : null,
-    min_runtime_minutes: /over\s*2\s*hours|over\s*two\s*hours|epic/i.test(rawPrompt) ? 121 : null,
+    max_runtime_minutes: runtimeCommitment.max_runtime_minutes,
+    min_runtime_minutes: runtimeCommitment.min_runtime_minutes,
     strong_acting: /strong acting|great performances|acting showcase|performances/i.test(rawPrompt),
     comfort_movie: /comfort movie|comfort|rewatchable|warm/i.test(rawPrompt),
-    date_night: /date night|date-night|date/i.test(rawPrompt),
-    under_two_hours: /under\s*2\s*hours|under\s*two\s*hours|under\s*120/i.test(rawPrompt),
+    date_night: /date night|date-night|with my partner|with my wife|with my husband/i.test(rawPrompt),
+    under_two_hours: Boolean(runtimeCommitment.max_runtime_minutes && runtimeCommitment.max_runtime_minutes <= 120),
   };
 
   const rubricKeys = Array.from(new Set(getMatchedRubricKeys(rawPrompt)));
   if (constraints.under_two_hours && !rubricKeys.includes("under_two_hours")) rubricKeys.push("under_two_hours");
   if (constraints.strong_acting && !rubricKeys.includes("strong_acting")) rubricKeys.push("strong_acting");
   if (constraints.date_night && !rubricKeys.includes("date_night")) rubricKeys.push("date_night");
+  if (constraints.comfort_movie && !rubricKeys.includes("comfort_movie")) rubricKeys.push("comfort_movie");
   if (audienceSignals.guardrails.child_family_safe && !rubricKeys.includes("family_comfort")) rubricKeys.push("family_comfort");
+
+  const preferredGenreIds = inferPreferredGenreIds(rawPrompt);
+  const avoidGenreIds = inferAvoidGenreIds(rawPrompt);
+  const thematicTerms = inferThematicTerms(rawPrompt);
+  const laneKey =
+    structuredQuery?.type === "country"
+      ? `country:${structuredQuery.country.canonical}`
+      : structuredQuery?.type === "awards"
+        ? `awards:${structuredQuery.award}:${structuredQuery.year}`
+        : titleAnchor
+          ? `title:${lower(titleAnchor)}`
+          : personAnchor
+            ? `person:${lower(personAnchor)}`
+            : normalizedPrompt || "generic";
 
   return {
     raw_prompt: rawPrompt,
@@ -197,10 +368,20 @@ const parseReelbotIntent = (prompt = "") => {
       title: titleAnchor || null,
     },
     tone,
-    emotional_weight: emotionalWeight,
-    pacing,
+    emotional_weight:
+      emotionalTolerance.level === "medium_dark"
+        ? "medium-dark"
+        : emotionalTolerance.level,
+    pacing:
+      pacingEnergy.pacing === "fast_moving"
+        ? "brisk"
+        : pacingEnergy.pacing === "slow_burn"
+          ? "deliberate"
+          : pacingEnergy.pacing === "gentle"
+            ? "easygoing"
+            : null,
     accessibility,
-    energy_level: energyLevel,
+    energy_level: pacingEnergy.energy,
     audience: audienceSignals.audience,
     age_suitability: audienceSignals.age_suitability,
     watch_context: audienceSignals.watch_context,
@@ -208,21 +389,47 @@ const parseReelbotIntent = (prompt = "") => {
     avoidance_signals: audienceSignals.avoidance_signals,
     friction_level: audienceSignals.friction_level,
     guardrails: audienceSignals.guardrails,
+    audience_context: audienceContext,
+    emotional_tolerance: emotionalTolerance,
+    attention_profile: attentionProfile,
+    pacing_energy: pacingEnergy,
+    runtime_commitment: runtimeCommitment,
+    specificity,
     constraints,
+    hard_filters: {
+      family_safe_only: Boolean(audienceSignals.guardrails.child_family_safe),
+      max_runtime_minutes: runtimeCommitment.max_runtime_minutes,
+      min_runtime_minutes: runtimeCommitment.min_runtime_minutes,
+      exclude_genre_ids: Array.from(new Set([
+        ...(Array.isArray(audienceSignals.guardrails?.hard_exclude_genre_ids) ? audienceSignals.guardrails.hard_exclude_genre_ids : []),
+        ...avoidGenreIds,
+      ])),
+      require_country_relevance: structuredQuery?.type === "country",
+      require_awards_relevance: structuredQuery?.type === "awards",
+    },
+    soft_preferences: {
+      boost_genre_ids: preferredGenreIds,
+      avoid_genre_ids: avoidGenreIds,
+      thematic_terms: thematicTerms,
+      boost_traits: Array.from(new Set([
+        ...tone,
+        emotionalTolerance.comforting ? "comforting" : "",
+        attentionProfile.immersive ? "immersive" : "",
+        pacingEnergy.immediate_hook ? "immediate_hook" : "",
+      ].filter(Boolean))),
+    },
     avoid,
     rubric_keys: rubricKeys,
-    preferred_genre_ids: inferPreferredGenreIds(rawPrompt),
-    avoid_genre_ids: inferAvoidGenreIds(rawPrompt),
-    thematic_terms: inferThematicTerms(rawPrompt),
-    lane_key: titleAnchor
-      ? `title:${lower(titleAnchor)}`
-      : personAnchor
-        ? `person:${lower(personAnchor)}`
-        : normalizedPrompt || "generic",
+    preferred_genre_ids: preferredGenreIds,
+    avoid_genre_ids: avoidGenreIds,
+    thematic_terms: thematicTerms,
+    structured_query_hint: structuredQuery || null,
+    lane_key: laneKey,
   };
 };
 
-const isIntentSnapshotValid = (snapshot = {}) => snapshot && typeof snapshot === "object" && typeof snapshot.lane_key === "string" && typeof snapshot.prompt_type === "string";
+const isIntentSnapshotValid = (snapshot = {}) =>
+  snapshot && typeof snapshot === "object" && typeof snapshot.lane_key === "string" && typeof snapshot.prompt_type === "string";
 
 module.exports = {
   classifyPromptType,
