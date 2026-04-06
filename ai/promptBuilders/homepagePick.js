@@ -1,5 +1,4 @@
-const { getPrinciplesText } = require("../reelbotPrinciples");
-const { getVoiceText } = require("../reelbotVoice");
+const { getFullReelbotFrameworkText } = require("../reelbotPrinciples");
 const { RUBRICS } = require("../recommendationRubrics");
 
 const stableStringify = (value) => {
@@ -77,14 +76,16 @@ const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
   return {
     systemPrompt: [
       `You are ReelBot's Candidate Ranker.`,
-      getPrinciplesText(),
-      getVoiceText(),
+      getFullReelbotFrameworkText(),
       "Role rules:",
       "- Do not write user-facing copy.",
       "- Rank only from the provided candidate ids.",
       "- Never infer or reference movies outside the provided candidate pool.",
+      "- Treat audience, tone, safety, and explicit exclusions as hard filters before ranking.",
       "- Honor the parsed intent lane more than generic popularity.",
       "- Treat the user's moment as the real target, not just broad genre similarity.",
+      "- Distinguish the safest strong fit from the most interesting strong fit when they are not the same movie.",
+      "- Use the provided derived signals and fit summaries; do not redo discovery from scratch.",
       "- Backup choices must stay in the same high-level lane while varying role.",
     ].join("\n\n"),
     userPrompt: [
@@ -96,14 +97,18 @@ const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
       "Task:",
       "1. Choose exactly 1 top pick and 4 backup picks.",
       "2. Preserve the original lane for anchor prompts, title-similarity prompts, and swap requests.",
-      "3. Reward audience fit, context fit, tone fit, pacing fit, emotional fit, accessibility fit, prompt fidelity, and non-obviousness.",
-      "4. When the prompt contains situational context such as kids, parents, low-stress, background watch, immersive, awards, or country/location intent, let that context outrank vague semantic similarity.",
-      "5. For family-safe or sick-day contexts, prioritize emotional safety and clarity over prestige, darkness, or edge.",
-      "6. For place/country prompts, privilege actual relevance in setting, language, perspective, or story rather than weak keyword overlap.",
-      "7. For awards prompts, stay inside awards-relevant options only.",
-      "8. Personalize with restraint: reinforce saved/recent preference signals, strongly avoid hidden titles, and deprioritize already-seen or very recent repeats unless the prompt clearly asks for them.",
-      `9. ${preferences.request_mode === "swap" ? "For swap requests, make sure the first three backup roles cover safer_option, stretch_option, and wildcard in that order before the fourth backup." : "Give the backups distinct role keys such as safer_option, lighter_option, darker_option, wildcard, stretch_option, more_action_forward, more_demanding, or similar_tone."}`,
-      "10. Avoid famous default classics unless they are still clearly the best fit after prompt fidelity.",
+      "3. Reject candidates that miss explicit audience, tone, safety, or exclusion constraints before you rank anything else.",
+      "4. Reward audience fit, context fit, tone fit, pacing fit, emotional fit, accessibility fit, prompt fidelity, and non-obviousness.",
+      "5. Prefer clear fit tradeoffs over prestige language or famous defaults.",
+      "6. If the best available option is only a partial fit, keep it inside the lane and let the backups cover adjacent safe or interesting angles.",
+      "6a. Do not return a de facto no-pick if one or more candidates already have strong_fit or decent_fit evidence.",
+      "7. When the prompt contains situational context such as kids, parents, low-stress, background watch, immersive, awards, or country/location intent, let that context outrank vague semantic similarity.",
+      "8. For family-safe or sick-day contexts, prioritize emotional safety and clarity over prestige, darkness, or edge.",
+      "9. For place/country prompts, privilege actual relevance in setting, language, perspective, or story rather than weak keyword overlap.",
+      "10. For awards prompts, stay inside awards-relevant options only.",
+      "11. Personalize with restraint: reinforce saved/recent preference signals, strongly avoid hidden titles, and deprioritize already-seen or very recent repeats unless the prompt clearly asks for them.",
+      `12. ${preferences.request_mode === "swap" ? "For swap requests, make sure the first three backup roles cover safer_option, stretch_option, and wildcard in that order before the fourth backup." : "Give the backups distinct role keys such as safer_option, lighter_option, darker_option, wildcard, stretch_option, more_action_forward, more_demanding, or similar_tone."}`,
+      "13. Avoid famous default classics unless they are still clearly the best fit after prompt fidelity.",
     ].join("\n\n"),
   };
 };
@@ -111,14 +116,15 @@ const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
 const buildPickWriterPrompts = ({ preferences, intent, primary, backups }) => ({
   systemPrompt: [
     `You are ReelBot's Recommendation Writer.`,
-    getPrinciplesText(),
-    getVoiceText(),
+    getFullReelbotFrameworkText(),
     "Role rules:",
     "- Explain the chosen movie and backup roles. Do not change the ranking.",
     "- Keep it concise, specific, and decision-first.",
     "- Explain only from the provided movie information and parsed intent. Do not invent plot points, awards, countries, or credits.",
     "- Do not use banned filler or generic praise.",
     "- Never mention metadata, tags, ranking logic, candidate pools, or other internal system language.",
+    "- If the fit is partial or fallback-level, say that crisply without sounding defensive.",
+    "- Treat fit_tier and derived_signals as grounding, not as user-facing jargon.",
     "- Sound like ReelBot understands the user's moment, not like an evaluation system.",
   ].join("\n\n"),
   userPrompt: [
@@ -130,10 +136,11 @@ const buildPickWriterPrompts = ({ preferences, intent, primary, backups }) => ({
     "Task:",
     "1. Write a prompt-specific context line that reflects the situation behind the request, not just the genre.",
     "2. Write one concise summary line about the winning movie itself.",
-    "3. Write exactly 2 short reasons focused on the decision, the feel, and why this works for this moment.",
-    "4. Avoid phrases like 'great match', 'metadata', 'tags', 'scoring', or anything that sounds mechanical.",
-    "5. Give each backup a short role label and one-line rationale that keeps it close to the same vibe from a different angle.",
-    "6. Keep the voice restrained, confident, human, and useful for a fast decision.",
+    "3. Write exactly 2 short reasons focused on the decision, the feel, the viewing moment, and any useful tradeoff.",
+    "4. If the fit is partial, make the miss clear in plain language instead of bluffing certainty.",
+    "5. Avoid phrases like 'great match', 'metadata', 'tags', 'scoring', or anything that sounds mechanical.",
+    "6. Give each backup a short role label and one-line rationale that keeps it close to the same vibe from a different angle.",
+    "7. Keep the voice restrained, confident, human, and useful for a fast decision.",
   ].join("\n\n"),
 });
 

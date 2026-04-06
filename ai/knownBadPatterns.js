@@ -1,3 +1,5 @@
+const { getCuratedTitleSignals } = require("./curatedRecommendationSignals");
+
 const normalizeText = (value = "") => String(value || "").toLowerCase();
 
 const matchesAnyGenre = (genreIds = [], expectedIds = []) =>
@@ -8,17 +10,23 @@ const EASY_WATCH_BLOCKED_GENRE_IDS = [27, 53, 80, 10752];
 const LOW_STRESS_BLOCKED_TEXT_PATTERN =
   /\bhorror|slasher|serial killer|killer|murder|violent|violence|blood|gore|war|battlefield|combat|assassin|revenge|drug cartel|abuse|trauma|suicide|kidnap|hostage|terror|bleak|grief|mourning|terminal illness|adult themes|sexual|erotic|affair|addiction|prison|post-apocalyptic|post apocalyptic|apocalypse|apocalyptic|end of the world|disaster|catastrophe|pandemic outbreak|zombie\b/i;
 
+const isProtectedCanonicalFamilyEntry = (movie = {}, genreIds = []) => {
+  const curatedSignals = getCuratedTitleSignals(movie.title) || {};
+  return Boolean(curatedSignals.canonical_family_entry) && matchesAnyGenre(genreIds, EASY_WATCH_SUPPORTIVE_GENRE_IDS);
+};
+
 const getKnownBadPatternAdjustments = (movie = {}, intent = {}) => {
   const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
   const runtime = Number(movie.runtime || 0);
   const searchableText = [movie.title, movie.overview, movie.tagline].filter(Boolean).join(" ");
   const loweredText = normalizeText(searchableText);
+  const protectedCanonicalFamilyEntry = isProtectedCanonicalFamilyEntry(movie, genreIds);
   const reasons = [];
   let scoreAdjustment = 0;
   let hardReject = false;
 
   if (intent.guardrails?.child_family_safe) {
-    if (matchesAnyGenre(genreIds, EASY_WATCH_BLOCKED_GENRE_IDS) || LOW_STRESS_BLOCKED_TEXT_PATTERN.test(searchableText)) {
+    if (matchesAnyGenre(genreIds, EASY_WATCH_BLOCKED_GENRE_IDS) || (LOW_STRESS_BLOCKED_TEXT_PATTERN.test(searchableText) && !protectedCanonicalFamilyEntry)) {
       hardReject = true;
       reasons.push("family_safety_guardrail");
     }
@@ -44,7 +52,7 @@ const getKnownBadPatternAdjustments = (movie = {}, intent = {}) => {
       reasons.push("easy_watch_intense_genres");
     }
 
-    if (LOW_STRESS_BLOCKED_TEXT_PATTERN.test(searchableText)) {
+    if (LOW_STRESS_BLOCKED_TEXT_PATTERN.test(searchableText) && !protectedCanonicalFamilyEntry) {
       scoreAdjustment -= 24;
       reasons.push("easy_watch_distressing_text");
     }

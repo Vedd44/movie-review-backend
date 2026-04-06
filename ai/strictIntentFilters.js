@@ -1,8 +1,15 @@
+const { getCuratedTitleSignals } = require("./curatedRecommendationSignals");
+
 const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim();
 const lower = (value = "") => compact(value).toLowerCase();
 const uniqueStrings = (values = []) => [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean))];
 const matchesAnyGenre = (genreIds = [], expectedIds = []) =>
   expectedIds.some((genreId) => Array.isArray(genreIds) && genreIds.includes(genreId));
+const isProtectedCanonicalFamilyEntry = (movie = {}, genreIds = []) => {
+  const curatedSignals = getCuratedTitleSignals(movie.title) || {};
+  return Boolean(curatedSignals.canonical_family_entry) && matchesAnyGenre(genreIds, TODDLER_SUPPORTIVE_GENRE_IDS);
+};
+const GENERIC_THEME_TERMS = new Set(["family", "kid", "kids", "child", "children", "movie", "movies"]);
 
 const TODDLER_SUPPORTIVE_GENRE_IDS = [16, 10751, 35, 12, 14, 10402];
 const TODDLER_BLOCKED_GENRE_IDS = [27, 53, 80, 10752];
@@ -48,6 +55,8 @@ const buildStrictIntentFilters = ({
     ...structuredThemes.flatMap((theme) => theme.expanded_keyword_terms || []),
   ]);
 
+  const nonGenericThemeTerms = baseThemeTerms.filter((term) => !GENERIC_THEME_TERMS.has(lower(term)));
+
   return {
     audience: audienceBucket,
     tone: uniqueStrings([
@@ -57,7 +66,7 @@ const buildStrictIntentFilters = ({
     rating_allowlist: childSafe ? ["G", "PG"] : [],
     theme_terms: baseThemeTerms,
     expanded_theme_terms: expandedThemeTerms,
-    require_theme_match: Boolean(baseThemeTerms.length),
+    require_theme_match: Boolean(nonGenericThemeTerms.length),
     exclude_terms: uniqueStrings([
       ...avoidanceSignals,
       ...(childSafe ? ["violence", "intense", "dark", "distress", "adult themes"] : []),
@@ -93,6 +102,7 @@ const getMovieThemeMatchScore = (movie = {}, strictFilters = {}, options = {}) =
     movie.title,
     movie.overview,
     movie.tagline,
+    ...(Array.isArray(movie.keyword_names) ? movie.keyword_names : []),
     ...(Array.isArray(movie.structured_match_reasons) ? movie.structured_match_reasons : []),
   ].filter(Boolean).join(" "));
 
@@ -119,9 +129,16 @@ const passesStrictIntentFilter = (movie = {}, intent = {}, options = {}) => {
   }
 
   const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
-  const searchableText = lower([movie.title, movie.overview, movie.tagline].filter(Boolean).join(" "));
+  const searchableText = lower([
+    movie.title,
+    movie.overview,
+    movie.tagline,
+    ...(Array.isArray(movie.keyword_names) ? movie.keyword_names : []),
+    ...(Array.isArray(movie.structured_match_reasons) ? movie.structured_match_reasons : []),
+  ].filter(Boolean).join(" "));
   const certification = String(movie.us_certification || "").trim().toUpperCase();
   const supportiveGenreMatch = matchesAnyGenre(genreIds, strictFilters.supportive_genre_ids || []);
+  const protectedCanonicalFamilyEntry = isProtectedCanonicalFamilyEntry(movie, genreIds);
 
   if (strictFilters.child_safe_only) {
     if (movie.adult) {
@@ -136,7 +153,7 @@ const passesStrictIntentFilter = (movie = {}, intent = {}, options = {}) => {
       return false;
     }
 
-    if (TODDLER_BLOCKED_TEXT_PATTERN.test(searchableText)) {
+    if (TODDLER_BLOCKED_TEXT_PATTERN.test(searchableText) && !protectedCanonicalFamilyEntry) {
       return false;
     }
 

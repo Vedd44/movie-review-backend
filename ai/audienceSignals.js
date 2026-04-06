@@ -1,3 +1,5 @@
+const { getCuratedTitleSignals } = require("./curatedRecommendationSignals");
+
 const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim();
 const lower = (value = "") => compact(value).toLowerCase();
 
@@ -15,6 +17,10 @@ const CHILD_SAFE_BLOCKED_TEXT_PATTERN =
 
 const unique = (values = []) => Array.from(new Set((Array.isArray(values) ? values : []).filter(Boolean)));
 const matchesAnyGenre = (genreIds = [], expectedIds = []) => expectedIds.some((genreId) => genreIds.includes(genreId));
+const isProtectedCanonicalFamilyEntry = (movie = {}, genreIds = []) => {
+  const curatedSignals = getCuratedTitleSignals(movie.title) || {};
+  return Boolean(curatedSignals.canonical_family_entry) && matchesAnyGenre(genreIds, CHILD_SAFE_SUPPORTIVE_GENRE_IDS);
+};
 
 const getAudienceIntentSignals = (prompt = "") => {
   const rawPrompt = compact(prompt);
@@ -104,6 +110,7 @@ const passesAudienceGuardrails = (movie = {}, intent = {}) => {
   const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
   const searchableText = lower([movie.title, movie.overview, movie.tagline].filter(Boolean).join(" "));
   const hasSupportiveGenre = matchesAnyGenre(genreIds, CHILD_SAFE_SUPPORTIVE_GENRE_IDS);
+  const protectedCanonicalFamilyEntry = isProtectedCanonicalFamilyEntry(movie, genreIds);
 
   if (!movie?.id || movie.adult) {
     return false;
@@ -121,7 +128,7 @@ const passesAudienceGuardrails = (movie = {}, intent = {}) => {
     return false;
   }
 
-  if (CHILD_SAFE_BLOCKED_TEXT_PATTERN.test(searchableText)) {
+  if (CHILD_SAFE_BLOCKED_TEXT_PATTERN.test(searchableText) && !protectedCanonicalFamilyEntry) {
     return false;
   }
 

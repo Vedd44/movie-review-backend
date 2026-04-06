@@ -11,6 +11,9 @@ const { buildPickRankerPrompts, buildPickWriterPrompts } = require("./ai/promptB
 const { buildDetailPrompts } = require("./ai/promptBuilders/detailPage");
 const { pickRankingSchema, pickWriterSchema, getDetailSchema } = require("./ai/aiSchemas");
 const { REELBOT_BANNED_PHRASES } = require("./ai/reelbotPrinciples");
+const { deriveMovieSignals } = require("./ai/movieSignals");
+const { getRecommendationFitBreakdown } = require("./ai/recommendationScoring");
+const { resolveExpandedRecommendationCandidates } = require("./ai/recommendationRetrieval");
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -21,6 +24,7 @@ const TMDB_API_KEY = process.env.TMDB_API_KEY?.trim();
 const OPENAI_MODEL = (process.env.OPENAI_MODEL || "gpt-5-mini").trim();
 const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.REACT_APP_SUPABASE_URL || "").trim();
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+const REELBOT_PICK_DEBUG_ENABLED = /^(1|true|yes)$/i.test(String(process.env.REELBOT_PICK_DEBUG || ""));
 const reelbotCache = new Map();
 const pickCache = new Map();
 const tmdbCache = new Map();
@@ -1074,7 +1078,20 @@ const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}) => {
   }
 
   if (queryType === "COUNTRY" || queryType === "AWARDS" || queryType === "GENRE_THEME") {
-    return Boolean(promptBoosts?.structuredMovieIds?.has(movie.id));
+    if (queryType !== "GENRE_THEME") {
+      return Boolean(promptBoosts?.structuredMovieIds?.has(movie.id));
+    }
+
+    const shouldHardLockGenreTheme =
+      Boolean(promptBoosts?.structuredMovieIds?.size)
+      && !(Array.isArray(intent?.subject_entities) && intent.subject_entities.length)
+      && !intent?.audience_age
+      && !(intent?.content_safety && intent.content_safety !== "standard")
+      && !(Array.isArray(intent?.watch_context) && intent.watch_context.length);
+
+    return shouldHardLockGenreTheme
+      ? Boolean(promptBoosts?.structuredMovieIds?.has(movie.id))
+      : true;
   }
 
   return true;
@@ -2630,11 +2647,16 @@ const scorePickCandidate = (
 
   const behavioralResult = getBehavioralMemoryScore(movie, behavioralMemory);
   score += behavioralResult.score;
+  const recommendationBreakdown = getRecommendationFitBreakdown(movie, intent || parseReelbotIntent(preferences.prompt), {
+    structured_match_score: movie.structured_match_score || 0,
+  });
+  score += recommendationBreakdown.total;
 
   return {
     score,
     behavioralAdjustment: behavioralResult.score,
     behavioralReasons: behavioralResult.reasons,
+    recommendationBreakdown,
   };
 };
 
@@ -2702,6 +2724,17 @@ const buildPickReason = (movie, preferences) => {
   const leadingGenres = genreNames.slice(0, 2).join(" / ");
   const promptProfile = getPromptPreferenceProfile(preferences.prompt);
   const parsedIntent = parseReelbotIntent(preferences.prompt);
+  const derivedSignals = deriveMovieSignals(movie);
+
+  if (Array.isArray(parsedIntent.subject_entities) && parsedIntent.subject_entities.length) {
+    const matchedEntity = parsedIntent.subject_entities.find((entity) => Number(derivedSignals.entity_scores?.[entity] || 0) >= 0.45);
+    if (matchedEntity && (parsedIntent.audience_age === "toddler" || parsedIntent.audience_age === "preschool")) {
+      return `The ${matchedEntity} presence is real, and the tone stays gentle enough to work as a younger-kids pick instead of a merely rabbit-adjacent one.`;
+    }
+    if (matchedEntity) {
+      return `It keeps the ${matchedEntity} presence meaningful instead of incidental, which makes it feel like a real fit for the ask.`;
+    }
+  }
 
   if (hasChildFamilyGuardrails(parsedIntent) && matchesAnyGenre(movie.genre_ids || [], [16, 10751, 35, 12, 14, 10402])) {
     return "It stays gentle, kid-friendly, and easy to settle into, which fits a comfort-watch lane better than something intense or demanding.";
@@ -2776,28 +2809,72 @@ const normalizePickMovie = (movie, preferences, overrides = {}) => ({
 const getPickCandidatePool = async (preferences, intent = null, promptBoosts = null) => {
   const discoverGenre = getPickGenreParam(preferences);
   const supportingView = normalizeDiscoveryView(preferences.view) === "popular" ? "now_playing" : "popular";
+  const shouldUseExpandedRecommendationRetrieval =
+    intent?.query_type === "GENRE_OR_VIBE"
+    || intent?.query_type === "MIXED"
+    || (Array.isArray(intent?.subject_entities) && intent.subject_entities.length > 0)
+    || Boolean(intent?.audience_age)
+    || (intent?.content_safety && intent.content_safety !== "standard");
+
+  const noteRabbitStage = (label, movies = [], extra = {}) => {
+    if (typeof promptBoosts?.rabbitDebugCollector !== "function") {
+      return;
+    }
+
+    promptBoosts.rabbitDebugCollector({
+      stage_type: "candidate_pool",
+      label,
+      total: Array.isArray(movies) ? movies.length : 0,
+      sample_titles: (Array.isArray(movies) ? movies : []).slice(0, 12).map((movie) => movie?.title).filter(Boolean),
+      rabbit_presence: buildRabbitPresenceSnapshot(movies),
+      ...extra,
+    });
+  };
 
   const requestPlan = preferences.source === "library"
     ? [
-        () => fetchFeedBatch(preferences.view, getRotatedPage(preferences.view, 0)),
-        () => fetchFeedBatch(supportingView, getRotatedPage(supportingView, 1)),
-        () => fetchDiscoverBatch(preferences.view, getRotatedPage("discover", 0), { runtime: preferences.runtime, genre: discoverGenre }),
-        () => fetchDiscoverBatch(supportingView, getRotatedPage("discover", 1), { runtime: preferences.runtime, genre: discoverGenre }),
-        () => fetchFeedBatch("now_playing", getRotatedPage("now_playing", 2)),
-        () => fetchDiscoverBatch("popular", getRotatedPage("discover", 2), { runtime: preferences.runtime, genre: discoverGenre }),
+        { label: `feed:${preferences.view}:page0`, request: () => fetchFeedBatch(preferences.view, getRotatedPage(preferences.view, 0)) },
+        { label: `feed:${supportingView}:page1`, request: () => fetchFeedBatch(supportingView, getRotatedPage(supportingView, 1)) },
+        { label: `discover:${preferences.view}:page0`, request: () => fetchDiscoverBatch(preferences.view, getRotatedPage("discover", 0), { runtime: preferences.runtime, genre: discoverGenre }) },
+        { label: `discover:${supportingView}:page1`, request: () => fetchDiscoverBatch(supportingView, getRotatedPage("discover", 1), { runtime: preferences.runtime, genre: discoverGenre }) },
+        { label: "feed:now_playing:page2", request: () => fetchFeedBatch("now_playing", getRotatedPage("now_playing", 2)) },
+        { label: "discover:popular:page2", request: () => fetchDiscoverBatch("popular", getRotatedPage("discover", 2), { runtime: preferences.runtime, genre: discoverGenre }) },
       ]
     : [
-        () => fetchFeedBatch(preferences.view, getRotatedPage(preferences.view, 0)),
-        () => fetchDiscoverBatch(preferences.view, getRotatedPage("discover", 0), { runtime: preferences.runtime, genre: discoverGenre }),
-        () => fetchFeedBatch(supportingView, getRotatedPage(supportingView, 1)),
-        () => fetchDiscoverBatch(supportingView, getRotatedPage("discover", 1), { runtime: preferences.runtime, genre: discoverGenre }),
-        () => fetchFeedBatch("now_playing", getRotatedPage("now_playing", 2)),
+        { label: `feed:${preferences.view}:page0`, request: () => fetchFeedBatch(preferences.view, getRotatedPage(preferences.view, 0)) },
+        { label: `discover:${preferences.view}:page0`, request: () => fetchDiscoverBatch(preferences.view, getRotatedPage("discover", 0), { runtime: preferences.runtime, genre: discoverGenre }) },
+        { label: `feed:${supportingView}:page1`, request: () => fetchFeedBatch(supportingView, getRotatedPage(supportingView, 1)) },
+        { label: `discover:${supportingView}:page1`, request: () => fetchDiscoverBatch(supportingView, getRotatedPage("discover", 1), { runtime: preferences.runtime, genre: discoverGenre }) },
+        { label: "feed:now_playing:page2", request: () => fetchFeedBatch("now_playing", getRotatedPage("now_playing", 2)) },
       ];
 
-  const responses = await Promise.allSettled(requestPlan.map((request) => request()));
+  const responses = await Promise.allSettled(requestPlan.map((stage) => stage.request()));
+  responses.forEach((response, index) => {
+    const stage = requestPlan[index];
+    if (response.status === "fulfilled") {
+      const movies = Array.isArray(response.value) ? response.value : response.value?.results || [];
+      noteRabbitStage(stage.label, movies);
+      return;
+    }
+
+    noteRabbitStage(stage.label, [], {
+      error: response.reason?.message || String(response.reason || "unknown_error"),
+    });
+  });
   const merged = responses
     .filter((response) => response.status === "fulfilled")
     .flatMap((response) => Array.isArray(response.value) ? response.value : response.value?.results || []);
+  noteRabbitStage("merged_feed_discover", merged);
+  const semanticCandidates = shouldUseExpandedRecommendationRetrieval
+    ? await resolveExpandedRecommendationCandidates({
+        intent,
+        fetchTmdb,
+        fetchStructuredMoviesByIds,
+        normalizeStructuredCandidate,
+        debugCollector: (stage) => noteRabbitStage(stage.label, [], { stage_type: "expanded_retrieval", ...stage }),
+      })
+    : [];
+  noteRabbitStage("semantic_candidates_final", semanticCandidates);
 
   const entityKind = intent?.entity_anchor?.kind || null;
   const constrainedIds = entityKind === "actor"
@@ -2817,7 +2894,9 @@ const getPickCandidatePool = async (preferences, intent = null, promptBoosts = n
   ])).slice(0, entityKind === "actor" || entityKind === "director" ? 40 : entityKind === "franchise" ? 28 : intent?.prompt_type === "title_similarity" ? 24 : 18);
 
   if (!anchorIds.length) {
-    return dedupeMoviesById(merged).filter((movie) => !isLowSignalMovie(movie)).slice(0, 100);
+    const finalPool = dedupeMoviesById([...semanticCandidates, ...merged]).filter((movie) => !isLowSignalMovie(movie)).slice(0, 120);
+    noteRabbitStage("candidate_pool_final", finalPool);
+    return finalPool;
   }
 
   const anchoredMovies = (await Promise.allSettled(anchorIds.map((movieId) => fetchTmdbCached(`/movie/${movieId}`, {}, CACHE_TTLS.movie_details))))
@@ -2839,7 +2918,10 @@ const getPickCandidatePool = async (preferences, intent = null, promptBoosts = n
         ? [...anchoredMovies, ...merged.filter((movie) => matchesAnyGenre(movie.genre_ids || [], promptBoosts?.anchorGenreIds || []))]
         : [...anchoredMovies, ...merged];
 
-  return dedupeMoviesById(baseMerged).filter((movie) => !isLowSignalMovie(movie)).slice(0, 120);
+  noteRabbitStage("anchored_base_merged", baseMerged);
+  const finalPool = dedupeMoviesById([...semanticCandidates, ...baseMerged]).filter((movie) => !isLowSignalMovie(movie)).slice(0, 140);
+  noteRabbitStage("candidate_pool_final", finalPool);
+  return finalPool;
 };
 
 const normalizeExcludedIds = (excludedIds = []) =>
@@ -2859,7 +2941,7 @@ const getUsCertification = (releaseDates = {}) => {
 };
 
 const fetchPickDetail = async (movieId) => {
-  const payload = await fetchTmdbCached(`/movie/${movieId}`, { append_to_response: "release_dates" }, CACHE_TTLS.movie_details);
+  const payload = await fetchTmdbCached(`/movie/${movieId}`, { append_to_response: "release_dates,keywords" }, CACHE_TTLS.movie_details);
   return {
     id: payload.id,
     runtime: payload.runtime || null,
@@ -2874,6 +2956,8 @@ const fetchPickDetail = async (movieId) => {
     vote_count: payload.vote_count || 0,
     popularity: payload.popularity || 0,
     overview: payload.overview || "",
+    tagline: payload.tagline || "",
+    keyword_names: Array.isArray(payload.keywords?.keywords) ? payload.keywords.keywords.map((entry) => entry?.name).filter(Boolean) : [],
     us_certification: getUsCertification(payload.release_dates),
     signal_score: getMovieSignalScore(payload),
   };
@@ -3489,24 +3573,57 @@ const enrichCandidatesWithDetails = async (movies = []) => {
   });
 };
 
-const buildCompactCandidate = (movie) => ({
-  id: movie.id,
-  title: movie.title,
-  release_year: movie.release_date ? new Date(movie.release_date).getFullYear() : null,
-  era_bucket: getMovieEraBucket(movie),
-  runtime: movie.runtime || null,
-  genres: Array.isArray(movie.genre_names) ? movie.genre_names : [],
-  vote_average: Number((movie.vote_average || 0).toFixed(1)),
-  popularity: Math.round(movie.popularity || 0),
-  vote_count: movie.vote_count || 0,
-  signal_score: Number(getMovieSignalScore(movie).toFixed(1)),
-  production_countries: Array.isArray(movie.production_countries) ? movie.production_countries : [],
-  spoken_language_codes: Array.isArray(movie.spoken_language_codes) ? movie.spoken_language_codes : [],
-  structured_match_score: movie.structured_match_score || 0,
-  structured_match_reasons: Array.isArray(movie.structured_match_reasons) ? movie.structured_match_reasons : [],
-  source_type: movie.source_type || "discover",
-  overview: truncateText(movie.overview || "", 180),
-});
+const buildCompactCandidate = (movie, intent = null) => {
+  const derivedSignals = deriveMovieSignals(movie);
+  const fitBreakdown = intent ? getRecommendationFitBreakdown(movie, intent, { structured_match_score: movie.structured_match_score || 0 }) : null;
+
+  return {
+    id: movie.id,
+    title: movie.title,
+    release_year: movie.release_date ? new Date(movie.release_date).getFullYear() : null,
+    era_bucket: getMovieEraBucket(movie),
+    runtime: movie.runtime || null,
+    genres: Array.isArray(movie.genre_names) ? movie.genre_names : [],
+    vote_average: Number((movie.vote_average || 0).toFixed(1)),
+    popularity: Math.round(movie.popularity || 0),
+    vote_count: movie.vote_count || 0,
+    signal_score: Number(getMovieSignalScore(movie).toFixed(1)),
+    production_countries: Array.isArray(movie.production_countries) ? movie.production_countries : [],
+    spoken_language_codes: Array.isArray(movie.spoken_language_codes) ? movie.spoken_language_codes : [],
+    structured_match_score: movie.structured_match_score || 0,
+    structured_match_reasons: Array.isArray(movie.structured_match_reasons) ? movie.structured_match_reasons : [],
+    source_type: movie.source_type || "discover",
+    derived_signals: {
+      animal_presence: derivedSignals.animal_presence,
+      entity_prominence: derivedSignals.entity_prominence,
+      kid_friendliness: Number((derivedSignals.kid_friendliness || 0).toFixed(2)),
+      toddler_friendliness: Number((derivedSignals.toddler_friendliness || 0).toFixed(2)),
+      scariness: Number((derivedSignals.scariness || 0).toFixed(2)),
+      peril: Number((derivedSignals.peril || 0).toFixed(2)),
+      stimulation_level: Number((derivedSignals.stimulation_level || 0).toFixed(2)),
+      consensus_friendliness: Number((derivedSignals.consensus_friendliness || 0).toFixed(2)),
+      cozy_score: Number((derivedSignals.cozy_score || 0).toFixed(2)),
+      warmth_score: Number((derivedSignals.warmth_score || 0).toFixed(2)),
+      confusion_risk: Number((derivedSignals.confusion_risk || 0).toFixed(2)),
+      polarization_risk: Number((derivedSignals.polarization_risk || 0).toFixed(2)),
+      rewatchability: Number((derivedSignals.rewatchability || 0).toFixed(2)),
+      sweeping_epic_score: Number((derivedSignals.sweeping_epic_score || 0).toFixed(2)),
+      series_metadata: derivedSignals.series_metadata,
+      vibe_tags: derivedSignals.vibe_tags,
+      practical_watch_fit: derivedSignals.practical_watch_fit,
+    },
+    fit_summary: fitBreakdown
+      ? {
+          fit_tier: fitBreakdown.fit_tier,
+          confidence: fitBreakdown.confidence_label,
+          entity_match_label: fitBreakdown.entity_match_label,
+          components: fitBreakdown.components,
+          penalties: fitBreakdown.penalties,
+        }
+      : null,
+    overview: truncateText(movie.overview || "", 180),
+  };
+};
 
 const safeJsonParse = (value) => {
   try {
@@ -3761,7 +3878,7 @@ const rankCandidatesWithOpenAI = async (preferences, intent, candidates) => {
   const prompts = buildPickRankerPrompts({
     preferences,
     intent,
-    candidates: candidates.map((movie) => buildCompactCandidate(movie)),
+    candidates: candidates.map((movie) => buildCompactCandidate(movie, intent)),
   });
 
   return callStructuredOpenAI({
@@ -3782,9 +3899,9 @@ const writePickPresentationWithOpenAI = async (preferences, intent, primaryMovie
   const prompts = buildPickWriterPrompts({
     preferences,
     intent,
-    primary: buildCompactCandidate(primaryMovie),
+    primary: buildCompactCandidate(primaryMovie, intent),
     backups: backups.map((movie, index) => ({
-      ...buildCompactCandidate(movie),
+      ...buildCompactCandidate(movie, intent),
       role_key: rankedBackups[index]?.role_key || null,
     })),
   });
@@ -3841,14 +3958,250 @@ const buildMatchScore = (score, topScore) => {
   return Math.max(68, Math.min(96, Math.round(94 - (relativeGap / Math.max(topScore, 1)) * 28)));
 };
 
+const shouldIncludePickDebug = (rawPreferences = {}) =>
+  REELBOT_PICK_DEBUG_ENABLED
+  || rawPreferences?.include_debug === true
+  || rawPreferences?.trigger === "debug_inspect";
+
+const hasMeaningfulSubjectRequirement = (resolvedIntent = {}) =>
+  Array.isArray(resolvedIntent.subject_entities)
+  && resolvedIntent.subject_entities.length > 0;
+
+const hasEntitySatisfiedFit = (entry = {}) => {
+  const label = entry.fit_breakdown?.entity_match_label || "missing";
+  return ["primary", "meaningful", "secondary", "incidental"].includes(label);
+};
+
+const RABBIT_TRACE_TARGETS = [
+  { key: "peter_rabbit", label: "Peter Rabbit", match: (title = "") => /^peter rabbit(?!\s*2)/i.test(String(title || "").trim()) },
+  { key: "peter_rabbit_2", label: "Peter Rabbit 2", match: (title = "") => /^peter rabbit 2/i.test(String(title || "").trim()) },
+  { key: "hop", label: "Hop", match: (title = "") => /^hop$/i.test(String(title || "").trim()) },
+];
+
+const buildRabbitPresenceSnapshot = (movies = []) =>
+  RABBIT_TRACE_TARGETS.reduce((acc, target) => {
+    const match = (Array.isArray(movies) ? movies : []).find((movie) => target.match(movie?.title));
+    acc[target.key] = match
+      ? {
+          present: true,
+          id: match.id || null,
+          title: match.title || null,
+          source_type: match.source_type || null,
+          structured_match_score: Number(Number(match.structured_match_score || 0).toFixed(1)),
+        }
+      : { present: false };
+    return acc;
+  }, {});
+
+const getEntrySeriesRoot = (entry = {}) => entry.fit_breakdown?.derived_signals?.series_metadata?.series_root || "";
+const isEntrySequel = (entry = {}) => Boolean(entry.fit_breakdown?.derived_signals?.series_metadata?.is_sequel);
+
+const shouldPreferCanonicalFirstPick = (resolvedIntent = {}) =>
+  (Array.isArray(resolvedIntent.subject_entities) && resolvedIntent.subject_entities.length > 0)
+  || ["toddler", "preschool", "young_kids", "broad_family"].includes(resolvedIntent.audience_age)
+  || (Array.isArray(resolvedIntent.soft_preferences?.preference_signals)
+    && resolvedIntent.soft_preferences.preference_signals.some((signal) => ["low_regret", "consensus_friendly", "rewatchable"].includes(signal)));
+
+const pickCanonicalPrimaryEntry = (rankingEntries = [], preferredEntry = null, resolvedIntent = {}) => {
+  const fallbackEntry = preferredEntry || rankingEntries[0] || null;
+  if (!fallbackEntry || !shouldPreferCanonicalFirstPick(resolvedIntent) || !isEntrySequel(fallbackEntry)) {
+    return fallbackEntry;
+  }
+
+  const seriesRoot = getEntrySeriesRoot(fallbackEntry);
+  if (!seriesRoot) {
+    return fallbackEntry;
+  }
+
+  const canonicalAlternative = rankingEntries.find((entry) =>
+    entry.movie?.id !== fallbackEntry.movie?.id
+    && getEntrySeriesRoot(entry) === seriesRoot
+    && !isEntrySequel(entry)
+    && entry.fit_breakdown?.fit_tier !== "no_fit"
+    && (fallbackEntry.score - entry.score) <= 28
+  );
+
+  return canonicalAlternative || fallbackEntry;
+};
+
+const getFitTierRank = (fitTier = "no_fit") => (
+  fitTier === "exact_fit" ? 4
+    : fitTier === "strong_fit" ? 3
+      : fitTier === "decent_fit" ? 2
+        : fitTier === "weak_fit" ? 1
+          : 0
+);
+
+const isTrustedAlternateEntry = (entry = {}, primaryEntry = {}, resolvedIntent = {}) => {
+  if (!entry?.movie?.id || entry.movie.id === primaryEntry?.movie?.id) {
+    return false;
+  }
+
+  if (entry.fit_breakdown?.fit_tier === "no_fit") {
+    return false;
+  }
+
+  const derivedSignals = entry.fit_breakdown?.derived_signals || {};
+  const softSignals = Array.isArray(resolvedIntent.soft_preferences?.preference_signals)
+    ? resolvedIntent.soft_preferences.preference_signals
+    : [];
+  const requiresSubjectMatch = hasMeaningfulSubjectRequirement(resolvedIntent);
+
+  if (requiresSubjectMatch && !["primary", "meaningful", "secondary"].includes(entry.fit_breakdown?.entity_match_label)) {
+    return false;
+  }
+
+  if (["toddler", "preschool"].includes(resolvedIntent.audience_age)) {
+    if (Number(derivedSignals.toddler_friendliness || 0) < 0.68) return false;
+    if (Number(derivedSignals.stimulation_level || 0) > 0.42) return false;
+    if (Number(derivedSignals.peril || 0) > 0.24) return false;
+    if (((entry.movie?.popularity || 0) < 25 && (entry.movie?.vote_count || 0) < 500) || Number(entry.movie?.runtime || 0) < 70) return false;
+  }
+
+  if (resolvedIntent.audience_age === "young_kids" && Number(derivedSignals.kid_friendliness || 0) < 0.58) {
+    return false;
+  }
+
+  if (softSignals.some((signal) => ["low_regret", "consensus_friendly", "rewatchable", "broadly_accessible"].includes(signal))) {
+    if (Number(derivedSignals.consensus_friendliness || 0) < 0.58) return false;
+    if (Number(derivedSignals.confusion_risk || 0) > 0.5) return false;
+    if (Number(derivedSignals.polarization_risk || 0) > 0.52) return false;
+  }
+
+  if (softSignals.some((signal) => ["comforting", "warm", "low_conflict", "calm"].includes(signal)) || Array.isArray(resolvedIntent.tone_preferences) && resolvedIntent.tone_preferences.includes("cozy")) {
+    if (Number(derivedSignals.cozy_score || 0) < 0.5) return false;
+    if (Number(derivedSignals.stimulation_level || 0) > 0.42) return false;
+  }
+
+  if (softSignals.some((signal) => ["historical_sweep", "nature_scale", "romantic_prestige", "immersive"].includes(signal))) {
+    if (Number(derivedSignals.sweeping_epic_score || 0) < 0.52) return false;
+  }
+
+  if (getFitTierRank(entry.fit_breakdown?.fit_tier) + 1 < getFitTierRank(primaryEntry?.fit_breakdown?.fit_tier)) {
+    return false;
+  }
+
+  if ((entry.movie?.popularity || 0) < 12 && (entry.movie?.vote_count || 0) < 180) {
+    return false;
+  }
+
+  return true;
+};
+
+const buildTrustedAlternateEntries = (rankingEntries = [], primaryEntry = {}, resolvedIntent = {}) => {
+  const selected = [];
+  const seenSeriesRoots = new Set();
+  const primarySeriesRoot = getEntrySeriesRoot(primaryEntry);
+
+  rankingEntries.forEach((entry) => {
+    if (selected.length >= 4 || !isTrustedAlternateEntry(entry, primaryEntry, resolvedIntent)) {
+      return;
+    }
+
+    const seriesRoot = getEntrySeriesRoot(entry);
+    if (seriesRoot && seriesRoot === primarySeriesRoot && seenSeriesRoots.has(seriesRoot)) {
+      return;
+    }
+
+    selected.push(entry);
+    if (seriesRoot) {
+      seenSeriesRoots.add(seriesRoot);
+    }
+  });
+
+  return selected;
+};
+
+const toScoreDebugEntry = (entry = {}, resolvedIntent = {}) => ({
+  id: entry.movie?.id,
+  title: entry.movie?.title,
+  source_type: entry.movie?.source_type || null,
+  structured_match_score: Number(Number(entry.movie?.structured_match_score || 0).toFixed(1)),
+  score: Number((entry.score || 0).toFixed(2)),
+  fit_tier: entry.fit_breakdown?.fit_tier || null,
+  fit_components: entry.fit_breakdown?.components || null,
+  penalties: entry.fit_breakdown?.penalties || [],
+  entity_match_label: entry.fit_breakdown?.entity_match_label || null,
+  derived_signals: entry.fit_breakdown?.derived_signals
+    ? {
+        entity_prominence: entry.fit_breakdown.derived_signals.entity_prominence,
+        kid_friendliness: Number((entry.fit_breakdown.derived_signals.kid_friendliness || 0).toFixed(2)),
+        toddler_friendliness: Number((entry.fit_breakdown.derived_signals.toddler_friendliness || 0).toFixed(2)),
+        peril: Number((entry.fit_breakdown.derived_signals.peril || 0).toFixed(2)),
+        stimulation_level: Number((entry.fit_breakdown.derived_signals.stimulation_level || 0).toFixed(2)),
+        consensus_friendliness: Number((entry.fit_breakdown.derived_signals.consensus_friendliness || 0).toFixed(2)),
+        cozy_score: Number((entry.fit_breakdown.derived_signals.cozy_score || 0).toFixed(2)),
+        sweeping_epic_score: Number((entry.fit_breakdown.derived_signals.sweeping_epic_score || 0).toFixed(2)),
+        series_metadata: entry.fit_breakdown.derived_signals.series_metadata,
+        practical_watch_fit: entry.fit_breakdown.derived_signals.practical_watch_fit,
+      }
+    : null,
+  major_reason: entry.movie ? buildPickReason(entry.movie, { prompt: resolvedIntent.raw_prompt || "" }) : null,
+});
+
+const buildRabbitRankingSnapshot = (entries = [], resolvedIntent = {}) =>
+  RABBIT_TRACE_TARGETS.reduce((acc, target) => {
+    const entry = (Array.isArray(entries) ? entries : []).find((candidate) => target.match(candidate?.movie?.title));
+    acc[target.key] = entry
+      ? toScoreDebugEntry(entry, resolvedIntent)
+      : { present: false };
+    return acc;
+  }, {});
+
+const buildRabbitValidationSnapshot = (movies = [], resolvedIntent = {}, promptBoosts = {}) =>
+  RABBIT_TRACE_TARGETS.reduce((acc, target) => {
+    const movie = (Array.isArray(movies) ? movies : []).find((candidate) => target.match(candidate?.title));
+    if (!movie) {
+      acc[target.key] = { present: false };
+      return acc;
+    }
+
+    const runtime = Number(movie.runtime || 0);
+    const hardFilters = resolvedIntent.hard_filters || {};
+    const knownBadPatternResult = getKnownBadPatternAdjustments(movie, resolvedIntent);
+    acc[target.key] = {
+      present: true,
+      id: movie.id || null,
+      title: movie.title || null,
+      passes_audience_guardrails: passesAudienceGuardrails(movie, resolvedIntent),
+      known_bad_pattern: knownBadPatternResult,
+      excluded_by_hard_filters: {
+        max_runtime: Boolean(hardFilters.max_runtime_minutes && runtime && runtime > hardFilters.max_runtime_minutes),
+        min_runtime: Boolean(hardFilters.min_runtime_minutes && runtime && runtime < hardFilters.min_runtime_minutes),
+        blocked_genre: Boolean(Array.isArray(hardFilters.exclude_genre_ids) && matchesAnyGenre(movie.genre_ids || [], hardFilters.exclude_genre_ids)),
+      },
+      is_valid_for_intent: isMovieValidForIntent(movie, resolvedIntent, promptBoosts),
+    };
+    return acc;
+  }, {});
+
+const attachPickDebugTrace = (payload = {}, includeDebug = false, debugTrace = null) =>
+  includeDebug && debugTrace
+    ? { ...payload, debug_trace: debugTrace }
+    : payload;
+
 const generatePickPayload = async (rawPreferences = {}) => {
   const preferences = resolvePickPreferences(rawPreferences);
+  const includeDebug = shouldIncludePickDebug(rawPreferences);
   const behavioralMemory = normalizeBehavioralMemory(rawPreferences.behavioral_memory);
   const refinement = normalizePickRefinement(rawPreferences.refinement);
   let resolvedIntent = await hydrateResolvedIntent(preferences, rawPreferences);
   const structuredResolution = preferences.prompt ? await resolveStructuredQueryCandidates(preferences.prompt) : null;
+  const shouldUseStructuredResolution =
+    structuredResolution?.structuredQuery
+    && (
+      structuredResolution.structuredQuery.type === "country"
+      || structuredResolution.structuredQuery.type === "awards"
+      || (
+        structuredResolution.structuredQuery.type === "genre_theme"
+        && !hasMeaningfulSubjectRequirement(resolvedIntent)
+        && !resolvedIntent.audience_age
+        && (resolvedIntent.content_safety === "standard" || !resolvedIntent.content_safety)
+        && !(Array.isArray(resolvedIntent.watch_context) && resolvedIntent.watch_context.length)
+      )
+    );
 
-  if (structuredResolution?.structuredQuery) {
+  if (shouldUseStructuredResolution) {
     const baseLaneKey =
       structuredResolution.structuredQuery.type === "country"
         ? `country:${structuredResolution.structuredQuery.country.canonical}`
@@ -3889,6 +4242,12 @@ const generatePickPayload = async (rawPreferences = {}) => {
   }
 
   const promptBoosts = await getPromptMovieBoosts(preferences.prompt, resolvedIntent);
+  const rabbitRetrievalTrace = [];
+  if (includeDebug) {
+    promptBoosts.rabbitDebugCollector = (stage) => {
+      rabbitRetrievalTrace.push(stage);
+    };
+  }
   if (structuredResolution?.movies?.length) {
     promptBoosts.structuredMovieIds = new Set(structuredResolution.movies.map((movie) => movie.id));
   }
@@ -3896,11 +4255,12 @@ const generatePickPayload = async (rawPreferences = {}) => {
     ? rawPreferences.candidate_pool_ids.map((value) => Number.parseInt(value, 10)).filter(Boolean)
     : [];
   const hasProvidedCandidatePool = providedCandidatePoolIds.length > 0;
-  const usesHardEntityPool = ["PERSON", "DIRECTOR", "FRANCHISE", "TITLE_SIMILARITY", "COUNTRY", "AWARDS", "GENRE_THEME"].includes(queryType);
+  const usesHardEntityPool = ["PERSON", "DIRECTOR", "FRANCHISE", "TITLE_SIMILARITY", "COUNTRY", "AWARDS"].includes(queryType)
+    || (queryType === "GENRE_THEME" && shouldUseStructuredResolution);
 
   const candidatePool = hasProvidedCandidatePool
     ? await fetchMoviesByIds(providedCandidatePoolIds)
-    : structuredResolution
+    : shouldUseStructuredResolution
       ? structuredResolution.movies
       : await getPickCandidatePool(preferences, resolvedIntent, promptBoosts);
   const fallbackPool = !candidatePool.length && !usesHardEntityPool && (preferences.mood !== "all" || preferences.runtime !== "any")
@@ -3910,8 +4270,11 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const locallyFilteredPool = fallbackPool.filter((movie) => !excludedIds.has(movie.id) && !isLowSignalMovie(movie));
   const intentFilteredPool = locallyFilteredPool.filter((movie) => isMovieValidForIntent(movie, resolvedIntent, promptBoosts));
   const strictPrefilter = applyStrictIntentPrefilter(intentFilteredPool, resolvedIntent);
-  const baseRankingPool = strictPrefilter.enforced
+  const strictPool = strictPrefilter.enforced && strictPrefilter.movies.length
     ? strictPrefilter.movies
+    : null;
+  const baseRankingPool = strictPool
+    ? strictPool
     : intentFilteredPool.length
       ? intentFilteredPool
       : locallyFilteredPool;
@@ -3923,11 +4286,19 @@ const generatePickPayload = async (rawPreferences = {}) => {
         score: scoring.score,
         behavioral_adjustment: scoring.behavioralAdjustment,
         behavioral_reasons: scoring.behavioralReasons,
+        fit_breakdown: scoring.recommendationBreakdown,
       };
     })
     .sort((left, right) => right.score - left.score);
 
-  const topPreliminaryCandidates = preliminaryRanked.slice(0, 36).map((entry) => entry.movie);
+  const semanticPriorityCandidates = dedupeMoviesById(baseRankingPool)
+    .filter((movie) => movie.source_type === "semantic_prompt_search" || Number(movie.structured_match_score || 0) >= 24)
+    .sort((left, right) => Number(right.structured_match_score || 0) - Number(left.structured_match_score || 0))
+    .slice(0, 12);
+  const topPreliminaryCandidates = dedupeMoviesById([
+    ...preliminaryRanked.slice(0, 36).map((entry) => entry.movie),
+    ...semanticPriorityCandidates,
+  ]);
   const detailedCandidates = await enrichCandidatesWithDetails(topPreliminaryCandidates);
   const detailedIntentFilteredPool = detailedCandidates
     .filter((movie) => !isLowSignalMovie(movie) && !excludedIds.has(movie.id))
@@ -3935,7 +4306,9 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const strictDetailedPrefilter = strictPrefilter.enforced
     ? applyStrictIntentPrefilter(detailedIntentFilteredPool, resolvedIntent, { disableThemeExpansion: !strictPrefilter.usedExpandedThemeTerms })
     : { enforced: false, movies: detailedIntentFilteredPool };
-  const finalRankingInput = strictDetailedPrefilter.enforced ? strictDetailedPrefilter.movies : detailedIntentFilteredPool;
+  const finalRankingInput = strictDetailedPrefilter.enforced && strictDetailedPrefilter.movies.length
+    ? strictDetailedPrefilter.movies
+    : detailedIntentFilteredPool;
   const finalRankedCandidates = finalRankingInput
     .map((movie) => {
       const scoring = scorePickCandidate(movie, preferences, promptBoosts, resolvedIntent, behavioralMemory);
@@ -3944,12 +4317,52 @@ const generatePickPayload = async (rawPreferences = {}) => {
         score: scoring.score,
         behavioral_adjustment: scoring.behavioralAdjustment,
         behavioral_reasons: scoring.behavioralReasons,
+        fit_breakdown: scoring.recommendationBreakdown,
       };
     })
     .sort((left, right) => right.score - left.score);
 
+  const rescueRankingEntries = !usesHardEntityPool
+    ? dedupeMoviesById(detailedCandidates.length ? detailedCandidates : topPreliminaryCandidates)
+        .filter((movie) => !excludedIds.has(movie.id) && !isLowSignalMovie(movie))
+        .filter((movie) => passesAudienceGuardrails(movie, resolvedIntent))
+        .filter((movie) => {
+          const hardFilters = resolvedIntent.hard_filters || {};
+          const runtime = Number(movie.runtime || 0);
+          if (hardFilters.max_runtime_minutes && runtime && runtime > hardFilters.max_runtime_minutes) return false;
+          if (hardFilters.min_runtime_minutes && runtime && runtime < hardFilters.min_runtime_minutes) return false;
+          if (Array.isArray(hardFilters.exclude_genre_ids) && matchesAnyGenre(movie.genre_ids || [], hardFilters.exclude_genre_ids)) return false;
+          if (getKnownBadPatternAdjustments(movie, resolvedIntent).hardReject) return false;
+          return true;
+        })
+        .map((movie) => {
+          const scoring = scorePickCandidate(movie, preferences, promptBoosts, resolvedIntent, behavioralMemory);
+          return {
+            movie,
+            score: scoring.score,
+            behavioral_adjustment: scoring.behavioralAdjustment,
+            behavioral_reasons: scoring.behavioralReasons,
+            fit_breakdown: scoring.recommendationBreakdown,
+          };
+        })
+        .filter((entry) => entry.fit_breakdown?.fit_tier !== "no_fit")
+        .sort((left, right) => right.score - left.score)
+    : [];
+
   const validatedRankedCandidates = finalRankedCandidates.filter((entry) => isMovieValidForIntent(entry.movie, resolvedIntent, promptBoosts));
-  const rankingSourceEntries = (usesHardEntityPool || strictPrefilter.enforced) ? validatedRankedCandidates : finalRankedCandidates;
+  const requiresSubjectMatch = hasMeaningfulSubjectRequirement(resolvedIntent);
+  const subjectMatchedValidatedEntries = requiresSubjectMatch
+    ? validatedRankedCandidates.filter((entry) => hasEntitySatisfiedFit(entry))
+    : [];
+  const subjectMatchedFinalEntries = requiresSubjectMatch
+    ? finalRankedCandidates.filter((entry) => hasEntitySatisfiedFit(entry))
+    : [];
+  const rankingBaseEntries = (usesHardEntityPool || (strictPrefilter.enforced && strictPrefilter.movies.length)) ? validatedRankedCandidates : finalRankedCandidates;
+  const rankingSourceEntries = subjectMatchedValidatedEntries.length
+    ? subjectMatchedValidatedEntries
+    : subjectMatchedFinalEntries.length
+      ? subjectMatchedFinalEntries
+      : rankingBaseEntries;
   const curatedRankingEntries = usesHardEntityPool
     ? rankingSourceEntries.slice(0, Math.max(8, Math.min(rankingSourceEntries.length, 40)))
     : balanceCandidatesByEra(rankingSourceEntries, 22);
@@ -3976,17 +4389,85 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const movieLookup = new Map(rankingPool.map((movie) => [movie.id, movie]));
   const fallbackPrimary = rankingSourceEntries[0]?.movie || null;
   const fallbackBackups = rankingSourceEntries.slice(1, 5).map((entry) => entry.movie);
+  const rescuePrimary = rescueRankingEntries[0]?.movie || null;
+  const rescueBackups = rescueRankingEntries.slice(1, 5).map((entry) => entry.movie);
 
   const rankedPrimaryCandidate = movieLookup.get(aiRanking?.primary?.id);
-  const primaryPick = rankedPrimaryCandidate && isMovieValidForIntent(rankedPrimaryCandidate, resolvedIntent, promptBoosts)
-    ? rankedPrimaryCandidate
-    : fallbackPrimary;
-  const alternatePicks = (Array.isArray(aiRanking?.backups) ? aiRanking.backups.map((entry) => movieLookup.get(entry.id)).filter(Boolean) : fallbackBackups)
-    .filter((movie) => movie?.id && movie.id !== primaryPick?.id && isMovieValidForIntent(movie, resolvedIntent, promptBoosts))
+  const preferredPrimaryEntry = rankingSourceEntries.find((entry) => entry.movie?.id === rankedPrimaryCandidate?.id) || rankingSourceEntries[0] || rescueRankingEntries[0] || null;
+  const canonicalPrimaryEntry = pickCanonicalPrimaryEntry(rankingSourceEntries, preferredPrimaryEntry, resolvedIntent) || preferredPrimaryEntry;
+  const primaryPick = canonicalPrimaryEntry?.movie || fallbackPrimary || rescuePrimary;
+  const primaryRankingEntry = rankingSourceEntries.find((entry) => entry.movie.id === primaryPick?.id)
+    || rescueRankingEntries.find((entry) => entry.movie.id === primaryPick?.id)
+    || null;
+  const trustedAlternateEntries = buildTrustedAlternateEntries([...rankingSourceEntries, ...rescueRankingEntries], primaryRankingEntry, resolvedIntent);
+  const aiOrderedAlternateEntries = Array.isArray(aiRanking?.backups)
+    ? aiRanking.backups
+        .map((entry) => trustedAlternateEntries.find((candidate) => candidate.movie?.id === entry.id))
+        .filter(Boolean)
+    : [];
+  const mergedAlternateEntries = dedupeMoviesById([
+    ...aiOrderedAlternateEntries.map((entry) => entry.movie),
+    ...trustedAlternateEntries.map((entry) => entry.movie),
+  ])
+    .map((movie) => trustedAlternateEntries.find((entry) => entry.movie?.id === movie.id))
+    .filter(Boolean)
     .slice(0, 4);
+  const alternatePicks = mergedAlternateEntries.map((entry) => entry.movie);
+
+  const debugTrace = includeDebug
+    ? {
+        prompt: preferences.prompt,
+        refinement,
+        parsed_intent: resolvedIntent,
+        expanded_terms: {
+          subject_entities: resolvedIntent.subject_entities || [],
+          query_expansion: resolvedIntent.query_expansion || null,
+          strict_theme_terms: resolvedIntent.strict_filters?.theme_terms || [],
+          strict_expanded_theme_terms: resolvedIntent.strict_filters?.expanded_theme_terms || [],
+        },
+        rabbit_retrieval_trace: rabbitRetrievalTrace,
+        pool_counts: {
+          candidate_pool: candidatePool.length,
+          fallback_pool: fallbackPool.length,
+          locally_filtered: locallyFilteredPool.length,
+          intent_filtered: intentFilteredPool.length,
+          strict_prefilter: strictPrefilter.movies?.length || 0,
+          detailed_intent_filtered: detailedIntentFilteredPool.length,
+          final_ranking_input: finalRankingInput.length,
+          rescue_candidates: rescueRankingEntries.length,
+          subject_matched_candidates: subjectMatchedValidatedEntries.length || subjectMatchedFinalEntries.length || 0,
+        },
+        applied_constraints: summarizeAppliedConstraints(resolvedIntent, refinement),
+        rabbit_presence_snapshots: {
+          candidate_pool: buildRabbitPresenceSnapshot(candidatePool),
+          fallback_pool: buildRabbitPresenceSnapshot(fallbackPool),
+          locally_filtered_pool: buildRabbitPresenceSnapshot(locallyFilteredPool),
+          intent_filtered_pool: buildRabbitPresenceSnapshot(intentFilteredPool),
+          strict_pool: buildRabbitPresenceSnapshot(strictPool || []),
+          base_ranking_pool: buildRabbitPresenceSnapshot(baseRankingPool),
+          top_preliminary_candidates: buildRabbitPresenceSnapshot(topPreliminaryCandidates),
+          detailed_candidates: buildRabbitPresenceSnapshot(detailedCandidates),
+          detailed_intent_filtered_pool: buildRabbitPresenceSnapshot(detailedIntentFilteredPool),
+          final_ranking_input: buildRabbitPresenceSnapshot(finalRankingInput),
+        },
+        rabbit_validation_status: {
+          candidate_pool: buildRabbitValidationSnapshot(candidatePool, resolvedIntent, promptBoosts),
+          locally_filtered_pool: buildRabbitValidationSnapshot(locallyFilteredPool, resolvedIntent, promptBoosts),
+          detailed_candidates: buildRabbitValidationSnapshot(detailedCandidates, resolvedIntent, promptBoosts),
+        },
+        top_preliminary_candidates: preliminaryRanked.slice(0, 8).map((entry) => toScoreDebugEntry(entry, resolvedIntent)),
+        top_candidates_before_final_ranking: finalRankedCandidates.slice(0, 8).map((entry) => toScoreDebugEntry(entry, resolvedIntent)),
+        top_candidates_considered_by_llm: curatedRankingEntries.slice(0, 8).map((entry) => toScoreDebugEntry(entry, resolvedIntent)),
+        rabbit_score_breakdown: {
+          preliminary: buildRabbitRankingSnapshot(preliminaryRanked, resolvedIntent),
+          final_ranked: buildRabbitRankingSnapshot(finalRankedCandidates, resolvedIntent),
+          ranking_source: buildRabbitRankingSnapshot(rankingSourceEntries, resolvedIntent),
+        },
+      }
+    : null;
 
   if (!primaryPick) {
-    return {
+    const noPickPayload = {
       label: "Pick for Me",
       summary: buildPickNoMatchSummary(preferences),
       assistant_note: usesHardEntityPool
@@ -4004,25 +4485,23 @@ const generatePickPayload = async (rawPreferences = {}) => {
       primary: null,
       alternates: [],
       resolved_refinement: refinement,
-      debug_trace: {
-        prompt: preferences.prompt,
-        refinement,
-        parsed_intent: resolvedIntent,
-        applied_constraints: summarizeAppliedConstraints(resolvedIntent, refinement),
-        ranked_candidates: rankingSourceEntries.slice(0, 8).map((entry) => ({
-          id: entry.movie.id,
-          title: entry.movie.title,
-          score: Number(entry.score.toFixed(2)),
-        })),
-      },
       cached: false,
     };
+    return attachPickDebugTrace(noPickPayload, includeDebug, {
+      ...debugTrace,
+      failure: {
+        reason: "no_primary_pick",
+        uses_hard_entity_pool: usesHardEntityPool,
+        top_validated_candidates: rankingSourceEntries.slice(0, 8).map((entry) => toScoreDebugEntry(entry, resolvedIntent)),
+        rescue_candidates: rescueRankingEntries.slice(0, 5).map((entry) => toScoreDebugEntry(entry, resolvedIntent)),
+      },
+    });
   }
 
   const topScore = rankingSourceEntries[0]?.score || 0;
   const rankedBackups = Array.isArray(aiRanking?.backups)
     ? aiRanking.backups
-        .filter((entry) => movieLookup.get(entry.id) && entry.id !== primaryPick.id && isMovieValidForIntent(movieLookup.get(entry.id), resolvedIntent, promptBoosts))
+        .filter((entry) => mergedAlternateEntries.some((candidate) => candidate.movie?.id === entry.id))
         .slice(0, 4)
     : alternatePicks.map((movie, index) => ({
         id: movie.id,
@@ -4038,24 +4517,30 @@ const generatePickPayload = async (rawPreferences = {}) => {
   }) || buildFallbackPickPresentation(preferences, resolvedIntent, primaryPick, alternatePicks, rankedBackups, behavioralMemory);
 
   const backupPresentationLookup = new Map((presentation.backups || []).map((entry) => [entry.id, entry]));
-  const primaryRankingEntry = rankingSourceEntries.find((entry) => entry.movie.id === primaryPick.id) || null;
-  const debugTrace = {
-    prompt: preferences.prompt,
-    refinement,
-    parsed_intent: resolvedIntent,
-    applied_constraints: summarizeAppliedConstraints(resolvedIntent, refinement),
-    ranked_candidates: rankingSourceEntries.slice(0, 8).map((entry) => ({
-      id: entry.movie.id,
-      title: entry.movie.title,
-      score: Number(entry.score.toFixed(2)),
-      behavioral_adjustment: entry.behavioral_adjustment,
-      known_bad_pattern_adjustments: getKnownBadPatternAdjustments(entry.movie, resolvedIntent),
-    })),
-  };
+  const primaryFitTier = primaryRankingEntry?.fit_breakdown?.fit_tier || "strong_fit";
+  if (debugTrace && primaryRankingEntry) {
+    debugTrace.winner_selection = {
+      title: primaryPick.title,
+      fit_tier: primaryFitTier,
+      source: rankedPrimaryCandidate?.id === primaryPick.id ? "llm_ranked_choice" : canonicalPrimaryEntry?.movie?.id === primaryPick.id ? "canonical_series_choice" : fallbackPrimary?.id === primaryPick.id ? "structured_fallback" : "rescue_fallback",
+      score: Number((primaryRankingEntry.score || 0).toFixed(2)),
+      structured_match_score: Number(Number(primaryPick.structured_match_score || 0).toFixed(1)),
+      entity_match_label: primaryRankingEntry.fit_breakdown?.entity_match_label || null,
+      major_factors: primaryRankingEntry.fit_breakdown?.components || null,
+      penalties: primaryRankingEntry.fit_breakdown?.penalties || [],
+      major_reason: buildPickReason(primaryPick, { prompt: resolvedIntent.raw_prompt || "" }),
+    };
+  }
   const payload = {
     label: "Pick for Me",
     summary: presentation.summary_line || buildPickSuccessSummary(primaryPick),
-    assistant_note: presentation.assistant_note || "ReelBot ranked a fresh pool of candidates and kept the backups nearby without crowding the main choice.",
+    assistant_note: presentation.assistant_note || (
+      primaryFitTier === "decent_fit"
+        ? "ReelBot found the best available fit in the lane and kept the backups nearby in case you want a slightly safer or more specific angle."
+        : primaryFitTier === "weak_fit"
+          ? "ReelBot found a workable option, but the lane is still narrow enough that the backups matter more than usual."
+          : "ReelBot ranked a fresh pool of candidates and kept the backups nearby without crowding the main choice."
+    ),
     match_score: aiRanking?.primary?.fit_score || buildMatchScore(rankingSourceEntries.find((entry) => entry.movie.id === primaryPick.id)?.score || topScore, topScore),
     resolved_preferences: preferences,
     resolved_intent: resolvedIntent,
@@ -4093,16 +4578,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
     })),
     candidate_count: candidatePool.length,
     curated_candidate_count: rankingPool.length,
-    debug_trace: {
-      ...debugTrace,
-      final_pick: {
-        id: primaryPick.id,
-        title: primaryPick.title,
-        reason: presentation.primary_reason,
-        behavioral_adjustment: primaryRankingEntry?.behavioral_adjustment || 0,
-        behavioral_reasons: primaryRankingEntry?.behavioral_reasons || [],
-      },
-    },
+    fit_tier: primaryFitTier,
   };
 
   [primaryPick, ...alternatePicks].filter(Boolean).forEach((movie) => {
@@ -4113,7 +4589,20 @@ const generatePickPayload = async (rawPreferences = {}) => {
     writeCache(pickCache, cacheKey, payload, CACHE_TTLS.pick);
   }
 
-  return { ...payload, cached: false };
+  return attachPickDebugTrace({ ...payload, cached: false }, includeDebug, {
+    ...debugTrace,
+    winner: {
+      id: primaryPick.id,
+      title: primaryPick.title,
+      fit_tier: primaryFitTier,
+      fit_components: primaryRankingEntry?.fit_breakdown?.components || null,
+      penalties: primaryRankingEntry?.fit_breakdown?.penalties || [],
+      why_winner_won: presentation.primary_reason,
+      why_this_works: presentation.why_this_works || [],
+      behavioral_adjustment: primaryRankingEntry?.behavioral_adjustment || 0,
+      behavioral_reasons: primaryRankingEntry?.behavioral_reasons || [],
+    },
+  });
 };
 
 const pickTrailer = (videos = []) => {
@@ -5298,11 +5787,12 @@ const fetchFilledDiscoverResults = async (type, pageNumber, options = {}, fillCo
 
 const buildPickFallbackPayload = async (rawPreferences = {}, message) => {
   const preferences = resolvePickPreferences(rawPreferences);
+  const includeDebug = shouldIncludePickDebug(rawPreferences);
   const resolvedIntent = await hydrateResolvedIntent(preferences, rawPreferences);
   const queryType = resolvedIntent.query_type || getIntentQueryType(resolvedIntent);
   const summary = message || buildPickErrorSummary(preferences);
 
-  return {
+  const payload = {
     label: "Pick for Me",
     summary,
     resolved_preferences: preferences,
@@ -5321,6 +5811,14 @@ const buildPickFallbackPayload = async (rawPreferences = {}, message) => {
     cached: false,
     degraded: true,
   };
+  return attachPickDebugTrace(payload, includeDebug, {
+    prompt: preferences.prompt,
+    parsed_intent: resolvedIntent,
+    failure: {
+      reason: "fallback_payload",
+      message: summary,
+    },
+  });
 };
 
 app.get("/sitemap.xml", async (req, res) => {

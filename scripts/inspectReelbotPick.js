@@ -22,6 +22,7 @@ const main = async () => {
       runtime: "any",
       company: "any",
       trigger: "debug_inspect",
+      include_debug: true,
     }),
   });
 

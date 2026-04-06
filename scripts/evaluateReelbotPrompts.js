@@ -33,6 +33,21 @@ fixtures.forEach((fixture) => {
     if (expected.age_suitability) {
       assert.strictEqual(parsed.age_suitability, expected.age_suitability);
     }
+    if (expected.audience_age) {
+      assert.strictEqual(parsed.audience_age, expected.audience_age);
+    }
+    if (expected.content_safety) {
+      assert.strictEqual(parsed.content_safety, expected.content_safety);
+    }
+    if (Array.isArray(expected.subject_entities)) {
+      expected.subject_entities.forEach((value) => assert(parsed.subject_entities?.includes(value), `${fixture.prompt} missing subject entity ${value}`));
+    }
+    if (expected.subject_match_type) {
+      assert.strictEqual(parsed.subject_match_type, expected.subject_match_type);
+    }
+    if (Array.isArray(expected.tone_preferences)) {
+      expected.tone_preferences.forEach((value) => assert(parsed.tone_preferences?.includes(value), `${fixture.prompt} missing tone preference ${value}`));
+    }
     if (Array.isArray(expected.watch_context)) {
       expected.watch_context.forEach((value) => assert(parsed.watch_context?.includes(value), `${fixture.prompt} missing watch context ${value}`));
     }
@@ -68,6 +83,10 @@ fixtures.forEach((fixture) => {
     if (Array.isArray(expected.strictExpandedThemeTerms)) {
       expected.strictExpandedThemeTerms.forEach((value) =>
         assert(parsed.strict_filters?.expanded_theme_terms?.includes(value), `${fixture.prompt} missing strict expanded theme term ${value}`));
+    }
+    if (Array.isArray(expected.query_expansion_terms)) {
+      expected.query_expansion_terms.forEach((value) =>
+        assert(parsed.query_expansion?.search_terms?.includes(value), `${fixture.prompt} missing query expansion term ${value}`));
     }
     if (expected.attentionLevel) {
       assert.strictEqual(parsed.attention_profile?.level, expected.attentionLevel);

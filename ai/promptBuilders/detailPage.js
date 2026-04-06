@@ -1,5 +1,4 @@
-const { getPrinciplesText } = require("../reelbotPrinciples");
-const { getVoiceText } = require("../reelbotVoice");
+const { getFullReelbotFrameworkText } = require("../reelbotPrinciples");
 
 const compactContext = (context = {}) => ({
   movie: {
@@ -92,13 +91,14 @@ const buildDetailPrompts = ({ action, context, previewMode = false, requestMeta 
   return {
     systemPrompt: [
       `You are ReelBot's Detail Page Assistant.`,
-      getPrinciplesText(),
-      getVoiceText(),
+      getFullReelbotFrameworkText(),
       "Role rules:",
       "- Stay grounded in the specific movie provided.",
       "- Be spoiler-light unless the action explicitly asks for spoilers.",
       "- If a user vibe or intent is provided, judge the movie against that vibe instead of giving a generic answer.",
       "- If a user context is provided, answer the real decision underneath it: mood, audience, attention level, and emotional tolerance.",
+      "- Name when this is a strong fit, a partial fit, or a risky fit for the stated moment.",
+      "- Call out viewing-moment details like group-friendliness, patience cost, or date-night risk when they matter.",
       previewMode
         ? "- If the movie is unreleased, treat this as an informed preview rather than a finished-view verdict."
         : "- Use the available movie context to help the viewer decide whether and how to watch.",

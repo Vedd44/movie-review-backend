@@ -159,6 +159,8 @@ module.exports = [
     expected: {
       prompt_type: "vibe",
       audiencePrimary: "young_child",
+      audience_age: "toddler",
+      content_safety: "very_safe",
       preferred_genre_ids: [16, 10751],
       avoid_genre_ids: [27, 53],
       guardrailActive: true,
@@ -166,6 +168,30 @@ module.exports = [
       strictRatings: ["G", "PG"],
       strictThemeTerms: ["easter"],
       strictExpandedThemeTerms: ["springtime", "bunny", "rabbit"],
+    },
+  },
+  {
+    prompt: "Toddler friendly movies that include rabbits",
+    expected: {
+      prompt_type: "vibe",
+      audiencePrimary: "young_child",
+      audience_age: "toddler",
+      content_safety: "very_safe",
+      subject_entities: ["rabbit"],
+      subject_match_type: "meaningful_presence",
+      tone_preferences: ["gentle", "playful", "bright"],
+      query_expansion_terms: ["rabbit", "bunny", "hare", "Peter Rabbit", "Hop"],
+      strictThemeTerms: ["rabbit", "bunny"],
+    },
+  },
+  {
+    prompt: "A movie with foxes for younger kids",
+    expected: {
+      prompt_type: "vibe",
+      audience_age: "young_kids",
+      content_safety: "safe",
+      subject_entities: ["fox"],
+      query_expansion_terms: ["fox", "foxes", "Fantastic Mr. Fox"],
     },
   },
   {

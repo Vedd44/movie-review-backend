@@ -2,6 +2,15 @@ const { getMatchedRubricKeys } = require("./recommendationRubrics");
 const { getAudienceIntentSignals } = require("./audienceSignals");
 const { detectStructuredQuery } = require("./queryInterpreter");
 const { buildStrictIntentFilters } = require("./strictIntentFilters");
+const {
+  inferAudienceAgeBucket,
+  inferContentSafety,
+  extractSubjectEntities,
+  inferSubjectMatchType,
+  inferTonePreferences,
+  inferSoftPreferences,
+  buildQueryExpansion,
+} = require("./queryExpansion");
 
 const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim();
 const lower = (value = "") => compact(value).toLowerCase();
@@ -10,12 +19,17 @@ const sanitizeAnchorText = (value = "") =>
     String(value || "")
       .replace(/\b(?:under|over|but|that are|that's|that is|for|from)\b.*$/i, " ")
   );
+const sanitizeTitleAnchorText = (value = "") =>
+  compact(
+    String(value || "")
+      .replace(/\b(?:under|over|but|that are|that's|that is|from)\b.*$/i, " ")
+  );
 
-const extractWithPatterns = (prompt, patterns = []) => {
+const extractWithPatterns = (prompt, patterns = [], sanitizer = sanitizeAnchorText) => {
   for (const pattern of patterns) {
     const match = prompt.match(pattern);
     if (match?.[1]) {
-      return sanitizeAnchorText(match[1]);
+      return sanitizer(match[1]);
     }
   }
   return "";
@@ -39,10 +53,11 @@ const PERSON_ANCHOR_PATTERNS = [
 ];
 
 const TITLE_ANCHOR_PATTERNS = [
-  /movies? like\s+(.+)/i,
-  /something like\s+(.+)/i,
-  /similar to\s+(.+)/i,
-  /more movies? like\s+(.+)/i,
+  /movies? like\s+(.+?)(?:\s+or\s+.+)?$/i,
+  /something like\s+(.+?)(?:\s+or\s+.+)?$/i,
+  /similar to\s+(.+?)(?:\s+or\s+.+)?$/i,
+  /more movies? like\s+(.+?)(?:\s+or\s+.+)?$/i,
+  /\blike\s+([A-Z][^,]+?)(?:\s+or\s+.+)?$/i,
 ];
 
 const inferPreferredGenreIds = (prompt = "") => {
@@ -100,8 +115,14 @@ const inferThematicTerms = (prompt = "") => {
   if (/grief|loss|mourning/i.test(normalizedPrompt)) addUnique(terms, ["grief", "loss"]);
   if (/relationship|romance|heartbreak/i.test(normalizedPrompt)) addUnique(terms, ["relationship", "heartbreak"]);
   if (/family/i.test(normalizedPrompt)) addUnique(terms, ["family"]);
-  if (/easter|spring|bunn(?:y|ies)|rabbit|rabbits|egg hunt/i.test(normalizedPrompt)) {
-    addUnique(terms, ["easter", "family"]);
+  if (/easter|spring|bunn(?:y|ies)|rabbit|rabbits|hare|hares|egg hunt/i.test(normalizedPrompt)) {
+    addUnique(terms, ["rabbit", "bunny", "hare", "easter", "family"]);
+  }
+  if (/dog|dogs|puppy|puppies|canine/i.test(normalizedPrompt)) {
+    addUnique(terms, ["dog", "puppy", "family"]);
+  }
+  if (/fox|foxes/i.test(normalizedPrompt)) {
+    addUnique(terms, ["fox", "family"]);
   }
 
   return terms;
@@ -120,9 +141,11 @@ const classifyPromptType = (prompt = "") => {
     return "vibe";
   }
 
-  const titleAnchor = extractWithPatterns(rawPrompt, TITLE_ANCHOR_PATTERNS);
+  const titleAnchor = extractWithPatterns(rawPrompt, TITLE_ANCHOR_PATTERNS, sanitizeTitleAnchorText);
   const explicitPersonAnchor = extractWithPatterns(rawPrompt, PERSON_ANCHOR_PATTERNS);
-  const hasModifier = /\bbut\b|\bwith\b|\bunder\b|\bless\b|\bmore\b|\bnot\b|\bdarker\b|\blighter\b/i.test(rawPrompt);
+  const hasModifier = titleAnchor
+    ? /\bbut\b|\bunder\b|\bless\b|\bmore\b|\bnot\b|\bdarker\b|\blighter\b/i.test(rawPrompt)
+    : /\bbut\b|\bwith\b|\bunder\b|\bless\b|\bmore\b|\bnot\b|\bdarker\b|\blighter\b/i.test(rawPrompt);
   const looksLikePersonName = /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}$/.test(rawPrompt) || /^[a-z]+\s+[a-z]+$/.test(normalizedPrompt);
 
   if (titleAnchor) {
@@ -283,7 +306,7 @@ const getSpecificity = (prompt = "", structuredQuery = null, titleAnchor = "", p
     awards_hint: structuredQuery?.type === "awards" ? { award: structuredQuery.award, year: structuredQuery.year } : null,
     place_theme: /movies?\s+about\s+|movies?\s+set\s+in\s+|stories?\s+about\s+/i.test(prompt),
     actor_or_director_requested: /starring|with|featuring|directed by/i.test(normalizedPrompt),
-    title_similarity_requested: /movies? like|something like|similar to/i.test(normalizedPrompt),
+    title_similarity_requested: /movies? like|something like|similar to|\blike\s+[a-z0-9].+\s+or\s+[a-z0-9]/i.test(normalizedPrompt),
   };
 };
 
@@ -293,7 +316,7 @@ const parseReelbotIntent = (prompt = "") => {
   const promptType = classifyPromptType(rawPrompt);
   const audienceSignals = getAudienceIntentSignals(rawPrompt);
   const structuredQuery = detectStructuredQuery(rawPrompt);
-  const titleAnchor = extractWithPatterns(rawPrompt, TITLE_ANCHOR_PATTERNS);
+  const titleAnchor = extractWithPatterns(rawPrompt, TITLE_ANCHOR_PATTERNS, sanitizeTitleAnchorText);
   const explicitPersonAnchor = extractWithPatterns(rawPrompt, PERSON_ANCHOR_PATTERNS);
   const personAnchor = promptType.includes("anchor") && !titleAnchor
     ? (explicitPersonAnchor || rawPrompt.split(/\bbut\b|\bwith\b|\bunder\b/i)[0].trim())
@@ -305,6 +328,12 @@ const parseReelbotIntent = (prompt = "") => {
   const pacingEnergy = getPacingEnergyProfile(rawPrompt, emotionalTolerance);
   const runtimeCommitment = getRuntimeCommitment(rawPrompt);
   const specificity = getSpecificity(rawPrompt, structuredQuery, titleAnchor, personAnchor);
+  const audienceAge = inferAudienceAgeBucket(rawPrompt, audienceSignals);
+  const contentSafety = inferContentSafety(rawPrompt, audienceSignals, audienceAge);
+  const subjectEntities = extractSubjectEntities(rawPrompt);
+  const subjectMatchType = inferSubjectMatchType(rawPrompt);
+  const tonePreferences = inferTonePreferences(rawPrompt, audienceAge);
+  const softPreferenceSignals = inferSoftPreferences(rawPrompt, audienceAge);
 
   const avoid = [];
   if (emotionalTolerance.avoid_depressing) {
@@ -352,7 +381,18 @@ const parseReelbotIntent = (prompt = "") => {
 
   const preferredGenreIds = inferPreferredGenreIds(rawPrompt);
   const avoidGenreIds = inferAvoidGenreIds(rawPrompt);
-  const thematicTerms = inferThematicTerms(rawPrompt);
+  const queryExpansion = buildQueryExpansion({
+    prompt: rawPrompt,
+    audienceAge,
+    subjectEntities,
+    tonePreferences,
+    softPreferences: softPreferenceSignals,
+  });
+  const thematicTerms = addUnique(inferThematicTerms(rawPrompt), [
+    ...subjectEntities,
+    ...queryExpansion.entity_aliases,
+    ...queryExpansion.title_hints.map((value) => lower(value)),
+  ]);
   const strictFilters = buildStrictIntentFilters({
     prompt: rawPrompt,
     audience: audienceSignals.audience,
@@ -395,6 +435,12 @@ const parseReelbotIntent = (prompt = "") => {
             ? "easygoing"
             : null,
     accessibility,
+    audience_age: audienceAge,
+    age_fit: audienceAge,
+    content_safety: contentSafety,
+    subject_entities: subjectEntities,
+    subject_match_type: subjectMatchType,
+    tone_preferences: tonePreferences,
     energy_level: pacingEnergy.energy,
     audience: audienceSignals.audience,
     age_suitability: audienceSignals.age_suitability,
@@ -425,11 +471,15 @@ const parseReelbotIntent = (prompt = "") => {
       boost_genre_ids: preferredGenreIds,
       avoid_genre_ids: avoidGenreIds,
       thematic_terms: thematicTerms,
+      subject_entities: subjectEntities,
+      expansion_terms: queryExpansion.search_terms,
+      preference_signals: Array.from(new Set([...softPreferenceSignals, ...queryExpansion.audience_terms])),
       boost_traits: Array.from(new Set([
         ...tone,
         emotionalTolerance.comforting ? "comforting" : "",
         attentionProfile.immersive ? "immersive" : "",
         pacingEnergy.immediate_hook ? "immediate_hook" : "",
+        ...softPreferenceSignals,
       ].filter(Boolean))),
     },
     avoid,
@@ -438,6 +488,8 @@ const parseReelbotIntent = (prompt = "") => {
     avoid_genre_ids: avoidGenreIds,
     thematic_terms: thematicTerms,
     strict_filters: strictFilters,
+    query_expansion: queryExpansion,
+    fallback_mode: "best_available",
     structured_query_hint: structuredQuery || null,
     lane_key: laneKey,
   };
