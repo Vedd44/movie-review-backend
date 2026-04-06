@@ -1,6 +1,7 @@
 const { getMatchedRubricKeys } = require("./recommendationRubrics");
 const { getAudienceIntentSignals } = require("./audienceSignals");
 const { detectStructuredQuery } = require("./queryInterpreter");
+const { buildStrictIntentFilters } = require("./strictIntentFilters");
 
 const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim();
 const lower = (value = "") => compact(value).toLowerCase();
@@ -99,6 +100,9 @@ const inferThematicTerms = (prompt = "") => {
   if (/grief|loss|mourning/i.test(normalizedPrompt)) addUnique(terms, ["grief", "loss"]);
   if (/relationship|romance|heartbreak/i.test(normalizedPrompt)) addUnique(terms, ["relationship", "heartbreak"]);
   if (/family/i.test(normalizedPrompt)) addUnique(terms, ["family"]);
+  if (/easter|spring|bunn(?:y|ies)|rabbit|rabbits|egg hunt/i.test(normalizedPrompt)) {
+    addUnique(terms, ["easter", "family"]);
+  }
 
   return terms;
 };
@@ -324,6 +328,7 @@ const parseReelbotIntent = (prompt = "") => {
   if (/visual|visually stunning|cinematic|gorgeous/i.test(rawPrompt)) tone.push("visual");
   if (/smart|twisty|mind-bending|clever|sci-fi|scifi/i.test(rawPrompt)) tone.push("idea-driven");
   if (emotionalTolerance.comforting) tone.push("comforting");
+  if (audienceSignals.guardrails.child_family_safe) tone.push("gentle", "safe");
 
   let accessibility = "fairly_accessible";
   if (/less accessible|challenging|demanding|arthouse|rewarding/i.test(rawPrompt)) accessibility = "demanding";
@@ -348,6 +353,15 @@ const parseReelbotIntent = (prompt = "") => {
   const preferredGenreIds = inferPreferredGenreIds(rawPrompt);
   const avoidGenreIds = inferAvoidGenreIds(rawPrompt);
   const thematicTerms = inferThematicTerms(rawPrompt);
+  const strictFilters = buildStrictIntentFilters({
+    prompt: rawPrompt,
+    audience: audienceSignals.audience,
+    guardrails: audienceSignals.guardrails,
+    tone,
+    thematicTerms,
+    structuredQuery,
+    avoidanceSignals: audienceSignals.avoidance_signals,
+  });
   const laneKey =
     structuredQuery?.type === "country"
       ? `country:${structuredQuery.country.canonical}`
@@ -423,6 +437,7 @@ const parseReelbotIntent = (prompt = "") => {
     preferred_genre_ids: preferredGenreIds,
     avoid_genre_ids: avoidGenreIds,
     thematic_terms: thematicTerms,
+    strict_filters: strictFilters,
     structured_query_hint: structuredQuery || null,
     lane_key: laneKey,
   };

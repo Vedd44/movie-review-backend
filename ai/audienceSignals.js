@@ -11,7 +11,7 @@ const COMFORT_PATTERN = /\beasy watch|comfort(?:ing)?|cozy|gentle|low stress|soo
 const CHILD_SAFE_BLOCKED_GENRE_IDS = [27, 53, 80, 10752];
 const CHILD_SAFE_SUPPORTIVE_GENRE_IDS = [16, 10751, 35, 12, 14, 10402];
 const CHILD_SAFE_BLOCKED_TEXT_PATTERN =
-  /\bhorror|thriller|slasher|serial killer|killer|murder|violent|violence|blood|gore|war|battlefield|combat|assassin|revenge|crime boss|gangster|drug cartel|abuse|trauma|suicide|kidnap|hostage|terror|distressing|bleak|grief|mourning|terminal illness|adult themes|sexual|erotic|affair|addiction|prison\b/i;
+  /\bhorror|thriller|slasher|serial killer|killer|murder|violent|violence|blood|gore|war|battlefield|combat|assassin|revenge|crime boss|gangster|drug cartel|abuse|trauma|suicide|kidnap|hostage|terror|distressing|bleak|grief|mourning|terminal illness|adult themes|sexual|erotic|affair|addiction|prison|post-apocalyptic|post apocalyptic|apocalypse|apocalyptic|end of the world|disaster|catastrophe|pandemic outbreak|zombie\b/i;
 
 const unique = (values = []) => Array.from(new Set((Array.isArray(values) ? values : []).filter(Boolean)));
 const matchesAnyGenre = (genreIds = [], expectedIds = []) => expectedIds.some((genreId) => genreIds.includes(genreId));

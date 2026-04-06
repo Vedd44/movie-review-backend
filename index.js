@@ -6,6 +6,7 @@ const { parseReelbotIntent, isIntentSnapshotValid } = require("./ai/intentParser
 const { hasChildFamilyGuardrails, passesAudienceGuardrails, getAudienceContextFitScore } = require("./ai/audienceSignals");
 const { detectStructuredQuery } = require("./ai/queryInterpreter");
 const { getKnownBadPatternAdjustments, summarizeAppliedConstraints } = require("./ai/knownBadPatterns");
+const { hasStrictIntentFilters, passesStrictIntentFilter } = require("./ai/strictIntentFilters");
 const { buildPickRankerPrompts, buildPickWriterPrompts } = require("./ai/promptBuilders/homepagePick");
 const { buildDetailPrompts } = require("./ai/promptBuilders/detailPage");
 const { pickRankingSchema, pickWriterSchema, getDetailSchema } = require("./ai/aiSchemas");
@@ -734,6 +735,7 @@ const normalizeStructuredCandidate = (movie = {}, overrides = {}) => ({
     : Array.isArray(movie.spoken_language_codes)
       ? movie.spoken_language_codes
       : [],
+  us_certification: overrides.us_certification || movie.us_certification || "",
   structured_match_score: overrides.structured_match_score || movie.structured_match_score || 0,
   structured_match_reasons: uniqueStrings(overrides.structured_match_reasons || movie.structured_match_reasons || []),
   source_type: overrides.source_type || movie.source_type || "structured_search",
@@ -1076,6 +1078,37 @@ const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}) => {
   }
 
   return true;
+};
+
+const applyStrictIntentPrefilter = (movies = [], intent = {}, options = {}) => {
+  if (!hasStrictIntentFilters(intent)) {
+    return {
+      enforced: false,
+      usedExpandedThemeTerms: false,
+      movies: Array.isArray(movies) ? movies : [],
+    };
+  }
+
+  const safeMovies = Array.isArray(movies) ? movies : [];
+  const strictMatches = safeMovies.filter((movie) => passesStrictIntentFilter(movie, intent, { allowExpandedThemes: false }));
+  const hasExpandedThemeTerms = Array.isArray(intent?.strict_filters?.expanded_theme_terms)
+    && Array.isArray(intent?.strict_filters?.theme_terms)
+    && intent.strict_filters.expanded_theme_terms.length > intent.strict_filters.theme_terms.length;
+
+  if ((strictMatches.length >= 6 || !hasExpandedThemeTerms) || options.disableThemeExpansion) {
+    return {
+      enforced: true,
+      usedExpandedThemeTerms: false,
+      movies: strictMatches,
+    };
+  }
+
+  const expandedMatches = safeMovies.filter((movie) => passesStrictIntentFilter(movie, intent, { allowExpandedThemes: true }));
+  return {
+    enforced: true,
+    usedExpandedThemeTerms: expandedMatches.length > strictMatches.length,
+    movies: expandedMatches.length ? expandedMatches : strictMatches,
+  };
 };
 
 const getPromptMovieBoosts = async (prompt = "", intent = null) => {
@@ -2618,7 +2651,7 @@ const getPickMoodReason = (moodId) => {
     case "feel_something":
       return "Emotional in a rewarding way rather than purely draining";
     default:
-      return "Feels like a strong overall fit for tonight";
+      return "Feels like a strong overall fit";
   }
 };
 
@@ -2650,7 +2683,7 @@ const joinReasonClauses = (clauses = []) => {
   const filteredClauses = clauses.filter(Boolean);
 
   if (!filteredClauses.length) {
-    return "feels like a solid all-around pick for tonight";
+    return "feels like a solid all-around pick";
   }
 
   if (filteredClauses.length === 1) {
@@ -2816,8 +2849,17 @@ const normalizeExcludedIds = (excludedIds = []) =>
       .filter(Boolean)
   );
 
+const getUsCertification = (releaseDates = {}) => {
+  const usReleaseGroup = (Array.isArray(releaseDates?.results) ? releaseDates.results : []).find((entry) => entry?.iso_3166_1 === "US");
+  const certifications = (Array.isArray(usReleaseGroup?.release_dates) ? usReleaseGroup.release_dates : [])
+    .map((entry) => String(entry?.certification || "").trim().toUpperCase())
+    .filter(Boolean);
+
+  return certifications[0] || "";
+};
+
 const fetchPickDetail = async (movieId) => {
-  const payload = await fetchTmdbCached(`/movie/${movieId}`, {}, CACHE_TTLS.movie_details);
+  const payload = await fetchTmdbCached(`/movie/${movieId}`, { append_to_response: "release_dates" }, CACHE_TTLS.movie_details);
   return {
     id: payload.id,
     runtime: payload.runtime || null,
@@ -2832,6 +2874,7 @@ const fetchPickDetail = async (movieId) => {
     vote_count: payload.vote_count || 0,
     popularity: payload.popularity || 0,
     overview: payload.overview || "",
+    us_certification: getUsCertification(payload.release_dates),
     signal_score: getMovieSignalScore(payload),
   };
 };
@@ -2842,13 +2885,14 @@ const fetchMoviesByIds = async (movieIds = []) => {
     return [];
   }
 
-  const responses = await Promise.allSettled(ids.map((movieId) => fetchTmdbCached(`/movie/${movieId}`, {}, CACHE_TTLS.movie_details)));
+  const responses = await Promise.allSettled(ids.map((movieId) => fetchTmdbCached(`/movie/${movieId}`, { append_to_response: "release_dates" }, CACHE_TTLS.movie_details)));
   return responses
     .filter((response) => response.status === "fulfilled")
     .map((response) => ({
       ...response.value,
       genre_ids: Array.isArray(response.value.genres) ? response.value.genres.map((genre) => genre.id) : response.value.genre_ids || [],
       genre_names: Array.isArray(response.value.genres) ? response.value.genres.map((genre) => genre.name) : response.value.genre_names || [],
+      us_certification: getUsCertification(response.value.release_dates),
       source_type: response.value.source_type || "constrained_pool",
       source_endpoint: response.value.source_endpoint || "/movie",
     }));
@@ -2967,7 +3011,8 @@ const scoreGenreThemeCandidate = (movie = {}, structuredQuery = {}) => {
   const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
   const expectedGenres = structuredQuery.genre_ids || [];
   const searchableText = [movie.title, movie.overview, movie.tagline].filter(Boolean).join(" ");
-  const themeTerms = (structuredQuery.themes || []).flatMap((theme) => theme.keyword_terms || []);
+  const baseThemeTerms = (structuredQuery.themes || []).flatMap((theme) => theme.keyword_terms || []);
+  const expandedThemeTerms = (structuredQuery.themes || []).flatMap((theme) => theme.expanded_keyword_terms || []);
 
   let score = 0;
   const reasons = [];
@@ -2977,16 +3022,24 @@ const scoreGenreThemeCandidate = (movie = {}, structuredQuery = {}) => {
     reasons.push("TMDB genre tags match the requested lane.");
   }
 
-  const textScore = getTextTermScore(searchableText, themeTerms);
+  const textScore = getTextTermScore(searchableText, baseThemeTerms);
   if (textScore) {
     score += textScore;
     reasons.push("Title or overview reinforces the requested theme.");
   }
 
-  const keywordScore = getTextTermScore((movie.structured_match_reasons || []).join(" "), themeTerms);
+  const keywordScore = getTextTermScore((movie.structured_match_reasons || []).join(" "), baseThemeTerms);
   if (keywordScore) {
     score += Math.round(keywordScore / 2);
     reasons.push("Matched TMDB keyword cues for the theme.");
+  }
+
+  if (!textScore && !keywordScore && expandedThemeTerms.length) {
+    const expandedTextScore = getTextTermScore(searchableText, expandedThemeTerms);
+    if (expandedTextScore) {
+      score += Math.round(expandedTextScore * 0.55);
+      reasons.push("Expanded theme fallback still fits the requested lane.");
+    }
   }
 
   score += Math.min(movie.popularity || 0, 140) / 4;
@@ -3200,6 +3253,7 @@ const resolveCountryQueryCandidates = async (structuredQuery) => {
 
 const resolveGenreThemeCandidates = async (structuredQuery) => {
   const keywordTerms = uniqueStrings((structuredQuery.themes || []).flatMap((theme) => theme.keyword_terms || []));
+  const expandedKeywordTerms = uniqueStrings((structuredQuery.themes || []).flatMap((theme) => theme.expanded_keyword_terms || []));
   const keywordMatches = await resolveTmdbKeywordIds(keywordTerms);
   const discoverGenreIds = mergeGenreIds(structuredQuery.genre_ids, (structuredQuery.themes || []).flatMap((theme) => theme.genre_ids || []));
   const candidateMap = new Map();
@@ -3250,6 +3304,24 @@ const resolveGenreThemeCandidates = async (structuredQuery) => {
     }
   }
 
+  for (const term of keywordTerms) {
+    try {
+      const payload = await fetchTmdb("/search/movie", {
+        query: term,
+        include_adult: "false",
+        page: 1,
+      });
+      (payload.results || []).slice(0, 8).forEach((movie) => {
+        rememberCandidate(movie, {
+          source_endpoint: "/search/movie",
+          match_reasons: [`TMDB text search matched "${term}".`],
+        });
+      });
+    } catch (error) {
+      console.error("Error fetching genre-theme text-search candidates:", error.response?.data || error.message);
+    }
+  }
+
   for (const keyword of keywordMatches) {
     try {
       const payload = await fetchTmdb("/discover/movie", {
@@ -3267,6 +3339,30 @@ const resolveGenreThemeCandidates = async (structuredQuery) => {
       });
     } catch (error) {
       console.error("Error fetching genre-theme keyword candidates:", error.response?.data || error.message);
+    }
+  }
+
+  if (candidateMap.size < 10 && expandedKeywordTerms.length) {
+    const expandedKeywordMatches = await resolveTmdbKeywordIds(expandedKeywordTerms);
+
+    for (const keyword of expandedKeywordMatches) {
+      try {
+        const payload = await fetchTmdb("/discover/movie", {
+          with_keywords: keyword.id,
+          with_genres: discoverGenreIds.length ? discoverGenreIds.join(",") : undefined,
+          sort_by: "popularity.desc",
+          include_adult: "false",
+          page: 1,
+        });
+        (payload.results || []).slice(0, 10).forEach((movie) => {
+          rememberCandidate(movie, {
+            source_endpoint: "/discover/movie",
+            match_reasons: [`Expanded theme fallback matched "${keyword.name}".`],
+          });
+        });
+      } catch (error) {
+        console.error("Error fetching expanded genre-theme keyword candidates:", error.response?.data || error.message);
+      }
     }
   }
 
@@ -3795,7 +3891,12 @@ const generatePickPayload = async (rawPreferences = {}) => {
 
   const locallyFilteredPool = fallbackPool.filter((movie) => !excludedIds.has(movie.id) && !isLowSignalMovie(movie));
   const intentFilteredPool = locallyFilteredPool.filter((movie) => isMovieValidForIntent(movie, resolvedIntent, promptBoosts));
-  const baseRankingPool = intentFilteredPool.length ? intentFilteredPool : locallyFilteredPool;
+  const strictPrefilter = applyStrictIntentPrefilter(intentFilteredPool, resolvedIntent);
+  const baseRankingPool = strictPrefilter.enforced
+    ? strictPrefilter.movies
+    : intentFilteredPool.length
+      ? intentFilteredPool
+      : locallyFilteredPool;
   const preliminaryRanked = dedupeMoviesById(baseRankingPool)
     .map((movie) => {
       const scoring = scorePickCandidate(movie, preferences, promptBoosts, resolvedIntent, behavioralMemory);
@@ -3810,8 +3911,14 @@ const generatePickPayload = async (rawPreferences = {}) => {
 
   const topPreliminaryCandidates = preliminaryRanked.slice(0, 36).map((entry) => entry.movie);
   const detailedCandidates = await enrichCandidatesWithDetails(topPreliminaryCandidates);
-  const finalRankedCandidates = detailedCandidates
+  const detailedIntentFilteredPool = detailedCandidates
     .filter((movie) => !isLowSignalMovie(movie) && !excludedIds.has(movie.id))
+    .filter((movie) => isMovieValidForIntent(movie, resolvedIntent, promptBoosts));
+  const strictDetailedPrefilter = strictPrefilter.enforced
+    ? applyStrictIntentPrefilter(detailedIntentFilteredPool, resolvedIntent, { disableThemeExpansion: !strictPrefilter.usedExpandedThemeTerms })
+    : { enforced: false, movies: detailedIntentFilteredPool };
+  const finalRankingInput = strictDetailedPrefilter.enforced ? strictDetailedPrefilter.movies : detailedIntentFilteredPool;
+  const finalRankedCandidates = finalRankingInput
     .map((movie) => {
       const scoring = scorePickCandidate(movie, preferences, promptBoosts, resolvedIntent, behavioralMemory);
       return {
@@ -3824,7 +3931,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
     .sort((left, right) => right.score - left.score);
 
   const validatedRankedCandidates = finalRankedCandidates.filter((entry) => isMovieValidForIntent(entry.movie, resolvedIntent, promptBoosts));
-  const rankingSourceEntries = usesHardEntityPool ? validatedRankedCandidates : finalRankedCandidates;
+  const rankingSourceEntries = (usesHardEntityPool || strictPrefilter.enforced) ? validatedRankedCandidates : finalRankedCandidates;
   const curatedRankingEntries = usesHardEntityPool
     ? rankingSourceEntries.slice(0, Math.max(8, Math.min(rankingSourceEntries.length, 40)))
     : balanceCandidatesByEra(rankingSourceEntries, 22);

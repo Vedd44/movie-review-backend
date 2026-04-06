@@ -54,6 +54,21 @@ fixtures.forEach((fixture) => {
     if (expected.friction_level) {
       assert.strictEqual(parsed.friction_level, expected.friction_level);
     }
+    if (expected.strictAudience) {
+      assert.strictEqual(parsed.strict_filters?.audience, expected.strictAudience);
+    }
+    if (Array.isArray(expected.strictRatings)) {
+      expected.strictRatings.forEach((value) =>
+        assert(parsed.strict_filters?.rating_allowlist?.includes(value), `${fixture.prompt} missing strict rating ${value}`));
+    }
+    if (Array.isArray(expected.strictThemeTerms)) {
+      expected.strictThemeTerms.forEach((value) =>
+        assert(parsed.strict_filters?.theme_terms?.includes(value), `${fixture.prompt} missing strict theme term ${value}`));
+    }
+    if (Array.isArray(expected.strictExpandedThemeTerms)) {
+      expected.strictExpandedThemeTerms.forEach((value) =>
+        assert(parsed.strict_filters?.expanded_theme_terms?.includes(value), `${fixture.prompt} missing strict expanded theme term ${value}`));
+    }
     if (expected.attentionLevel) {
       assert.strictEqual(parsed.attention_profile?.level, expected.attentionLevel);
     }

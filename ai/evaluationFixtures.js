@@ -155,6 +155,20 @@ module.exports = [
     },
   },
   {
+    prompt: "toddler friendly movie about easter",
+    expected: {
+      prompt_type: "vibe",
+      audiencePrimary: "young_child",
+      preferred_genre_ids: [16, 10751],
+      avoid_genre_ids: [27, 53],
+      guardrailActive: true,
+      strictAudience: "toddler",
+      strictRatings: ["G", "PG"],
+      strictThemeTerms: ["easter"],
+      strictExpandedThemeTerms: ["spring", "bunny", "rabbit"],
+    },
+  },
+  {
     prompt: "background watch with my parents",
     expected: {
       prompt_type: "vibe",

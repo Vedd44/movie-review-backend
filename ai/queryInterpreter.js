@@ -96,13 +96,23 @@ const THEME_ENTRIES = [
     display_name: "Christmas",
     aliases: ["christmas", "holiday", "xmas"],
     keyword_terms: ["christmas", "holiday"],
+    expanded_keyword_terms: ["winter", "snow", "family", "santa"],
     genre_ids: [35, 10749, 10751],
+  },
+  {
+    id: "easter",
+    display_name: "Easter",
+    aliases: ["easter", "easter bunny", "egg hunt"],
+    keyword_terms: ["easter", "easter bunny", "egg hunt", "easter egg"],
+    expanded_keyword_terms: ["spring", "springtime", "bunny", "bunnies", "rabbit", "rabbits", "chick", "duckling", "family"],
+    genre_ids: [16, 10751, 35, 12, 14],
   },
   {
     id: "courtroom",
     display_name: "courtroom",
     aliases: ["courtroom", "trial", "lawyer", "legal"],
     keyword_terms: ["courtroom", "trial", "lawyer", "legal"],
+    expanded_keyword_terms: [],
     genre_ids: [18, 80, 9648],
   },
 ];
@@ -193,6 +203,7 @@ const detectGenreThemeQuery = (prompt = "") => {
       id: entry.id,
       display_name: entry.display_name,
       keyword_terms: entry.keyword_terms,
+      expanded_keyword_terms: entry.expanded_keyword_terms || [],
       genre_ids: entry.genre_ids,
     })),
   };

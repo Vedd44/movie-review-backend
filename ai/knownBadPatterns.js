@@ -6,7 +6,7 @@ const matchesAnyGenre = (genreIds = [], expectedIds = []) =>
 const EASY_WATCH_SUPPORTIVE_GENRE_IDS = [35, 12, 16, 10749, 10751, 14, 10402];
 const EASY_WATCH_BLOCKED_GENRE_IDS = [27, 53, 80, 10752];
 const LOW_STRESS_BLOCKED_TEXT_PATTERN =
-  /\bhorror|slasher|serial killer|killer|murder|violent|violence|blood|gore|war|battlefield|combat|assassin|revenge|drug cartel|abuse|trauma|suicide|kidnap|hostage|terror|bleak|grief|mourning|terminal illness|adult themes|sexual|erotic|affair|addiction|prison\b/i;
+  /\bhorror|slasher|serial killer|killer|murder|violent|violence|blood|gore|war|battlefield|combat|assassin|revenge|drug cartel|abuse|trauma|suicide|kidnap|hostage|terror|bleak|grief|mourning|terminal illness|adult themes|sexual|erotic|affair|addiction|prison|post-apocalyptic|post apocalyptic|apocalypse|apocalyptic|end of the world|disaster|catastrophe|pandemic outbreak|zombie\b/i;
 
 const getKnownBadPatternAdjustments = (movie = {}, intent = {}) => {
   const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];

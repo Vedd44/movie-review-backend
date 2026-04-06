@@ -6,6 +6,7 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test:intent": "node scripts/evaluateReelbotPrompts.js",
+    "test:strict-intent": "node scripts/testStrictIntentFilters.js",
     "inspect:sitemap": "node scripts/inspectSitemap.js"
   },
   "keywords": [],
