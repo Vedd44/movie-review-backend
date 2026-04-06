@@ -3343,6 +3343,24 @@ const resolveGenreThemeCandidates = async (structuredQuery) => {
   }
 
   if (candidateMap.size < 10 && expandedKeywordTerms.length) {
+    for (const term of expandedKeywordTerms) {
+      try {
+        const payload = await fetchTmdb("/search/movie", {
+          query: term,
+          include_adult: "false",
+          page: 1,
+        });
+        (payload.results || []).slice(0, 8).forEach((movie) => {
+          rememberCandidate(movie, {
+            source_endpoint: "/search/movie",
+            match_reasons: [`Expanded theme text search matched "${term}".`],
+          });
+        });
+      } catch (error) {
+        console.error("Error fetching expanded genre-theme text-search candidates:", error.response?.data || error.message);
+      }
+    }
+
     const expandedKeywordMatches = await resolveTmdbKeywordIds(expandedKeywordTerms);
 
     for (const keyword of expandedKeywordMatches) {

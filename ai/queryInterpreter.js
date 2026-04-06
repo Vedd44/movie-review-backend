@@ -104,7 +104,7 @@ const THEME_ENTRIES = [
     display_name: "Easter",
     aliases: ["easter", "easter bunny", "egg hunt"],
     keyword_terms: ["easter", "easter bunny", "egg hunt", "easter egg"],
-    expanded_keyword_terms: ["spring", "springtime", "bunny", "bunnies", "rabbit", "rabbits", "chick", "duckling", "family"],
+    expanded_keyword_terms: ["springtime", "bunny", "bunnies", "rabbit", "rabbits", "hare", "hares", "chick", "duckling"],
     genre_ids: [16, 10751, 35, 12, 14],
   },
   {

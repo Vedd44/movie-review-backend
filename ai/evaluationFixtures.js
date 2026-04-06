@@ -165,7 +165,7 @@ module.exports = [
       strictAudience: "toddler",
       strictRatings: ["G", "PG"],
       strictThemeTerms: ["easter"],
-      strictExpandedThemeTerms: ["spring", "bunny", "rabbit"],
+      strictExpandedThemeTerms: ["springtime", "bunny", "rabbit"],
     },
   },
   {
