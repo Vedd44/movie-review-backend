@@ -201,9 +201,11 @@ const DETAIL_SCHEMAS = {
     additionalProperties: false,
     properties: {
       what_happens: { type: "string" },
-      what_it_means: { type: "string" },
+      why_it_lands: { type: "string" },
+      what_it_leaves_you_with: { type: "string" },
+      if_youre_deciding: { type: "string" },
     },
-    required: ["what_happens", "what_it_means"],
+    required: ["what_happens", "why_it_lands", "if_youre_deciding"],
   },
   themes_and_takeaways: {
     type: "object",

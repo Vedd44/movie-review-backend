@@ -82,6 +82,7 @@ const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
       "- Rank only from the provided candidate ids.",
       "- Never infer or reference movies outside the provided candidate pool.",
       "- Treat audience, tone, safety, and explicit exclusions as hard filters before ranking.",
+      "- Treat explicit release-year and release-decade constraints as hard filters unless the parsed intent already marks a fallback state.",
       "- Honor the parsed intent lane more than generic popularity.",
       "- Treat the user's moment as the real target, not just broad genre similarity.",
       "- Distinguish the safest strong fit from the most interesting strong fit when they are not the same movie.",
@@ -97,7 +98,7 @@ const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
       "Task:",
       "1. Choose exactly 1 top pick and 4 backup picks.",
       "2. Preserve the original lane for anchor prompts, title-similarity prompts, and swap requests.",
-      "3. Reject candidates that miss explicit audience, tone, safety, or exclusion constraints before you rank anything else.",
+      "3. Reject candidates that miss explicit year/decade, audience, tone, safety, or exclusion constraints before you rank anything else.",
       "4. Reward audience fit, context fit, tone fit, pacing fit, emotional fit, accessibility fit, prompt fidelity, and non-obviousness.",
       "5. Prefer clear fit tradeoffs over prestige language or famous defaults.",
       "6. If the best available option is only a partial fit, keep it inside the lane and let the backups cover adjacent safe or interesting angles.",
@@ -113,36 +114,54 @@ const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
   };
 };
 
-const buildPickWriterPrompts = ({ preferences, intent, primary, backups }) => ({
-  systemPrompt: [
-    `You are ReelBot's Recommendation Writer.`,
-    getFullReelbotFrameworkText(),
-    "Role rules:",
-    "- Explain the chosen movie and backup roles. Do not change the ranking.",
-    "- Keep it concise, specific, and decision-first.",
-    "- Explain only from the provided movie information and parsed intent. Do not invent plot points, awards, countries, or credits.",
-    "- Do not use banned filler or generic praise.",
-    "- Never mention metadata, tags, ranking logic, candidate pools, or other internal system language.",
-    "- If the fit is partial or fallback-level, say that crisply without sounding defensive.",
-    "- Treat fit_tier and derived_signals as grounding, not as user-facing jargon.",
-    "- Sound like ReelBot understands the user's moment, not like an evaluation system.",
-  ].join("\n\n"),
-  userPrompt: [
-    `Resolved preferences: ${stableStringify(preferences)}`,
-    `Parsed intent: ${stableStringify(intent)}`,
-    `User preference signals:\n${buildUserPreferenceBlock(preferences)}`,
-    `Primary pick: ${stableStringify(primary)}`,
-    `Backups: ${stableStringify(backups)}`,
-    "Task:",
-    "1. Write a prompt-specific context line that reflects the situation behind the request, not just the genre.",
-    "2. Write one concise summary line about the winning movie itself.",
-    "3. Write exactly 2 short reasons focused on the decision, the feel, the viewing moment, and any useful tradeoff.",
-    "4. If the fit is partial, make the miss clear in plain language instead of bluffing certainty.",
-    "5. Avoid phrases like 'great match', 'metadata', 'tags', 'scoring', or anything that sounds mechanical.",
-    "6. Give each backup a short role label and one-line rationale that keeps it close to the same vibe from a different angle.",
-    "7. Keep the voice restrained, confident, human, and useful for a fast decision.",
-  ].join("\n\n"),
-});
+const buildPickWriterPrompts = ({ preferences, intent, primary, backups }) => {
+  const lastPickTitle = String(preferences.last_pick_title || "").trim();
+  const lastPickReason = String(preferences.last_pick_reason || "").trim();
+  const variationFocus = preferences.variation_focus;
+  const variationFocusLine = variationFocus
+    ? `Variation focus: ${variationFocus.description}. Emphasize how this pick shifts ${variationFocus.dimension} compared to the previous pick.`
+    : "";
+
+  return {
+    systemPrompt: [
+      `You are ReelBot's Recommendation Writer.`,
+      getFullReelbotFrameworkText(),
+      "Role rules:",
+      "- Explain the chosen movie and backup roles. Do not change the ranking.",
+      "- Keep it concise, specific, and decision-first.",
+      "- Explain only from the provided movie information and parsed intent. Do not invent plot points, awards, countries, or credits.",
+      "- Do not use banned filler or generic praise.",
+      "- Never mention metadata, tags, ranking logic, candidate pools, or other internal system language.",
+      "- If the fit is partial or fallback-level, say that crisply without sounding defensive.",
+      "- If the parsed intent includes a time constraint fallback state, name that compromise plainly.",
+      "- Treat fit_tier and derived_signals as grounding, not as user-facing jargon.",
+      "- Sound like ReelBot understands the user's moment, not like an evaluation system.",
+      "- Reference the previous pick when available, avoid repeating its sentence structure, and steer clear of banned phrases such as \"clear identity\" or \"doesn't feel generic.\"",
+      "- Lean into the provided variation focus (tone/pacing/scale/accessibility/violence) when present and explain how this pick shifts that dimension.",
+    ].join("\n\n"),
+    userPrompt: [
+      `Resolved preferences: ${stableStringify(preferences)}`,
+      `Parsed intent: ${stableStringify(intent)}`,
+      `User preference signals:\n${buildUserPreferenceBlock(preferences)}`,
+      `Primary pick: ${stableStringify(primary)}`,
+      `Backups: ${stableStringify(backups)}`,
+      ...(lastPickTitle ? [`Previous pick title: ${lastPickTitle}`] : []),
+      ...(lastPickReason ? [`Previous pick rationale: ${lastPickReason}`] : []),
+      ...(variationFocusLine ? [variationFocusLine] : []),
+      "Task:",
+      "1. Write a prompt-specific context line that reflects the situation behind the request, not just the genre.",
+      "2. Write one concise summary line about the winning movie itself.",
+      "3. Write exactly 2 short reasons focused on the decision, the feel, the viewing moment, and any useful tradeoff.",
+      "4. If the fit is partial, make the miss clear in plain language instead of bluffing certainty.",
+      "4a. If the pick is slightly outside an explicit year or decade request, say that plainly and briefly.",
+      "5. Avoid phrases like 'great match', 'metadata', 'tags', 'scoring', or anything that sounds mechanical.",
+      "6. Give each backup a short role label and one-line rationale that keeps it close to the same vibe from a different angle.",
+      "7. Keep the voice restrained, confident, human, and useful for a fast decision.",
+      "8. Keep this pick distinct from the previous one, highlighting the new angle or contrast that makes each swap deliberate.",
+      "9. Write a 10-word max 'Why this now' line that highlights the strongest change from the previous pick or the clearest differentiator.",
+    ].join("\n\n"),
+  };
+};
 
 module.exports = {
   buildPickRankerPrompts,

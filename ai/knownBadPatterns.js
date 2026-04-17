@@ -125,6 +125,11 @@ const summarizeAppliedConstraints = (intent = {}, refinement = null) => {
     applied.push(`min_runtime_${intent.hard_filters.min_runtime_minutes}`);
   }
 
+  if (intent.time_constraint_state?.label) {
+    const suffix = intent.time_constraint_state.relaxed ? "_relaxed" : "";
+    applied.push(`time_constraint_${intent.time_constraint_state.label}${suffix}`);
+  }
+
   if (intent.query_type === "COUNTRY" && intent.structured_query?.country?.canonical) {
     applied.push(`country_${intent.structured_query.country.canonical}`);
   }

@@ -2,6 +2,7 @@ const { getMatchedRubricKeys } = require("./recommendationRubrics");
 const { getAudienceIntentSignals } = require("./audienceSignals");
 const { detectStructuredQuery } = require("./queryInterpreter");
 const { buildStrictIntentFilters } = require("./strictIntentFilters");
+const { parseExplicitTimeConstraint } = require("./timeConstraints");
 const {
   inferAudienceAgeBucket,
   inferContentSafety,
@@ -327,6 +328,7 @@ const parseReelbotIntent = (prompt = "") => {
   const attentionProfile = getAttentionProfile(rawPrompt);
   const pacingEnergy = getPacingEnergyProfile(rawPrompt, emotionalTolerance);
   const runtimeCommitment = getRuntimeCommitment(rawPrompt);
+  const timeConstraint = parseExplicitTimeConstraint(rawPrompt);
   const specificity = getSpecificity(rawPrompt, structuredQuery, titleAnchor, personAnchor);
   const audienceAge = inferAudienceAgeBucket(rawPrompt, audienceSignals);
   const contentSafety = inferContentSafety(rawPrompt, audienceSignals, audienceAge);
@@ -401,6 +403,7 @@ const parseReelbotIntent = (prompt = "") => {
     thematicTerms,
     structuredQuery,
     avoidanceSignals: audienceSignals.avoidance_signals,
+    timeConstraint,
   });
   const laneKey =
     structuredQuery?.type === "country"
@@ -457,15 +460,16 @@ const parseReelbotIntent = (prompt = "") => {
     specificity,
     constraints,
     hard_filters: {
-      family_safe_only: Boolean(audienceSignals.guardrails.child_family_safe),
-      max_runtime_minutes: runtimeCommitment.max_runtime_minutes,
-      min_runtime_minutes: runtimeCommitment.min_runtime_minutes,
-      exclude_genre_ids: Array.from(new Set([
-        ...(Array.isArray(audienceSignals.guardrails?.hard_exclude_genre_ids) ? audienceSignals.guardrails.hard_exclude_genre_ids : []),
-        ...avoidGenreIds,
-      ])),
-      require_country_relevance: structuredQuery?.type === "country",
-      require_awards_relevance: structuredQuery?.type === "awards",
+    family_safe_only: Boolean(audienceSignals.guardrails.child_family_safe),
+    max_runtime_minutes: runtimeCommitment.max_runtime_minutes,
+    min_runtime_minutes: runtimeCommitment.min_runtime_minutes,
+    exclude_genre_ids: Array.from(new Set([
+      ...(Array.isArray(audienceSignals.guardrails?.hard_exclude_genre_ids) ? audienceSignals.guardrails.hard_exclude_genre_ids : []),
+      ...avoidGenreIds,
+    ])),
+    require_country_relevance: structuredQuery?.type === "country",
+    require_awards_relevance: structuredQuery?.type === "awards",
+    time_constraint: timeConstraint,
     },
     soft_preferences: {
       boost_genre_ids: preferredGenreIds,
@@ -489,7 +493,7 @@ const parseReelbotIntent = (prompt = "") => {
     thematic_terms: thematicTerms,
     strict_filters: strictFilters,
     query_expansion: queryExpansion,
-    fallback_mode: "best_available",
+    fallback_mode: timeConstraint ? "strict_then_explicit_fallback" : "best_available",
     structured_query_hint: structuredQuery || null,
     lane_key: laneKey,
   };
@@ -502,4 +506,5 @@ module.exports = {
   classifyPromptType,
   parseReelbotIntent,
   isIntentSnapshotValid,
+  detectTimeConstraint: parseExplicitTimeConstraint,
 };

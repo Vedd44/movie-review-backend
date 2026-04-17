@@ -2,7 +2,8 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
-const { parseReelbotIntent, isIntentSnapshotValid } = require("./ai/intentParser");
+const { parseReelbotIntent, isIntentSnapshotValid, detectTimeConstraint } = require("./ai/intentParser");
+const { applyTimeConstraintFilterToPool, TIME_CONSTRAINT_MIN_STRICT_CANDIDATES } = require("./ai/timeConstraints");
 const { hasChildFamilyGuardrails, passesAudienceGuardrails, getAudienceContextFitScore } = require("./ai/audienceSignals");
 const { detectStructuredQuery } = require("./ai/queryInterpreter");
 const { getKnownBadPatternAdjustments, summarizeAppliedConstraints } = require("./ai/knownBadPatterns");
@@ -14,6 +15,10 @@ const { REELBOT_BANNED_PHRASES } = require("./ai/reelbotPrinciples");
 const { deriveMovieSignals } = require("./ai/movieSignals");
 const { getRecommendationFitBreakdown } = require("./ai/recommendationScoring");
 const { resolveExpandedRecommendationCandidates } = require("./ai/recommendationRetrieval");
+const {
+  buildTimeConstraintDiscoverVariants,
+  buildTimeConstraintGenreFilter,
+} = require("./ai/timeConstraintRetrieval");
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -117,7 +122,7 @@ const REELBOT_ACTIONS = {
   },
   ending_explained: {
     label: "Ending Explained",
-    maxTokens: 320,
+    maxTokens: 480,
   },
   themes_and_takeaways: {
     label: "Themes & Takeaways",
@@ -191,6 +196,27 @@ const PICK_COMPANY_CONFIG = {
     label: "With friends",
     genreIds: [28, 12, 27, 35, 878],
   },
+};
+
+const ensureTimeConstraintFilter = (intent = {}, prompt = "") => {
+  if (!prompt || typeof prompt !== "string") {
+    return intent;
+  }
+
+  const explicitConstraint = detectTimeConstraint(prompt);
+  if (!explicitConstraint) {
+    return intent;
+  }
+
+  if (!intent.hard_filters) {
+    intent.hard_filters = {};
+  }
+
+  if (!intent.hard_filters.time_constraint) {
+    intent.hard_filters.time_constraint = explicitConstraint;
+  }
+
+  return intent;
 };
 
 const TMDB_MOVIE_GENRE_LOOKUP = {
@@ -1057,6 +1083,15 @@ const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}) => {
     return false;
   }
 
+  const releaseYear = getMovieReleaseYear(movie);
+  if (hardFilters.min_release_year && releaseYear && releaseYear < hardFilters.min_release_year) {
+    return false;
+  }
+
+  if (hardFilters.max_release_year && releaseYear && releaseYear > hardFilters.max_release_year) {
+    return false;
+  }
+
   if (Array.isArray(hardFilters.exclude_genre_ids) && matchesAnyGenre(movie.genre_ids || [], hardFilters.exclude_genre_ids)) {
     return false;
   }
@@ -1641,6 +1676,9 @@ const resolvePickPreferences = (preferences = {}) => {
   const runtime = normalizePreferenceKey(preferences.runtime, PICK_RUNTIME_CONFIG, promptSignals.runtime || "any");
   const company = normalizePreferenceKey(preferences.company, PICK_COMPANY_CONFIG, promptSignals.company || "any");
   const genre = normalizePickGenre(preferences.genre);
+  const lastPickTitle = String(preferences.last_pick_title || "").trim();
+  const lastPickReason = String(preferences.last_pick_reason || "").trim();
+  const normalizedVariationFocus = normalizeVariationFocus(preferences.variation_focus);
 
   return {
     view,
@@ -1652,6 +1690,9 @@ const resolvePickPreferences = (preferences = {}) => {
     prompt,
     request_mode: preferences.is_swap ? "swap" : "fresh",
     behavioral_memory: normalizeBehavioralMemory(preferences.behavioral_memory),
+    last_pick_title: lastPickTitle,
+    last_pick_reason: lastPickReason,
+    variation_focus: normalizedVariationFocus,
   };
 };
 
@@ -1709,6 +1750,117 @@ const buildPickSetupPhrase = (preferences) =>
       preferences.runtime !== "any" ? getPickSummaryRuntimePhrase(preferences.runtime) : "",
     ].filter(Boolean)
   );
+
+const VARIATION_DIMENSION_SEQUENCE = [
+  { id: "tone_gritty", dimension: "tone", emphasis: "gritty", description: "Lean into a grittier tone" },
+  { id: "tone_polished", dimension: "tone", emphasis: "polished", description: "Lean into a more polished tone" },
+  { id: "pacing_fast", dimension: "pacing", emphasis: "fast", description: "Dial up a faster, punchier pace" },
+  { id: "pacing_measured", dimension: "pacing", emphasis: "measured", description: "Keep the pacing measured and deliberate" },
+  { id: "scale_contained", dimension: "scale", emphasis: "contained", description: "Keep the scale contained" },
+  { id: "scale_expansive", dimension: "scale", emphasis: "expansive", description: "Lean toward a more expansive scale" },
+  { id: "access_easy", dimension: "accessibility", emphasis: "easy", description: "Highlight easier, welcoming energy" },
+  { id: "access_demanding", dimension: "accessibility", emphasis: "demanding", description: "Lean into a more demanding watch" },
+  { id: "violence_stylized", dimension: "violence", emphasis: "stylized", description: "Treat the violence as stylized" },
+  { id: "violence_harsh", dimension: "violence", emphasis: "harsh", description: "Treat the violence as harsh" },
+];
+
+const EXPLANATION_SIMILARITY_THRESHOLD = 0.65;
+
+const clampWords = (value = "", limit = 10) =>
+  String(value || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, limit)
+    .join(" ")
+    .trim();
+
+const formatShortTitleForLine = (title = "") =>
+  clampWords(String(title || "").replace(/[^a-zA-Z0-9 ]/g, ""), 3);
+
+const normalizeVariationFocus = (focus) => {
+  if (!focus || typeof focus !== "object") {
+    return null;
+  }
+
+  const entryIndex = Number.isFinite(focus.index)
+    ? focus.index
+    : VARIATION_DIMENSION_SEQUENCE.findIndex((entry) => entry.id === focus.id);
+
+  if (!Number.isFinite(entryIndex)) {
+    return null;
+  }
+
+  const normalizedIndex =
+    ((Math.floor(entryIndex) % VARIATION_DIMENSION_SEQUENCE.length) + VARIATION_DIMENSION_SEQUENCE.length) %
+    VARIATION_DIMENSION_SEQUENCE.length;
+  const definition = VARIATION_DIMENSION_SEQUENCE[normalizedIndex];
+  if (!definition) {
+    return null;
+  }
+
+  return {
+    index: normalizedIndex,
+    id: definition.id,
+    dimension: definition.dimension,
+    emphasis: definition.emphasis,
+    description: definition.description,
+  };
+};
+
+const getNextVariationFocus = (focus) => {
+  if (!VARIATION_DIMENSION_SEQUENCE.length) {
+    return null;
+  }
+
+  const baseIndex = Number.isFinite(focus?.index) ? focus.index + 1 : 1;
+  const nextIndex = ((Math.floor(baseIndex) % VARIATION_DIMENSION_SEQUENCE.length) + VARIATION_DIMENSION_SEQUENCE.length) % VARIATION_DIMENSION_SEQUENCE.length;
+  const candidate = VARIATION_DIMENSION_SEQUENCE[nextIndex];
+  return normalizeVariationFocus({ index: nextIndex, ...candidate });
+};
+
+const buildWhyThisNowLine = (preferences = {}) => {
+  const variationFocus = normalizeVariationFocus(preferences.variation_focus);
+  const focusLabel = variationFocus?.description || variationFocus?.emphasis || "New direction";
+  const lastTitle = formatShortTitleForLine(preferences.last_pick_title);
+  const raw = lastTitle ? `${focusLabel} vs ${lastTitle}` : focusLabel;
+  return clampWords(raw, 10) || "New direction";
+};
+
+const sanitizeWhyThisNowLine = (value, preferences = {}) => {
+  const candidate = String(value || "").trim();
+  if (!candidate) {
+    return buildWhyThisNowLine(preferences);
+  }
+
+  const limited = clampWords(candidate, 10);
+  return limited || buildWhyThisNowLine(preferences);
+};
+
+const getTextSimilarity = (value = "", reference = "") => {
+  const tokenize = (text = "") =>
+    new Set(
+      String(text || "")
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean)
+    );
+
+  const tokensA = tokenize(value);
+  const tokensB = tokenize(reference);
+  if (!tokensA.size || !tokensB.size) {
+    return 0;
+  }
+
+  const intersection = new Set([...tokensA].filter((token) => tokensB.has(token)));
+  return intersection.size / Math.max(tokensA.size, tokensB.size);
+};
+
+const shouldRegenerateForSimilarity = (primaryReason, lastReason) => {
+  if (!lastReason) {
+    return false;
+  }
+  return getTextSimilarity(primaryReason, lastReason) > EXPLANATION_SIMILARITY_THRESHOLD;
+};
 
 const buildPickSuccessSummary = (movie) => {
   const overview = String(movie?.overview || "").trim();
@@ -2326,6 +2478,51 @@ const normalizeBehavioralMemory = (memory = {}) => ({
   updatedAt: typeof memory.updatedAt === "string" ? memory.updatedAt : "",
 });
 
+const getSoftPreferenceSignals = (intent = {}) => {
+  if (Array.isArray(intent.soft_preferences)) {
+    return intent.soft_preferences;
+  }
+
+  if (Array.isArray(intent.soft_preferences?.preference_signals)) {
+    return intent.soft_preferences.preference_signals;
+  }
+
+  return [];
+};
+
+const getSeenPenaltyBonus = (signals = {}, intent = {}) => {
+  const softSignals = new Set(getSoftPreferenceSignals(intent));
+  const watchContext = new Set(Array.isArray(intent.watch_context) ? intent.watch_context : []);
+  let bonus = 0;
+
+  if (softSignals.has("rewatchable")) bonus += 3;
+  if (softSignals.has("low_regret")) bonus += 3;
+  if (softSignals.has("consensus_friendly") || softSignals.has("broadly_accessible")) bonus += 2;
+
+  if (watchContext.has("comfort_watch")) bonus += 3;
+  if (watchContext.has("sick_day")) bonus += 2;
+  if (watchContext.has("group_watch") || watchContext.has("family")) bonus += 1;
+
+  const rewatchability = Number(signals.rewatchability || 0);
+  if (rewatchability >= 0.62) {
+    bonus += 3;
+  } else if (rewatchability >= 0.52) {
+    bonus += 2;
+  } else if (rewatchability >= 0.45) {
+    bonus += 1;
+  }
+
+  if (Number(signals.consensus_friendliness || 0) >= 0.6) {
+    bonus += 2;
+  }
+
+  if (Number(signals.cozy_score || 0) >= 0.6) {
+    bonus += 1;
+  }
+
+  return Math.min(10, bonus);
+};
+
 const getBehavioralMemoryCacheKey = (memory = {}) => {
   const normalizedMemory = normalizeBehavioralMemory(memory);
 
@@ -2341,7 +2538,7 @@ const getBehavioralMemoryCacheKey = (memory = {}) => {
   ].join("::");
 };
 
-const getBehavioralMemoryScore = (movie = {}, memory = {}) => {
+const getBehavioralMemoryScore = (movie = {}, memory = {}, intent = {}, signals = null) => {
   const normalizedMemory = normalizeBehavioralMemory(memory);
   const movieId = Number(movie?.id || 0);
   const userProfile = normalizedMemory.userProfile;
@@ -2350,6 +2547,7 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}) => {
   const runtimeBucket = getBehaviorRuntimeBucket(movie.runtime);
   const swapCount = Number(normalizedMemory.interactionStats?.swaps || 0);
   const explorationFactor = swapCount >= 3 ? 0.82 : 1;
+  const derivedSignals = signals || deriveMovieSignals(movie);
 
   if (normalizedMemory.hiddenMovieIds.has(movieId) || userProfile.hardAvoidMovieIds.has(movieId)) {
     return {
@@ -2494,8 +2692,14 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}) => {
   }
 
   if (normalizedMemory.seenMovieIds.has(movieId)) {
-    score -= 12;
+    const seenBonus = getSeenPenaltyBonus(derivedSignals, intent);
+    const basePenalty = -4;
+    const softenedPenalty = Math.max(-6, Math.min(2, basePenalty + Math.min(seenBonus, 6)));
+    score += softenedPenalty;
     reasons.push("seen-deprioritized");
+    if (seenBonus >= 3) {
+      reasons.push("seen-friendly");
+    }
   }
 
   if (normalizedMemory.recentMovieIds.has(movieId) || userProfile.recentlyViewed.some((entry) => entry.id === movieId)) {
@@ -2616,6 +2820,8 @@ const scorePickCandidate = (
     }
   }
 
+  const effectiveIntent = intent || parseReelbotIntent(preferences.prompt);
+
   if (preferences.prompt) {
     const promptSignals = getPromptSignals(preferences.prompt);
     const promptProfile = getPromptPreferenceProfile(preferences.prompt);
@@ -2629,7 +2835,7 @@ const scorePickCandidate = (
     }
 
     score += getPromptSpecificFitScore(movie, promptProfile);
-    score += getIntentSpecificFitScore(movie, intent || parseReelbotIntent(preferences.prompt), promptBoosts);
+    score += getIntentSpecificFitScore(movie, effectiveIntent, promptBoosts);
   }
 
   if (preferences.view === "now_playing") {
@@ -2645,11 +2851,12 @@ const scorePickCandidate = (
     }
   }
 
-  const behavioralResult = getBehavioralMemoryScore(movie, behavioralMemory);
+  const signals = deriveMovieSignals(movie);
+  const behavioralResult = getBehavioralMemoryScore(movie, behavioralMemory, effectiveIntent, signals);
   score += behavioralResult.score;
-  const recommendationBreakdown = getRecommendationFitBreakdown(movie, intent || parseReelbotIntent(preferences.prompt), {
+  const recommendationBreakdown = getRecommendationFitBreakdown(movie, effectiveIntent, {
     structured_match_score: movie.structured_match_score || 0,
-  });
+  }, signals);
   score += recommendationBreakdown.total;
 
   return {
@@ -2725,6 +2932,21 @@ const buildPickReason = (movie, preferences) => {
   const promptProfile = getPromptPreferenceProfile(preferences.prompt);
   const parsedIntent = parseReelbotIntent(preferences.prompt);
   const derivedSignals = deriveMovieSignals(movie);
+  const timeConstraint = parsedIntent.hard_filters?.time_constraint || null;
+  const releaseYear = getMovieReleaseYear(movie);
+
+  if (timeConstraint && releaseYear) {
+    const inStrictRange = releaseYear >= Number(timeConstraint.range?.min_year || 0) && releaseYear <= Number(timeConstraint.range?.max_year || 0);
+    if (inStrictRange && matchesAnyGenre(movie.genre_ids || [], [28, 53])) {
+      return `Keeps the pace high and lands squarely in the ${timeConstraint.label} action lane. More direct than twisty.`;
+    }
+    if (inStrictRange && matchesAnyGenre(movie.genre_ids || [], [53, 9648])) {
+      return `Firmly in the ${timeConstraint.label} range with tension doing most of the work. More taut than flashy.`;
+    }
+    if (inStrictRange) {
+      return `Firmly in the ${timeConstraint.label} range, with the tone staying true to the ask. More focused than expansive.`;
+    }
+  }
 
   if (Array.isArray(parsedIntent.subject_entities) && parsedIntent.subject_entities.length) {
     const matchedEntity = parsedIntent.subject_entities.find((entity) => Number(derivedSignals.entity_scores?.[entity] || 0) >= 0.45);
@@ -2737,11 +2959,11 @@ const buildPickReason = (movie, preferences) => {
   }
 
   if (hasChildFamilyGuardrails(parsedIntent) && matchesAnyGenre(movie.genre_ids || [], [16, 10751, 35, 12, 14, 10402])) {
-    return "It stays gentle, kid-friendly, and easy to settle into, which fits a comfort-watch lane better than something intense or demanding.";
+    return "Keeps things gentle, kid-friendly, and easy to settle into. Less hectic than most louder family options.";
   }
 
   if (promptProfile.visuallyStunning && matchesAnyGenre(movie.genre_ids || [], [878, 14, 12, 16, 36, 18, 28])) {
-    return "Visual ambition is a real part of the appeal here, so it feels closer to a true spectacle pick than a generic fallback.";
+    return "Visual ambition is part of the appeal here. More about sweep and atmosphere than plot mechanics.";
   }
 
   if (promptProfile.tenseButNotMiserable && matchesAnyGenre(movie.genre_ids || [], [53, 9648, 28])) {
@@ -2753,7 +2975,7 @@ const buildPickReason = (movie, preferences) => {
   }
 
   if (promptProfile.smartTwisty && matchesAnyGenre(movie.genre_ids || [], [878, 9648, 53])) {
-    return "It has enough ideas and turn-taking to feel sharper than a generic broad-appeal pick.";
+    return "Has enough ideas and turns to stay sharp. Easier to track than the densest options in this space.";
   }
 
   if (promptProfile.dark && matchesAnyGenre(movie.genre_ids || [], [53, 80, 27])) {
@@ -2783,10 +3005,10 @@ const buildPickReason = (movie, preferences) => {
   }
 
   if (leadingGenres) {
-    return leadingGenres + " mix gives it a clear identity instead of feeling generic.";
+    return `Leans into ${leadingGenres.toLowerCase()} without getting muddled. Cleaner than a grab-bag genre blend.`;
   }
 
-  return "Its tone and overall shape make it feel like a deliberate pick, not filler.";
+  return "The tone is clear from the start and easy to buy into. More deliberate than disposable.";
 };
 
 const normalizePickMovie = (movie, preferences, overrides = {}) => ({
@@ -2801,6 +3023,7 @@ const normalizePickMovie = (movie, preferences, overrides = {}) => ({
   signal_score: Number(getMovieSignalScore(movie).toFixed(1)),
   source_type: movie.source_type || "discover",
   source_endpoint: movie.source_endpoint || "/discover/movie",
+  seen: Boolean(overrides.seen),
   match_score: overrides.match_score || null,
   backupRole: overrides.backupRole || null,
   reason: overrides.reason || buildPickReason(movie, preferences),
@@ -3335,11 +3558,34 @@ const resolveCountryQueryCandidates = async (structuredQuery) => {
     .slice(0, 28);
 };
 
-const resolveGenreThemeCandidates = async (structuredQuery) => {
+const resolveGenreThemeCandidates = async (structuredQuery, intent = {}, options = {}) => {
   const keywordTerms = uniqueStrings((structuredQuery.themes || []).flatMap((theme) => theme.keyword_terms || []));
   const expandedKeywordTerms = uniqueStrings((structuredQuery.themes || []).flatMap((theme) => theme.expanded_keyword_terms || []));
   const keywordMatches = await resolveTmdbKeywordIds(keywordTerms);
   const discoverGenreIds = mergeGenreIds(structuredQuery.genre_ids, (structuredQuery.themes || []).flatMap((theme) => theme.genre_ids || []));
+  const timeConstraint = intent?.hard_filters?.time_constraint || null;
+  const runtimePreference = normalizePreferenceKey(intent?.runtime_commitment?.preference, PICK_RUNTIME_CONFIG, "any");
+  const runtimeConfig = PICK_RUNTIME_CONFIG[runtimePreference] || PICK_RUNTIME_CONFIG.any;
+  const timeConstraintGenreFilter = buildTimeConstraintGenreFilter({
+    structuredGenreIds: discoverGenreIds,
+    preferredGenreIds: intent?.preferred_genre_ids || [],
+    softBoostGenreIds: intent?.soft_preferences?.boost_genre_ids || [],
+  });
+  const timeConstraintDiscoverVariants = buildTimeConstraintDiscoverVariants({
+    constraint: timeConstraint,
+    allowFallback: Boolean(options.allowTimeConstraintFallback),
+    genreFilter: timeConstraintGenreFilter,
+    runtimeRange: {
+      min: runtimeConfig.min || null,
+      max: runtimeConfig.max || null,
+    },
+  });
+  const timeConstraintKeywordBaseParams = timeConstraintDiscoverVariants[0]?.params
+    ? {
+        ...timeConstraintDiscoverVariants[0].params,
+        with_genres: timeConstraintGenreFilter || (discoverGenreIds.length ? discoverGenreIds.join(",") : undefined),
+      }
+    : null;
   const candidateMap = new Map();
 
   const rememberCandidate = (movie = {}, metadata = {}) => {
@@ -3369,7 +3615,21 @@ const resolveGenreThemeCandidates = async (structuredQuery) => {
     );
   };
 
-  if (discoverGenreIds.length) {
+  if (timeConstraintDiscoverVariants.length) {
+    for (const variant of timeConstraintDiscoverVariants) {
+      try {
+        const payload = await fetchTmdb("/discover/movie", variant.params);
+        (payload.results || []).slice(0, 20).forEach((movie) => {
+          rememberCandidate(movie, {
+            source_endpoint: "/discover/movie",
+            match_reasons: ["Explicit release window and genre filters matched the request."],
+          });
+        });
+      } catch (error) {
+        console.error(`Error fetching time-constrained genre-theme candidates (${variant.label}):`, error.response?.data || error.message);
+      }
+    }
+  } else if (discoverGenreIds.length) {
     try {
       const payload = await fetchTmdb("/discover/movie", {
         with_genres: discoverGenreIds.join(","),
@@ -3409,8 +3669,9 @@ const resolveGenreThemeCandidates = async (structuredQuery) => {
   for (const keyword of keywordMatches) {
     try {
       const payload = await fetchTmdb("/discover/movie", {
+        ...(timeConstraintKeywordBaseParams || {}),
         with_keywords: keyword.id,
-        with_genres: discoverGenreIds.length ? discoverGenreIds.join(",") : undefined,
+        with_genres: timeConstraintGenreFilter || (discoverGenreIds.length ? discoverGenreIds.join(",") : undefined),
         sort_by: "popularity.desc",
         include_adult: "false",
         page: 1,
@@ -3450,8 +3711,9 @@ const resolveGenreThemeCandidates = async (structuredQuery) => {
     for (const keyword of expandedKeywordMatches) {
       try {
         const payload = await fetchTmdb("/discover/movie", {
+          ...(timeConstraintKeywordBaseParams || {}),
           with_keywords: keyword.id,
-          with_genres: discoverGenreIds.length ? discoverGenreIds.join(",") : undefined,
+          with_genres: timeConstraintGenreFilter || (discoverGenreIds.length ? discoverGenreIds.join(",") : undefined),
           sort_by: "popularity.desc",
           include_adult: "false",
           page: 1,
@@ -3530,7 +3792,7 @@ const resolveAwardsCandidates = async (structuredQuery) => {
   }
 };
 
-const resolveStructuredQueryCandidates = async (prompt = "") => {
+const resolveStructuredQueryCandidates = async (prompt = "", intent = null, options = {}) => {
   const structuredQuery = detectStructuredQuery(prompt);
 
   if (!structuredQuery) {
@@ -3548,7 +3810,7 @@ const resolveStructuredQueryCandidates = async (prompt = "") => {
   }
 
   if (structuredQuery.type === "genre_theme") {
-    const movies = await resolveGenreThemeCandidates(structuredQuery);
+    const movies = await resolveGenreThemeCandidates(structuredQuery, intent, options);
     return { structuredQuery, movies };
   }
 
@@ -3691,79 +3953,11 @@ const isWeakAiCopy = (value = "") => {
 
 const getBackupRoleLabelFromKey = (roleKey = "similar_tone") => BACKUP_ROLE_LABELS[roleKey] || "Another angle";
 
-const buildPromptContextLine = (intent = {}, preferences = {}) => {
-  if (intent.refinement?.id === "lighter") {
-    return "Staying in the same lane, but easing the weight so the next option feels simpler to settle into.";
-  }
-
-  if (intent.refinement?.id === "darker") {
-    return "Keeping the same lane, but pushing it into a moodier and heavier direction.";
-  }
-
-  if (intent.refinement?.id === "shorter") {
-    return "Keeping the same lane, but tightening the commitment so this feels easier to fit into the night.";
-  }
-
-  if (intent.refinement?.id === "funnier") {
-    return "Keeping the core vibe, but looking for more lift and comic relief this time.";
-  }
-
-  if (intent.refinement?.id === "less_intense") {
-    return "Staying close to the original ask, but softening the pressure and intensity.";
-  }
-
-  if (intent.refinement?.id === "more_like_this") {
-    return "Staying right next to the last pick instead of restarting from a different idea.";
-  }
-
-  if (intent.refinement?.id === "different_angle") {
-    return "Keeping the lane intact, but taking a nearby angle instead of repeating the same answer.";
-  }
-
-  if (intent.query_type === "COUNTRY" && intent.structured_query?.country?.display_name) {
-    return `These picks stay genuinely tied to ${intent.structured_query.country.display_name} in setting, perspective, or story, rather than drifting into loose overlap.`;
-  }
-
-  if (intent.query_type === "AWARDS" && intent.structured_query?.year) {
-    return `These picks stay focused on Oscars ${intent.structured_query.year} relevance first, then start with the strongest watch from that lane.`;
-  }
-
-  if (intent.query_type === "GENRE_THEME") {
-    return "These picks stay close to the specific lane you asked for instead of drifting broader.";
-  }
-
-  if (intent.entity_anchor?.kind === "actor" || intent.entity_anchor?.kind === "director") {
-    return `Staying close to ${intent.entity_anchor.name}, but still choosing the strongest watch for this moment.`;
-  }
-
-  if (intent.entity_anchor?.kind === "franchise") {
-    return `Keeping the ${intent.entity_anchor.name} franchise feel intact while looking for the best option.`;
-  }
-
-  if (intent.entity_anchor?.kind === "movie_title" || intent.anchors?.title) {
-    return `Keeping close to ${(intent.entity_anchor?.name || intent.anchors?.title)} without just repeating it.`;
-  }
-
-  if (intent.guardrails?.child_family_safe) {
-    return "This stays in a gentler lane so it is easier to throw on without worrying about anything distressing or intense.";
-  }
-
-  if (intent.attention_profile?.level === "background") {
-    return "This stays easy to live with in the room, so it does not ask for full locked-in attention.";
-  }
-
-  if (intent.attention_profile?.level === "immersive") {
-    return "This leans toward a fuller sit-down watch instead of something disposable.";
-  }
-
-  if (preferences.prompt) {
-    return `${truncateText(preferences.prompt.trim(), 72)} — read for the moment behind the ask, not just the surface keywords.`;
-  }
-
-  return "A sharper first pass from the current candidate pool.";
-};
-
 const buildFallbackPickSummaryLine = (movie, intent = {}) => {
+  if (intent.time_constraint_state?.relaxed && intent.time_constraint_state?.fallback_note) {
+    return intent.time_constraint_state.fallback_note;
+  }
+
   if (intent.guardrails?.child_family_safe) {
     return `${movie.title} feels safer, gentler, and easier to put on in this context than a pick that would add stress or intensity.`;
   }
@@ -3773,11 +3967,11 @@ const buildFallbackPickSummaryLine = (movie, intent = {}) => {
   }
 
   if (intent.query_type === "AWARDS" && intent.structured_query?.year) {
-    return `${movie.title} stays inside the Oscars ${intent.structured_query.year} lane while still feeling like a real watch choice, not just a nominee list entry.`;
+    return `${movie.title} stays inside the Oscars ${intent.structured_query.year} pool while still feeling like a real watch choice.`;
   }
 
   if ((movie.structured_match_reasons || []).length) {
-    return `${movie.title} rose to the top because it stays close to what you asked for instead of just feeling vaguely similar.`;
+    return `${movie.title} holds onto the core ask without feeling like a reach.`;
   }
 
   const genreNames = Array.isArray(movie.genre_names) ? movie.genre_names : [];
@@ -3787,10 +3981,10 @@ const buildFallbackPickSummaryLine = (movie, intent = {}) => {
   }
 
   if (movie.runtime) {
-    return `${movie.title} has a clear enough identity to earn a ${movie.runtime}-minute commitment.`;
+    return `${movie.title} earns the ${movie.runtime}-minute commitment with a clear point of view.`;
   }
 
-  return `${movie.title} feels specific enough to choose on purpose instead of defaulting to something broader.`;
+  return `${movie.title} feels specific enough to choose on purpose.`;
 };
 
 const buildFallbackWhyThisWorks = (movie, preferences, intent = {}, behavioralMemory = {}) => {
@@ -3804,7 +3998,7 @@ const buildFallbackWhyThisWorks = (movie, preferences, intent = {}, behavioralMe
   }
 
   if (intent.guardrails?.child_family_safe) {
-    bullets.unshift("It stays in a gentler, lower-stress lane, which matters more here than edge or intensity.");
+    bullets.unshift("It stays gentler and lower-stress, which matters more here than edge or intensity.");
   } else if (intent.attention_profile?.level === "background") {
     bullets.unshift("It is easier to settle into without needing full locked-in attention.");
   } else if (intent.attention_profile?.level === "immersive") {
@@ -3829,21 +4023,21 @@ const buildFallbackBackupReason = (movie, roleKey, preferences, intent = {}) => 
 
   switch (roleKey) {
     case "safer_option":
-      return `Broader and easier to say yes to, while staying close to the same vibe. ${reason}`;
+      return `Easier to say yes to if you want the smoother option. ${reason}`;
     case "stretch_option":
-      return `Still tracks the same intent, but pushes slightly outside the safest version of it. ${reason}`;
+      return `A little bolder if you want something stronger. ${reason}`;
     case "lighter_option":
       return `Keeps more air in the experience if you want less weight. ${reason}`;
     case "darker_option":
-      return `Pushes the mood further without leaving the original vibe. ${reason}`;
+      return `Pushes the mood further if you want a heavier version of the idea. ${reason}`;
     case "more_action_forward":
-      return `A better move if you want the same vibe with more propulsion. ${reason}`;
+      return `Better if you want more propulsion and less lingering. ${reason}`;
     case "more_demanding":
       return `Asks for a little more patience, but pays it back with specificity. ${reason}`;
     case "wildcard":
-      return `The less obvious option that still tracks the same intent. ${reason}`;
+      return `The less obvious option, but still a credible one. ${reason}`;
     default:
-      return `Keeps the same core appeal from a slightly different angle. ${reason}`;
+      return `Comes at the same core appeal from a different angle. ${reason}`;
   }
 };
 
@@ -3861,13 +4055,27 @@ const buildFallbackPickPresentation = (preferences, intent, primaryMovie, backup
   });
 
   return {
-    context_line: buildPromptContextLine(intent, preferences),
+    context_line: buildWhyThisNowLine(preferences),
     summary_line: buildFallbackPickSummaryLine(primaryMovie, intent),
     why_this_works: buildFallbackWhyThisWorks(primaryMovie, preferences, intent, behavioralMemory),
-    assistant_note: "ReelBot kept the same intent lane, then widened the surrounding options on purpose.",
+    assistant_note: "ReelBot held the original ask, then widened only when the exact pool ran thin.",
     primary_reason: buildPickReason(primaryMovie, preferences),
     backups: backupEntries,
   };
+};
+
+const attachTimeConstraintFallbackNote = (presentation, timeConstraintState) => {
+  if (!presentation || !timeConstraintState?.fallback_note) {
+    return presentation;
+  }
+
+  const note = String(timeConstraintState.fallback_note || "").trim();
+  if (!note) {
+    return presentation;
+  }
+
+  presentation.primary_reason = [presentation.primary_reason, note].filter(Boolean).join(" ").trim();
+  return presentation;
 };
 
 const rankCandidatesWithOpenAI = async (preferences, intent, candidates) => {
@@ -3891,62 +4099,88 @@ const rankCandidatesWithOpenAI = async (preferences, intent, candidates) => {
   });
 };
 
-const writePickPresentationWithOpenAI = async (preferences, intent, primaryMovie, backups = [], rankedBackups = [], behavioralMemory = {}) => {
+const writePickPresentationWithOpenAI = async (preferences, intent, primaryMovie, backups = [], rankedBackups = [], behavioralMemory = {}, timeConstraintState = null) => {
   if (!OPENAI_API_KEY || !primaryMovie || backups.length < 4) {
     return null;
   }
 
-  const prompts = buildPickWriterPrompts({
-    preferences,
-    intent,
-    primary: buildCompactCandidate(primaryMovie, intent),
-    backups: backups.map((movie, index) => ({
-      ...buildCompactCandidate(movie, intent),
-      role_key: rankedBackups[index]?.role_key || null,
-    })),
-  });
+  const generatePresentation = async (focus) => {
+    const writerPreferences = focus ? { ...preferences, variation_focus: focus } : preferences;
+    const prompts = buildPickWriterPrompts({
+      preferences: writerPreferences,
+      intent,
+      primary: buildCompactCandidate(primaryMovie, intent),
+      backups: backups.map((movie, index) => ({
+        ...buildCompactCandidate(movie, intent),
+        role_key: rankedBackups[index]?.role_key || null,
+      })),
+    });
 
-  const payload = await callStructuredOpenAI({
-    systemPrompt: prompts.systemPrompt,
-    userPrompt: prompts.userPrompt,
-    schema: pickWriterSchema,
-    schemaName: "reelbot_pick_writer_v2",
-    maxTokens: 360,
-    temperature: 0.45,
-  });
+    const payload = await callStructuredOpenAI({
+      systemPrompt: prompts.systemPrompt,
+      userPrompt: prompts.userPrompt,
+      schema: pickWriterSchema,
+      schemaName: "reelbot_pick_writer_v2",
+      maxTokens: 360,
+      temperature: 0.45,
+    });
 
-  if (!payload) {
+    if (!payload) {
+      return null;
+    }
+
+    const contextCandidate = sanitizeWhyThisNowLine(payload.context_line, writerPreferences);
+    payload.context_line = isWeakAiCopy(contextCandidate) ? buildWhyThisNowLine(writerPreferences) : contextCandidate;
+    payload.summary_line = isWeakAiCopy(payload.summary_line) ? buildFallbackPickSummaryLine(primaryMovie, intent) : payload.summary_line;
+    payload.primary_reason = isWeakAiCopy(payload.primary_reason) ? buildPickReason(primaryMovie, preferences) : payload.primary_reason;
+    payload.why_this_works = Array.isArray(payload.why_this_works)
+      ? payload.why_this_works.map((item) => normalizeAiCopy(item)).filter((item) => item && !isWeakAiCopy(item)).slice(0, 2)
+      : [];
+
+    if (payload.why_this_works.length < 2) {
+      payload.why_this_works = buildFallbackWhyThisWorks(primaryMovie, preferences, intent, behavioralMemory);
+    }
+
+    const personalizationLine = buildBehavioralPreferenceReason(primaryMovie, behavioralMemory);
+    if (personalizationLine) {
+      payload.why_this_works = [personalizationLine, ...payload.why_this_works]
+        .map((item) => normalizeAiCopy(item))
+        .filter((item, index, items) => item && items.indexOf(item) === index)
+        .slice(0, 2);
+    }
+
+    payload.backups = Array.isArray(payload.backups)
+      ? payload.backups.map((entry, index) => ({
+          id: entry.id,
+          role_label: normalizeAiCopy(entry.role_label) || getBackupRoleLabelFromKey(rankedBackups[index]?.role_key),
+          reason: isWeakAiCopy(entry.reason)
+            ? buildFallbackBackupReason(backups[index], rankedBackups[index]?.role_key, preferences, intent)
+            : normalizeAiCopy(entry.reason),
+        }))
+      : [];
+
+    return attachTimeConstraintFallbackNote(payload, timeConstraintState);
+  };
+
+  const presentation = await generatePresentation(preferences.variation_focus || null);
+  if (!presentation) {
     return null;
   }
 
-  payload.context_line = isWeakAiCopy(payload.context_line) ? buildPromptContextLine(intent, preferences) : payload.context_line;
-  payload.summary_line = isWeakAiCopy(payload.summary_line) ? buildFallbackPickSummaryLine(primaryMovie, intent) : payload.summary_line;
-  payload.primary_reason = isWeakAiCopy(payload.primary_reason) ? buildPickReason(primaryMovie, preferences) : payload.primary_reason;
-  payload.why_this_works = Array.isArray(payload.why_this_works)
-    ? payload.why_this_works.map((item) => normalizeAiCopy(item)).filter((item) => item && !isWeakAiCopy(item)).slice(0, 2)
-    : [];
-
-  if (payload.why_this_works.length < 2) {
-    payload.why_this_works = buildFallbackWhyThisWorks(primaryMovie, preferences, intent, behavioralMemory);
+  if (shouldRegenerateForSimilarity(presentation.primary_reason, preferences.last_pick_reason)) {
+    const alternateFocus = getNextVariationFocus(preferences.variation_focus);
+    if (alternateFocus) {
+      const alternatePresentation = await generatePresentation(alternateFocus);
+      if (
+        alternatePresentation &&
+        !shouldRegenerateForSimilarity(alternatePresentation.primary_reason, preferences.last_pick_reason)
+      ) {
+        return alternatePresentation;
+      }
+    }
   }
 
-  const personalizationLine = buildBehavioralPreferenceReason(primaryMovie, behavioralMemory);
-  if (personalizationLine) {
-    payload.why_this_works = [personalizationLine, ...payload.why_this_works]
-      .map((item) => normalizeAiCopy(item))
-      .filter((item, index, items) => item && items.indexOf(item) === index)
-      .slice(0, 2);
-  }
-
-  payload.backups = Array.isArray(payload.backups)
-    ? payload.backups.map((entry, index) => ({
-        id: entry.id,
-        role_label: normalizeAiCopy(entry.role_label) || getBackupRoleLabelFromKey(rankedBackups[index]?.role_key),
-        reason: isWeakAiCopy(entry.reason) ? buildFallbackBackupReason(backups[index], rankedBackups[index]?.role_key, preferences, intent) : normalizeAiCopy(entry.reason),
-      }))
-    : [];
-
-  return payload;
+  return presentation;
 };
 
 const buildMatchScore = (score, topScore) => {
@@ -4184,9 +4418,14 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const preferences = resolvePickPreferences(rawPreferences);
   const includeDebug = shouldIncludePickDebug(rawPreferences);
   const behavioralMemory = normalizeBehavioralMemory(rawPreferences.behavioral_memory);
+  const isMovieSeen = (movie) => Boolean(movie?.id && behavioralMemory.seenMovieIds.has(movie.id));
   const refinement = normalizePickRefinement(rawPreferences.refinement);
+  const allowTimeConstraintFallback = rawPreferences.time_constraint_fallback_mode === "relaxed";
   let resolvedIntent = await hydrateResolvedIntent(preferences, rawPreferences);
-  const structuredResolution = preferences.prompt ? await resolveStructuredQueryCandidates(preferences.prompt) : null;
+  ensureTimeConstraintFilter(resolvedIntent, preferences.prompt);
+  const structuredResolution = preferences.prompt
+    ? await resolveStructuredQueryCandidates(preferences.prompt, resolvedIntent, { allowTimeConstraintFallback })
+    : null;
   const shouldUseStructuredResolution =
     structuredResolution?.structuredQuery
     && (
@@ -4227,9 +4466,6 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const queryType = resolvedIntent.query_type || getIntentQueryType(resolvedIntent);
   const excludedIds = normalizeExcludedIds(rawPreferences.excluded_ids);
   behavioralMemory.hiddenMovieIds.forEach((movieId) => excludedIds.add(movieId));
-  if (preferences.request_mode !== "swap") {
-    behavioralMemory.seenMovieIds.forEach((movieId) => excludedIds.add(movieId));
-  }
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const cacheKey = `pick:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
@@ -4258,14 +4494,21 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const usesHardEntityPool = ["PERSON", "DIRECTOR", "FRANCHISE", "TITLE_SIMILARITY", "COUNTRY", "AWARDS"].includes(queryType)
     || (queryType === "GENRE_THEME" && shouldUseStructuredResolution);
 
-  const candidatePool = hasProvidedCandidatePool
+  let candidatePool = hasProvidedCandidatePool
     ? await fetchMoviesByIds(providedCandidatePoolIds)
     : shouldUseStructuredResolution
       ? structuredResolution.movies
       : await getPickCandidatePool(preferences, resolvedIntent, promptBoosts);
-  const fallbackPool = !candidatePool.length && !usesHardEntityPool && (preferences.mood !== "all" || preferences.runtime !== "any")
+  let fallbackPool = !candidatePool.length && !usesHardEntityPool && (preferences.mood !== "all" || preferences.runtime !== "any")
     ? await getPickCandidatePool({ ...preferences, mood: "all", runtime: "any" }, resolvedIntent, promptBoosts)
     : candidatePool;
+
+  const timeConstraintResult = applyTimeConstraintFilterToPool(fallbackPool, resolvedIntent, {
+    allowFallback: allowTimeConstraintFallback,
+    minStrictCandidates: TIME_CONSTRAINT_MIN_STRICT_CANDIDATES,
+  });
+  fallbackPool = timeConstraintResult.movies;
+  candidatePool = fallbackPool;
 
   const locallyFilteredPool = fallbackPool.filter((movie) => !excludedIds.has(movie.id) && !isLowSignalMovie(movie));
   const intentFilteredPool = locallyFilteredPool.filter((movie) => isMovieValidForIntent(movie, resolvedIntent, promptBoosts));
@@ -4467,6 +4710,16 @@ const generatePickPayload = async (rawPreferences = {}) => {
     : null;
 
   if (!primaryPick) {
+    if (!allowTimeConstraintFallback && timeConstraintResult.canFallback && timeConstraintResult.fallbackMovies.length) {
+      return generatePickPayload({
+        ...rawPreferences,
+        candidate_pool_ids: timeConstraintResult.fallbackMovies.map((movie) => movie.id).filter(Boolean),
+        intent_snapshot: resolvedIntent,
+        time_constraint_fallback_mode: "relaxed",
+        refresh_key: rawPreferences.refresh_key || `time-fallback-${Date.now()}`,
+      });
+    }
+
     const noPickPayload = {
       label: "Pick for Me",
       summary: buildPickNoMatchSummary(preferences),
@@ -4511,10 +4764,20 @@ const generatePickPayload = async (rawPreferences = {}) => {
           : (index === 0 ? "safer_option" : index === 1 ? "lighter_option" : index === 2 ? "darker_option" : "wildcard"),
       }));
 
-  const presentation = await writePickPresentationWithOpenAI(preferences, resolvedIntent, primaryPick, alternatePicks, rankedBackups, behavioralMemory).catch((error) => {
+  let presentation = await writePickPresentationWithOpenAI(
+    preferences,
+    resolvedIntent,
+    primaryPick,
+    alternatePicks,
+    rankedBackups,
+    behavioralMemory,
+    resolvedIntent.time_constraint_state || null
+  ).catch((error) => {
     console.error("OpenAI pick writer failed:", error.response?.data || error.message);
     return null;
   }) || buildFallbackPickPresentation(preferences, resolvedIntent, primaryPick, alternatePicks, rankedBackups, behavioralMemory);
+
+  presentation = attachTimeConstraintFallbackNote(presentation, resolvedIntent.time_constraint_state || null);
 
   const backupPresentationLookup = new Map((presentation.backups || []).map((entry) => [entry.id, entry]));
   const primaryFitTier = primaryRankingEntry?.fit_breakdown?.fit_tier || "strong_fit";
@@ -4536,10 +4799,10 @@ const generatePickPayload = async (rawPreferences = {}) => {
     summary: presentation.summary_line || buildPickSuccessSummary(primaryPick),
     assistant_note: presentation.assistant_note || (
       primaryFitTier === "decent_fit"
-        ? "ReelBot found the best available fit in the lane and kept the backups nearby in case you want a slightly safer or more specific angle."
+        ? "ReelBot found the best available fit here and kept nearby alternatives in case you want a safer or sharper angle."
         : primaryFitTier === "weak_fit"
-          ? "ReelBot found a workable option, but the lane is still narrow enough that the backups matter more than usual."
-          : "ReelBot ranked a fresh pool of candidates and kept the backups nearby without crowding the main choice."
+          ? "ReelBot found a workable option, but the backups matter more than usual this time."
+          : "ReelBot picked a clear first choice and kept the nearby alternatives close."
     ),
     match_score: aiRanking?.primary?.fit_score || buildMatchScore(rankingSourceEntries.find((entry) => entry.movie.id === primaryPick.id)?.score || topScore, topScore),
     resolved_preferences: preferences,
@@ -4570,11 +4833,13 @@ const generatePickPayload = async (rawPreferences = {}) => {
     primary: normalizePickMovie(primaryPick, preferences, {
       reason: presentation.primary_reason,
       match_score: aiRanking?.primary?.fit_score || buildMatchScore(rankingSourceEntries.find((entry) => entry.movie.id === primaryPick.id)?.score || topScore, topScore),
+      seen: isMovieSeen(primaryPick),
     }),
     alternates: alternatePicks.map((movie, index) => normalizePickMovie(movie, preferences, {
       reason: backupPresentationLookup.get(movie.id)?.reason || buildFallbackBackupReason(movie, rankedBackups[index]?.role_key, preferences, resolvedIntent),
       backupRole: backupPresentationLookup.get(movie.id)?.role_label || getBackupRoleLabelFromKey(rankedBackups[index]?.role_key),
       match_score: buildMatchScore(rankingSourceEntries.find((entry) => entry.movie.id === movie.id)?.score || topScore, topScore),
+      seen: isMovieSeen(movie),
     })),
     candidate_count: candidatePool.length,
     curated_candidate_count: rankingPool.length,
@@ -5044,9 +5309,11 @@ Task:
 ${contextBlock}
 
 Task:
-- Return exactly 2 short HTML paragraphs.
-- Paragraph 1 must begin with <strong>What happens:</strong> and summarize the ending plainly.
-- Paragraph 2 must begin with <strong>What it means:</strong> and explain the larger takeaway or emotional meaning.
+- Return 3 or 4 HTML paragraphs.
+- Paragraph 1 must begin with <strong>What happens:</strong> and describe the actual ending events concretely.
+- Paragraph 2 must begin with <strong>Why it lands:</strong> and interpret the ending by referring directly to those events.
+- Paragraph 3 may begin with <strong>What it leaves you with:</strong> if there is specific emotional or narrative residue worth naming.
+- Final paragraph must begin with <strong>If you're deciding:</strong> and say whether the ending feels satisfying, bleak, open-ended, heavy, cathartic, or otherwise useful for mood-matching.
 - Spoilers are allowed.`;
     case "themes_and_takeaways":
       return `Pull out the clearest themes, ideas, or takeaways in this movie.
@@ -5209,8 +5476,9 @@ const buildFallbackContent = (action, context) => {
       `;
     case "ending_explained":
       return `
-        <p><strong>What happens:</strong> ReelBot could not safely explain the ending right now, so the official overview is the most reliable fallback: ${safeOverview}</p>
-        <p><strong>What it means:</strong> If you want a full ending breakdown, try again later — this fallback avoids inventing spoilers that are not actually supported.</p>
+        <p><strong>What happens:</strong> ReelBot could not safely verify the exact ending events for ${safeTitle}, so it is not going to invent them from the overview.</p>
+        <p><strong>Why it lands:</strong> A useful ending explanation has to stay tied to what characters actually do and what follows from it, not generic interpretation.</p>
+        <p><strong>If you're deciding:</strong> If the ending shape matters to your mood, try again later rather than trusting a made-up spoiler summary.</p>
       `;
     case "themes_and_takeaways":
       return `
@@ -5345,8 +5613,18 @@ const buildFallbackStructuredDetailContent = (action, context, requestMeta = {})
       };
     case "ending_explained":
       return {
-        what_happens: previewMode ? "Not appropriate before release." : "The ending resolves the central pressure, then leaves the viewer with the movie's intended aftertaste.",
-        what_it_means: previewMode ? "Use First Look or Audience Fit instead until the movie is out." : "The last beat matters less as a plot trick than as a statement about what the movie was really exploring.",
+        what_happens: previewMode
+          ? "Not appropriate before release."
+          : `ReelBot could not verify the ending details for ${movie.title} safely enough to summarize them without making something up.`,
+        why_it_lands: previewMode
+          ? "Use First Look or Audience Fit instead until the movie is out."
+          : "A useful ending read has to stay tied to actual events, so this fallback stops short instead of bluffing certainty.",
+        what_it_leaves_you_with: previewMode
+          ? ""
+          : "More uncertainty than insight right now, because the concrete ending beats are missing.",
+        if_youre_deciding: previewMode
+          ? "Use First Look or Audience Fit instead until the movie is out."
+          : "If you mainly care about whether the ending is satisfying, bleak, or open-ended, try again when ReelBot can pull the full spoiler read.",
       };
     case "themes_and_takeaways":
       return {
@@ -5434,7 +5712,16 @@ const renderStructuredReelbotContent = (action, content = {}) => {
     case "spoiler_synopsis":
       return `<ol>${(content.beats || []).map((entry) => `<li>${escapeHtml(entry)}</li>`).join("")}</ol>`;
     case "ending_explained":
-      return `<p><strong>What happens:</strong> ${escapeHtml(content.what_happens || "")}</p><p><strong>What it means:</strong> ${escapeHtml(content.what_it_means || "")}</p>`;
+      return [
+        `<p><strong>What happens:</strong> ${escapeHtml(content.what_happens || "")}</p>`,
+        `<p><strong>Why it lands:</strong> ${escapeHtml(content.why_it_lands || content.what_it_means || "")}</p>`,
+        content.what_it_leaves_you_with
+          ? `<p><strong>What it leaves you with:</strong> ${escapeHtml(content.what_it_leaves_you_with || "")}</p>`
+          : "",
+        content.if_youre_deciding
+          ? `<p><strong>If you're deciding:</strong> ${escapeHtml(content.if_youre_deciding || "")}</p>`
+          : "",
+      ].join("");
     case "themes_and_takeaways":
       return `<ul>${(content.themes || []).map((entry) => `<li><strong>${escapeHtml(entry.label || "")}</strong> — ${escapeHtml(entry.detail || "")}</li>`).join("")}</ul>`;
     case "debate_club":

@@ -387,19 +387,19 @@ const getFitTier = (totalScore) => {
   return "no_fit";
 };
 
-const getRecommendationFitBreakdown = (movie = {}, intent = {}, extra = {}) => {
-  const signals = deriveMovieSignals(movie);
-  const entity = getEntityScore(signals, intent.subject_entities, intent.subject_match_type);
-  const audience = getAudienceFitScore(signals, intent);
-  const safety = getSafetyScore(signals, intent);
-  const tone = getToneScore(signals, intent);
-  const consensus = getConsensusScore(movie, signals, intent);
-  const cozy = getCozyScore(signals, intent);
-  const sweepingEpic = getSweepingEpicScore(movie, signals, intent);
-  const canonicalEntry = getCanonicalEntryScore(movie, signals, intent);
-  const context = getContextScore(signals, intent);
-  const lowRegret = getLowRegretScore(movie, signals);
-  const penalties = getPenaltyAdjustments(movie, signals, intent);
+const getRecommendationFitBreakdown = (movie = {}, intent = {}, extra = {}, signals = null) => {
+  const derivedSignals = signals || deriveMovieSignals(movie);
+  const entity = getEntityScore(derivedSignals, intent.subject_entities, intent.subject_match_type);
+  const audience = getAudienceFitScore(derivedSignals, intent);
+  const safety = getSafetyScore(derivedSignals, intent);
+  const tone = getToneScore(derivedSignals, intent);
+  const consensus = getConsensusScore(movie, derivedSignals, intent);
+  const cozy = getCozyScore(derivedSignals, intent);
+  const sweepingEpic = getSweepingEpicScore(movie, derivedSignals, intent);
+  const canonicalEntry = getCanonicalEntryScore(movie, derivedSignals, intent);
+  const context = getContextScore(derivedSignals, intent);
+  const lowRegret = getLowRegretScore(movie, derivedSignals);
+  const penalties = getPenaltyAdjustments(movie, derivedSignals, intent);
   const bonus = clamp(Number(extra.structured_match_score || movie.structured_match_score || 0) / 20, 0, 18);
 
   const total = entity.score + audience + safety + tone + consensus + cozy + sweepingEpic + canonicalEntry + context + lowRegret + bonus + penalties.total;
@@ -425,7 +425,7 @@ const getRecommendationFitBreakdown = (movie = {}, intent = {}, extra = {}) => {
     },
     entity_match_label: entity.label,
     penalties: penalties.penalties,
-    derived_signals: signals,
+    derived_signals: derivedSignals,
   };
 };
 

@@ -100,6 +100,8 @@ const REELBOT_BANNED_PHRASES = [
   "instant classic",
   "edge-of-your-seat thrill ride",
   "tour de force",
+  "clear identity",
+  "doesn't feel generic",
 ];
 
 const REELBOT_FIT_RUBRIC = {

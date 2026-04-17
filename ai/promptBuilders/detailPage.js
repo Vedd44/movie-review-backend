@@ -72,7 +72,7 @@ const DETAIL_ACTION_GUIDES = {
   best_mood: "Describe the best mindset and viewing setup.",
   date_night: "Judge shared-watch viability without hype.",
   spoiler_synopsis: "Summarize the movie clearly for someone who wants the full story.",
-  ending_explained: "Explain the ending plainly, then what it means.",
+  ending_explained: "Explain the ending through concrete events, why those events land, what residue they leave, and whether that ending suits the viewer's mood.",
   themes_and_takeaways: "Name the central themes, not generic motifs.",
   debate_club: "Surface actual tradeoffs or ambiguities people debate.",
 };
@@ -97,6 +97,7 @@ const buildDetailPrompts = ({ action, context, previewMode = false, requestMeta 
       "- Be spoiler-light unless the action explicitly asks for spoilers.",
       "- If a user vibe or intent is provided, judge the movie against that vibe instead of giving a generic answer.",
       "- If a user context is provided, answer the real decision underneath it: mood, audience, attention level, and emotional tolerance.",
+      "- Do not use generic critical language that could fit multiple movies.",
       "- Name when this is a strong fit, a partial fit, or a risky fit for the stated moment.",
       "- Call out viewing-moment details like group-friendliness, patience cost, or date-night risk when they matter.",
       previewMode
@@ -114,6 +115,17 @@ const buildDetailPrompts = ({ action, context, previewMode = false, requestMeta 
       `User intent: ${JSON.stringify(compactIntent(requestMeta.intent_snapshot))}`,
       `User preference signals: ${JSON.stringify(compactUserProfile(requestMeta.behavioral_memory))}`,
       `Movie context: ${JSON.stringify(compactContext(context))}`,
+      action === "ending_explained"
+        ? [
+            "Ending rules:",
+            "- `what_happens` must describe at least one specific ending event, decision, reveal, or consequence.",
+            "- `why_it_lands` must interpret the ending by referring directly to those events, not abstract themes.",
+            "- `what_it_leaves_you_with` is optional and should describe the emotional or narrative residue only if there is something specific to say.",
+            "- `if_youre_deciding` must help the viewer judge whether the ending feels satisfying, bleak, open-ended, heavy, cathartic, or otherwise suited to their mood.",
+            "- Avoid vague lines like 'it resolves the central pressure', 'aftertaste', 'last beat', 'what the movie is really about', 'statement on', or 'explores themes of'.",
+            "- Prefer natural length over forced brevity.",
+          ].join("\n")
+        : null,
       "Write only the structured fields required by the schema.",
     ].join("\n\n"),
   };
