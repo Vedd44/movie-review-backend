@@ -11,8 +11,8 @@ assert(schema.properties.what_it_leaves_you_with, "ending_explained should allow
 assert(schema.properties.if_youre_deciding, "ending_explained should include if_youre_deciding");
 assert.deepStrictEqual(
   schema.required,
-  ["what_happens", "why_it_lands", "if_youre_deciding"],
-  "ending_explained required fields should match the new contract"
+  ["what_happens", "why_it_lands", "what_it_leaves_you_with", "if_youre_deciding"],
+  "ending_explained strict structured-output fields should match the contract"
 );
 
 const prompts = buildDetailPrompts({

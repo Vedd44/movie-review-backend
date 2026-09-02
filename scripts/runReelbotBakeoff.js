@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const API_BASE = process.env.REELBOT_BAKEOFF_API || 'http://127.0.0.1:5001';
-const OUTPUT_PATH = path.join(__dirname, 'reelbot-bakeoff-report.md');
+const OUTPUT_PATH = process.env.REELBOT_BAKEOFF_OUTPUT || path.join(__dirname, 'reelbot-bakeoff-report.md');
 
 const promptCases = [
   'something tense but not miserable',
@@ -19,6 +19,7 @@ const promptCases = [
 ];
 
 const postPick = async (body) => {
+  const startedAt = Date.now();
   const response = await fetch(`${API_BASE}/reelbot/pick`, {
     method: 'POST',
     headers: {
@@ -33,6 +34,12 @@ const postPick = async (body) => {
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}: ${JSON.stringify(json)}`);
   }
+
+  json._benchmark = {
+    latency_ms: Date.now() - startedAt,
+    server_timing: response.headers.get('server-timing') || '',
+    models: response.headers.get('x-reelbot-models') || '',
+  };
 
   return json;
 };
@@ -51,11 +58,14 @@ const renderCase = (prompt, first, swap) => {
 \`${first?.resolved_intent?.prompt_type || 'unknown'}\` / \
 \`${first?.resolved_intent?.lane_key || 'none'}\``,
     `- Top pick: ${first?.primary?.title || '—'}${first?.primary?.backupRole ? ` (${first.primary.backupRole})` : ''}`,
+    `- Models: ${first?._benchmark?.models || 'not reported'}`,
+    `- Latency: ${first?._benchmark?.latency_ms || 0} ms (${first?._benchmark?.server_timing || 'no server timing'})`,
     `- Summary: ${first?.summary || '—'}`,
     `- Context line: ${first?.rationale?.contextAnchor || '—'}`,
     `- Why this works: ${shortList(why, 2) || '—'}`,
     `- Backups: ${backups.map((movie) => `${movie.title} [${movie.backupRole || 'alt'}]`).join(' | ') || '—'}`,
     `- Swap pick: ${swap?.primary?.title || '—'}${swapChanged ? ' (changed)' : ' (same/failed)'}`,
+    `- Swap latency: ${swap?._benchmark?.latency_ms || 0} ms`,
     `- Swap backups: ${(swap?.alternates || []).map((movie) => `${movie.title} [${movie.backupRole || 'alt'}]`).join(' | ') || '—'}`,
     '',
   ].join('\n');

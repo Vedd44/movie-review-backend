@@ -7,6 +7,12 @@ const BACKUP_ROLE_KEYS = [
   "more_action_forward",
   "more_demanding",
   "similar_tone",
+  "shorter_option",
+  "more_mainstream",
+  "more_emotional",
+  "more_intense",
+  "more_recent",
+  "more_classic",
 ];
 
 const pickRankingSchema = {
@@ -26,8 +32,8 @@ const pickRankingSchema = {
     },
     backups: {
       type: "array",
-      minItems: 4,
-      maxItems: 4,
+      minItems: 3,
+      maxItems: 3,
       items: {
         type: "object",
         additionalProperties: false,
@@ -59,8 +65,8 @@ const pickWriterSchema = {
     primary_reason: { type: "string" },
     backups: {
       type: "array",
-      minItems: 4,
-      maxItems: 4,
+      minItems: 3,
+      maxItems: 3,
       items: {
         type: "object",
         additionalProperties: false,
@@ -139,14 +145,14 @@ const DETAIL_SCHEMAS = {
           type: "object",
           additionalProperties: false,
           properties: {
-            id: { type: "integer" },
+            id: { type: ["integer", "null"] },
             title: { type: "string" },
             poster_path: { type: "string" },
             release_date: { type: "string" },
             role_label: { type: "string" },
             reason: { type: "string" },
           },
-          required: ["title", "role_label", "reason"],
+          required: ["id", "title", "poster_path", "release_date", "role_label", "reason"],
         },
       },
     },
@@ -205,7 +211,7 @@ const DETAIL_SCHEMAS = {
       what_it_leaves_you_with: { type: "string" },
       if_youre_deciding: { type: "string" },
     },
-    required: ["what_happens", "why_it_lands", "if_youre_deciding"],
+    required: ["what_happens", "why_it_lands", "what_it_leaves_you_with", "if_youre_deciding"],
   },
   themes_and_takeaways: {
     type: "object",
@@ -253,10 +259,22 @@ const DETAIL_SCHEMAS = {
 
 const getDetailSchema = (action) => DETAIL_SCHEMAS[action] || DETAIL_SCHEMAS.quick_take;
 
+const askAnswerSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    answer: { type: "string" },
+    confidence: { type: "string", enum: ["high", "medium", "low"] },
+    suggested_action: { type: "string" },
+  },
+  required: ["answer", "confidence", "suggested_action"],
+};
+
 module.exports = {
   BACKUP_ROLE_KEYS,
   pickRankingSchema,
   pickWriterSchema,
   DETAIL_SCHEMAS,
   getDetailSchema,
+  askAnswerSchema,
 };

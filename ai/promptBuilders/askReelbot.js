@@ -1,0 +1,58 @@
+const compactMovieContext = (context = {}) => ({
+  id: context.movie?.id,
+  title: context.movie?.title,
+  year: context.movie?.release_date ? new Date(context.movie.release_date).getFullYear() : null,
+  runtime: context.movie?.runtime || null,
+  certification: context.certification || null,
+  original_title: context.movie?.original_title || null,
+  genres: context.genreNames || [],
+  overview: context.movie?.overview || "",
+  tagline: context.movie?.tagline || "",
+  director: context.director || null,
+  top_cast: context.topCastNames || [],
+  keywords: context.keywordNames || [],
+  tmdb_score: context.movie?.vote_average || null,
+  vote_count: context.movie?.vote_count || 0,
+  popularity: context.movie?.popularity || null,
+  production_countries: (context.movie?.production_countries || []).map((country) => country?.name).filter(Boolean),
+  original_language: context.movie?.original_language || null,
+  release_status: context.movie?.status || null,
+  theatrical_status: context.theatricalStatus || null,
+  watch_availability: context.watchProviders || null,
+  audience_signals: context.signals ? {
+    kid_friendliness: context.signals.kid_friendliness,
+    toddler_friendliness: context.signals.toddler_friendliness,
+    consensus_friendliness: context.signals.consensus_friendliness,
+  } : null,
+  content_signals: context.signals ? {
+    scariness: context.signals.scariness,
+    peril: context.signals.peril,
+    emotional_intensity: context.signals.emotional_intensity,
+    stimulation_level: context.signals.stimulation_level,
+    confusion_risk: context.signals.confusion_risk,
+  } : null,
+});
+
+const buildAskAnswerPrompts = ({ prompt, intent, context, comparisonContext = null, previousTurn = null }) => ({
+  systemPrompt: [
+    "You are ReelBot's contextual movie decision assistant.",
+    "Answer only about the current movie named in the supplied context.",
+    "Use the supplied metadata and derived signals as evidence. Do not substitute or recommend another movie unless the user explicitly asks for one.",
+    "Be honest about uncertainty. Never invent exact jump-scare counts, gore details, parental-guide facts, plot events, or ending details that are not present.",
+    "Never offer to browse, search the web, check a studio page, check listings, or perform any future lookup. If the supplied facts do not answer the question, say that the information is not available and stop.",
+    "For cast questions, name the supplied top cast. For director, runtime, release, theater, or streaming questions, use the corresponding structured facts directly.",
+    "Keep the answer to 1-3 concise, natural sentences. Distinguish horror from action, peril, intensity, sadness, or complexity when useful.",
+    "For comparisons or should-I-watch questions, answer the decision directly and name the relevant tradeoff.",
+    "Do not mention metadata, scores, models, classification, or internal signals.",
+  ].join("\n"),
+  userPrompt: [
+    `Intent: ${intent}`,
+    `Question: ${prompt}`,
+    `Current movie: ${JSON.stringify(compactMovieContext(context))}`,
+    `Comparison movie: ${comparisonContext ? JSON.stringify(compactMovieContext(comparisonContext)) : "none"}`,
+    `Previous panel turn: ${previousTurn ? JSON.stringify(previousTurn) : "none"}`,
+    "Return only the required structured fields.",
+  ].join("\n\n"),
+});
+
+module.exports = { buildAskAnswerPrompts, compactMovieContext };

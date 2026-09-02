@@ -7,6 +7,8 @@
     "dev": "nodemon index.js",
     "test:intent": "node scripts/evaluateReelbotPrompts.js",
     "test:strict-intent": "node scripts/testStrictIntentFilters.js",
+    "test:ask-intent": "node scripts/testAskIntentRouting.js",
+    "benchmark:models": "node scripts/benchmarkReelbotModels.js",
     "inspect:sitemap": "node scripts/inspectSitemap.js"
   },
   "keywords": [],
