@@ -22,6 +22,12 @@ const {
 } = require("./ai/timeConstraintRetrieval");
 const { MODELS } = require("./src/config/models");
 const { ASK_INTENTS, classifyAskIntent } = require("./src/ask/askIntent");
+const {
+  normalizeConversationState,
+  updateConversationForPrompt,
+  buildContextualRecommendationPrompt,
+  getConversationExcludedIds,
+} = require("./src/ask/conversationState");
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -1085,10 +1091,10 @@ const applyRefinementToIntent = (intent = {}, refinement = null) => {
     case "shorter":
       nextIntent.runtime_commitment = {
         ...nextIntent.runtime_commitment,
-        max_runtime_minutes: Math.min(Number(nextIntent.runtime_commitment?.max_runtime_minutes || 110) || 110, 110),
         preference: "short",
+        strength: "soft",
+        soft_target_minutes: Math.min(Number(nextIntent.runtime_commitment?.soft_target_minutes || 110) || 110, 110),
       };
-      nextIntent.hard_filters.max_runtime_minutes = nextIntent.runtime_commitment.max_runtime_minutes;
       nextIntent.rubric_keys = appendUnique(nextIntent.rubric_keys, ["under_two_hours"]);
       break;
     case "funnier":
@@ -1186,6 +1192,11 @@ const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}) => {
   }
 
   if (Array.isArray(hardFilters.exclude_genre_ids) && matchesAnyGenre(movie.genre_ids || [], hardFilters.exclude_genre_ids)) {
+    return false;
+  }
+
+  const certification = String(movie.us_certification || "").toUpperCase();
+  if (certification && Array.isArray(hardFilters.certification_allowlist) && hardFilters.certification_allowlist.length && !hardFilters.certification_allowlist.includes(certification)) {
     return false;
   }
 
@@ -6281,6 +6292,7 @@ const generateGroundedAskAnswer = async ({ prompt, intent, movieId, previousTurn
 const normalizeAskPageContext = (value = {}) => ({
   page: String(value.page || "general").slice(0, 40),
   movie: value.movie && typeof value.movie === "object" ? value.movie : null,
+  currentPick: value.currentPick && typeof value.currentPick === "object" ? value.currentPick : null,
   originalPrompt: String(value.originalPrompt || "").slice(0, 500),
   activeConstraints: value.activeConstraints && typeof value.activeConstraints === "object" ? value.activeConstraints : {},
   activeFilters: value.activeFilters && typeof value.activeFilters === "object" ? value.activeFilters : {},
@@ -6290,6 +6302,22 @@ const normalizeAskPageContext = (value = {}) => ({
   rejectedMovieIds: (Array.isArray(value.rejectedMovieIds) ? value.rejectedMovieIds : []).map(Number).filter(Boolean).slice(0, 100),
   excludedMovieIds: (Array.isArray(value.excludedMovieIds) ? value.excludedMovieIds : []).map(Number).filter(Boolean).slice(0, 100),
 });
+
+const extractAskQuestionTitle = (prompt = "") => String(prompt || "")
+  .replace(/^(?:is|was|does|do|what about)\s+/i, "")
+  .replace(/\b(?:scary|violent|appropriate|safe|good for|okay for|ok for|too intense|directed by|runtime|how long)\b.*$/i, "")
+  .replace(/[?.!,]+$/g, "")
+  .trim();
+
+const resolveAskAnchorMovie = async (prompt, pageContext, conversation) => {
+  const existing = pageContext.movie || pageContext.currentPick || conversation.anchorMovie;
+  if (existing?.id) return { id: Number(existing.id), title: String(existing.title || "") };
+  const titleQuery = extractAskQuestionTitle(prompt);
+  if (!titleQuery || titleQuery.length < 2) return null;
+  const search = await fetchTmdbCached("/search/movie", { query: titleQuery, include_adult: "false", region: "US" }, 5 * 60 * 1000);
+  const match = (search.results || [])[0];
+  return match?.id ? { id: Number(match.id), title: String(match.title || titleQuery) } : null;
+};
 
 app.get("/", (req, res) => {
   res.send("Movie Review Backend is Running!");
@@ -6816,51 +6844,78 @@ app.post("/reelbot/ask", async (req, res) => {
   }
 
   const pageContext = normalizeAskPageContext(req.body?.page_context || {});
-  const movieId = Number(pageContext.movie?.id || req.body?.movie_id || 0) || null;
-  const intent = classifyAskIntent({ prompt, context: pageContext });
+  const incomingConversation = normalizeConversationState(req.body?.conversation_state || {}, pageContext);
+  const intent = classifyAskIntent({ prompt, context: pageContext, conversation: incomingConversation });
 
   try {
+    const resolvedAnchor = intent === ASK_INTENTS.CURRENT_MOVIE_QUESTION || intent === ASK_INTENTS.MOVIE_COMPARISON
+      ? await resolveAskAnchorMovie(prompt, pageContext, incomingConversation)
+      : (pageContext.movie || pageContext.currentPick || incomingConversation.anchorMovie);
+    const movieId = Number(resolvedAnchor?.id || req.body?.movie_id || 0) || null;
+    let conversation = updateConversationForPrompt({ ...incomingConversation, anchorMovie: resolvedAnchor || incomingConversation.anchorMovie }, prompt, intent, pageContext);
+
     if (intent === ASK_INTENTS.GENERAL_INFORMATION_QUESTION || intent === ASK_INTENTS.UNKNOWN) {
+      const answer = "I’m not quite sure whether you want a movie fact or a new recommendation. Which one?";
       return res.json({
         kind: "answer",
         intent,
-        answer: "I can help you choose a movie. Tell me what you want to watch, or open a movie page to ask about that title.",
+        answer,
         confidence: "high",
         suggested_action: "",
         model: null,
+        conversation_state: { ...conversation, lastAssistantResponse: answer },
         latency_ms: Date.now() - startedAt,
       });
     }
 
     if ([ASK_INTENTS.CURRENT_MOVIE_QUESTION, ASK_INTENTS.MOVIE_COMPARISON].includes(intent) && movieId) {
-      const answer = await generateGroundedAskAnswer({ prompt, intent, movieId, previousTurn: req.body?.previous_turn || null });
+      const answer = await generateGroundedAskAnswer({
+        prompt,
+        intent,
+        movieId,
+        previousTurn: {
+          ...(req.body?.previous_turn || {}),
+          previous_user_message: incomingConversation.lastUserMessage,
+          previous_assistant_response: incomingConversation.lastAssistantResponse,
+          active_constraints: incomingConversation.activeConstraints,
+        },
+      });
+      conversation = { ...conversation, anchorMovie: resolvedAnchor, lastAssistantResponse: answer.answer };
       return res.json({
         kind: "answer",
         intent,
         movie_id: movieId,
         ...answer,
         model: MODELS.ask,
+        conversation_state: conversation,
         latency_ms: Date.now() - startedAt,
       });
     }
 
+    if ([ASK_INTENTS.CURRENT_MOVIE_QUESTION, ASK_INTENTS.MOVIE_COMPARISON].includes(intent) && !movieId) {
+      const answer = intent === ASK_INTENTS.MOVIE_COMPARISON ? "Which two movies should I compare?" : "Which movie do you mean?";
+      return res.json({ kind: "answer", intent, answer, confidence: "high", suggested_action: "", model: null, conversation_state: { ...conversation, lastAssistantResponse: answer }, latency_ms: Date.now() - startedAt });
+    }
+
     const filters = pageContext.activeFilters || {};
     const isNowPlaying = pageContext.page === "now_playing";
-    const constrainedIds = intent === ASK_INTENTS.ACCOUNT_LIBRARY_RECOMMENDATION
+    const constrainedIds = pageContext.page === "my_movies"
       ? pageContext.savedMovieIds
-      : intent === ASK_INTENTS.CURRENT_SET_RECOMMENDATION
+      : (pageContext.page === "browse" || pageContext.page === "now_playing")
         ? pageContext.visibleMovieIds
         : [];
-    const anchorTitle = pageContext.movie?.title || "";
-    const recommendationPrompt = intent === ASK_INTENTS.MOVIE_RECOMMENDATION && anchorTitle
-      ? (/\b(?:this|it)\b/i.test(prompt)
-          ? prompt.replace(/\b(?:this|it)\b/gi, anchorTitle)
-          : `${prompt} Similar to ${anchorTitle}.`)
-      : prompt;
+    const anchorTitle = (pageContext.movie || pageContext.currentPick || conversation.anchorMovie)?.title || "";
+    const contextualPrompt = buildContextualRecommendationPrompt(prompt, conversation, intent);
+    const recommendationPrompt = [ASK_INTENTS.MOVIE_RECOMMENDATION, ASK_INTENTS.REFINE_RECOMMENDATION].includes(intent) && anchorTitle
+      ? (/\b(?:this|it)\b/i.test(contextualPrompt)
+          ? contextualPrompt.replace(/\b(?:this|it)\b/gi, anchorTitle)
+          : `${contextualPrompt} Similar to ${anchorTitle}.`)
+      : contextualPrompt;
     const excludedIds = Array.from(new Set([
       ...pageContext.excludedMovieIds,
       ...pageContext.watchedMovieIds,
       ...pageContext.rejectedMovieIds,
+      ...getConversationExcludedIds(conversation),
       ...(intent === ASK_INTENTS.MOVIE_RECOMMENDATION && movieId ? [movieId] : []),
     ]));
     const recommendation = await generatePickPayload({
@@ -6879,11 +6934,25 @@ app.post("/reelbot/ask", async (req, res) => {
       is_swap: req.body?.request_mode === "swap",
     });
 
+    const primary = recommendation?.primary || null;
+    if (primary?.id || primary?.title) {
+      conversation = {
+        ...conversation,
+        activeIntent: intent,
+        lastAssistantResponse: `Recommended ${primary.title || "a movie"}.`,
+        recommendationHistory: [
+          ...conversation.recommendationHistory,
+          { id: Number(primary.id) || null, title: String(primary.title || ""), status: "recommended" },
+        ].slice(-30),
+      };
+    }
+
     return res.json({
       kind: "recommendation",
       intent,
       recommendation,
       model: MODELS.reco,
+      conversation_state: conversation,
       latency_ms: Date.now() - startedAt,
     });
   } catch (error) {

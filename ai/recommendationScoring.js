@@ -85,6 +85,40 @@ const getSafetyScore = (signals = {}, intent = {}) => {
   return Math.round((safetyComposite - 0.3) * 50);
 };
 
+// Priority is deliberately non-linear: a runtime preference must never buy back
+// a major tone or cognitive-load miss. Numeric hard limits are filtered before
+// scoring; vague duration language only contributes a small preference score.
+const getPriorityConstraintScore = (movie = {}, signals = {}, intent = {}) => {
+  const priority = intent.constraint_priority || {};
+  const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
+  const runtime = Number(movie.runtime || 0);
+  let tone = 0;
+  let cognitiveLoad = 0;
+  let runtimePreference = 0;
+
+  if (priority.requested_tone === "lighter") {
+    if (genreIds.includes(27)) tone -= 150;
+    if (genreIds.includes(53) || genreIds.includes(80) || genreIds.includes(10752)) tone -= 42;
+    tone -= Math.round(Number(signals.scariness || 0) * 75);
+    tone -= Math.round(Number(signals.emotional_intensity || 0) * 38);
+    tone += Math.round(Number(signals.warmth_score || 0) * 38);
+    tone += Math.round(Number(signals.cozy_score || 0) * 28);
+  }
+
+  if (priority.cognitive_load === "easy") {
+    cognitiveLoad -= Math.round(Number(signals.confusion_risk || 0) * 125);
+    if (Array.isArray(signals.practical_watch_fit) && signals.practical_watch_fit.includes("patience_required")) cognitiveLoad -= 48;
+    if (Array.isArray(signals.practical_watch_fit) && signals.practical_watch_fit.includes("background_friendly")) cognitiveLoad += 28;
+    if (Number(signals.consensus_friendliness || 0) >= 0.55) cognitiveLoad += 18;
+  }
+
+  if (intent.runtime_commitment?.strength === "soft" && runtime) {
+    runtimePreference += runtime <= Number(intent.runtime_commitment.soft_target_minutes || 120) ? 12 : -Math.min(18, Math.ceil((runtime - 120) / 5) * 3);
+  }
+
+  return { total: tone + cognitiveLoad + runtimePreference, tone, cognitiveLoad, runtimePreference };
+};
+
 const getToneScore = (signals = {}, intent = {}) => {
   const tonePreferences = Array.isArray(intent.tone_preferences) ? intent.tone_preferences : [];
   const softPreferences = getSoftPreferences(intent);
@@ -400,9 +434,10 @@ const getRecommendationFitBreakdown = (movie = {}, intent = {}, extra = {}, sign
   const context = getContextScore(derivedSignals, intent);
   const lowRegret = getLowRegretScore(movie, derivedSignals);
   const penalties = getPenaltyAdjustments(movie, derivedSignals, intent);
+  const priorityConstraints = getPriorityConstraintScore(movie, derivedSignals, intent);
   const bonus = clamp(Number(extra.structured_match_score || movie.structured_match_score || 0) / 20, 0, 18);
 
-  const total = entity.score + audience + safety + tone + consensus + cozy + sweepingEpic + canonicalEntry + context + lowRegret + bonus + penalties.total;
+  const total = entity.score + audience + safety + tone + consensus + cozy + sweepingEpic + canonicalEntry + context + lowRegret + bonus + penalties.total + priorityConstraints.total;
   const fitTier = getFitTier(total);
 
   return {
@@ -422,6 +457,9 @@ const getRecommendationFitBreakdown = (movie = {}, intent = {}, extra = {}, sign
       low_regret: lowRegret,
       structured_bonus: bonus,
       penalties: penalties.total,
+      priority_tone: priorityConstraints.tone,
+      priority_cognitive_load: priorityConstraints.cognitiveLoad,
+      runtime_preference: priorityConstraints.runtimePreference,
     },
     entity_match_label: entity.label,
     penalties: penalties.penalties,

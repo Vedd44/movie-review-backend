@@ -68,7 +68,7 @@ const inferPreferredGenreIds = (prompt = "") => {
   if (/sci-?fi|science fiction|space/i.test(normalizedPrompt)) addUnique(genreIds, [878]);
   if (/mystery|whodunit|detective/i.test(normalizedPrompt)) addUnique(genreIds, [9648]);
   if (/thriller|tense|suspense/i.test(normalizedPrompt)) addUnique(genreIds, [53]);
-  if (/drama|emotional|moving|heavy/i.test(normalizedPrompt)) addUnique(genreIds, [18]);
+  if (/drama|emotional|moving|heavy|serious/i.test(normalizedPrompt)) addUnique(genreIds, [18]);
   if (/comedy|funny|laugh/i.test(normalizedPrompt)) addUnique(genreIds, [35]);
   if (/romance|romantic|date-night|date night/i.test(normalizedPrompt)) addUnique(genreIds, [10749]);
   if (/action/i.test(normalizedPrompt)) addUnique(genreIds, [28]);
@@ -99,6 +99,8 @@ const inferAvoidGenreIds = (prompt = "") => {
   if (/background watch|don't want to think too hard|dont want to think too hard/i.test(normalizedPrompt)) {
     addUnique(genreIds, [9648, 53]);
   }
+  if (/\b(?:no|not) horror\b/i.test(normalizedPrompt)) addUnique(genreIds, [27]);
+  if (/\bno violence\b/i.test(normalizedPrompt)) addUnique(genreIds, [28, 10752]);
   if (/toddler|child|children|kid|kids|young child|young kid|family movie|family-friendly|family friendly|home sick|sick kid|sick child/i.test(normalizedPrompt)) {
     addUnique(genreIds, [27, 53, 80, 10752]);
   }
@@ -195,11 +197,11 @@ const getAudienceContext = (prompt = "") => {
 const getEmotionalTolerance = (prompt = "", audienceSignals = {}) => {
   const normalizedPrompt = lower(prompt);
   const darkButManageable = /dark but not depressing|dark without being depressing|dark but not bleak/i.test(normalizedPrompt);
-  const comforting = /comfort(?:ing)?|cozy|warm|soothing|feel good|feel-good/i.test(normalizedPrompt);
-  const lowStress = /low stress|easy watch|gentle|easy|not exhausting|less intense|emotionally safe/i.test(normalizedPrompt)
+  const comforting = /comfort(?:ing)?|cozy|warm|soothing|feel good|feel-good|lighter|lighthearted/i.test(normalizedPrompt);
+  const lowStress = /low stress|easy watch|gentle|easy|not exhausting|less intense|emotionally safe|lighter|turn[-\s]+(?:my|your|the)[-\s]+brain[-\s]+off/i.test(normalizedPrompt)
     || audienceSignals.friction_level === "low";
   const heavy = /heavy|dark|bleak|grim|emotionally heavy/i.test(normalizedPrompt);
-  const avoidsDepressing = /not depressing|not miserable|not bleak|without being miserable|without being bleak|not too heavy/i.test(normalizedPrompt);
+  const avoidsDepressing = /not depressing|not miserable|not bleak|without being miserable|without being bleak|not too heavy|lighter/i.test(normalizedPrompt);
 
   return {
     level: comforting || lowStress ? "light" : heavy ? "heavy" : darkButManageable ? "medium_dark" : "medium",
@@ -223,7 +225,7 @@ const getAttentionProfile = (prompt = "") => {
     };
   }
 
-  if (/don't want to think too hard|dont want to think too hard|easy watch|turn my brain off/i.test(normalizedPrompt)) {
+  if (/don't want to think too hard|dont want to think too hard|easy watch|smart but easy|turn[-\s]+(?:my|your|the)[-\s]+brain[-\s]+off/i.test(normalizedPrompt)) {
     return {
       level: "easy",
       immersive: false,
@@ -277,23 +279,28 @@ const getPacingEnergyProfile = (prompt = "", emotionalTolerance = {}) => {
 
 const getRuntimeCommitment = (prompt = "") => {
   const normalizedPrompt = lower(prompt);
+  const numericMaximum = normalizedPrompt.match(/\b(?:under|less than|no more than|max(?:imum)?(?: of)?)\s*(\d{2,3})\s*(?:minutes?|mins?)?\b/i);
+  const underTwoHours = /\bunder\s*(?:2|two)\s*hours?\b|\bunder\s*120\s*(?:minutes?|mins?)?\b/i.test(normalizedPrompt);
+  const softShort = /\bnot too long\b|\bsomething shorter\b|\bshort(?:er)?\b|\bquick watch\b|\bmanageable runtime\b/i.test(normalizedPrompt);
+  const maxRuntimeMinutes = numericMaximum
+    ? Number(numericMaximum[1])
+    : /\bunder ninety\b|\b90 minutes? or less\b/i.test(normalizedPrompt)
+      ? 90
+      : underTwoHours
+        ? 120
+        : null;
 
   return {
-    max_runtime_minutes:
-      /under\s*90|under ninety|90 minutes or less/i.test(normalizedPrompt)
-        ? 90
-        : /under\s*2\s*hours|under\s*two\s*hours|under\s*120|manageable runtime/i.test(normalizedPrompt)
-          ? 120
-          : null,
-    min_runtime_minutes: /over\s*2\s*hours|over\s*two\s*hours|epic|long/i.test(normalizedPrompt) ? 121 : null,
+    max_runtime_minutes: maxRuntimeMinutes,
+    min_runtime_minutes: /over\s*2\s*hours|over\s*two\s*hours/i.test(normalizedPrompt) ? 121 : null,
     preference:
-      /under\s*90|under ninety|short/i.test(normalizedPrompt)
+      maxRuntimeMinutes || softShort
         ? "short"
-        : /manageable runtime/i.test(normalizedPrompt)
-          ? "manageable"
-          : /epic|long|over\s*2\s*hours|over\s*two\s*hours/i.test(normalizedPrompt)
+        : /epic|long|over\s*2\s*hours|over\s*two\s*hours/i.test(normalizedPrompt)
             ? "epic"
             : "any",
+    strength: maxRuntimeMinutes ? "hard" : softShort ? "soft" : "none",
+    soft_target_minutes: softShort && !maxRuntimeMinutes ? 120 : null,
   };
 };
 
@@ -358,7 +365,7 @@ const parseReelbotIntent = (prompt = "") => {
   if (/emotional|moving|heartfelt/i.test(rawPrompt)) tone.push("emotional");
   if (/visual|visually stunning|cinematic|gorgeous/i.test(rawPrompt)) tone.push("visual");
   if (/smart|twisty|mind-bending|clever|sci-fi|scifi/i.test(rawPrompt)) tone.push("idea-driven");
-  if (emotionalTolerance.comforting) tone.push("comforting");
+  if (emotionalTolerance.comforting || /lighter|lighthearted/i.test(rawPrompt)) tone.push("comforting");
   if (audienceSignals.guardrails.child_family_safe) tone.push("gentle", "safe");
 
   let accessibility = "fairly_accessible";
@@ -457,16 +464,23 @@ const parseReelbotIntent = (prompt = "") => {
     attention_profile: attentionProfile,
     pacing_energy: pacingEnergy,
     runtime_commitment: runtimeCommitment,
+    constraint_priority: {
+      order: ["safety", "tone", "cognitive_load", "genre", "runtime", "secondary"],
+      requested_tone: /lighter|lighthearted|not depressing|not bleak|not too heavy/i.test(normalizedPrompt) ? "lighter" : null,
+      cognitive_load: attentionProfile.low_cognitive_load ? "easy" : null,
+      runtime_strength: runtimeCommitment.strength,
+    },
     specificity,
     constraints,
     hard_filters: {
     family_safe_only: Boolean(audienceSignals.guardrails.child_family_safe),
-    max_runtime_minutes: runtimeCommitment.max_runtime_minutes,
+    max_runtime_minutes: runtimeCommitment.strength === "hard" ? runtimeCommitment.max_runtime_minutes : null,
     min_runtime_minutes: runtimeCommitment.min_runtime_minutes,
     exclude_genre_ids: Array.from(new Set([
       ...(Array.isArray(audienceSignals.guardrails?.hard_exclude_genre_ids) ? audienceSignals.guardrails.hard_exclude_genre_ids : []),
       ...avoidGenreIds,
     ])),
+    certification_allowlist: /\bpg only\b/i.test(normalizedPrompt) ? ["PG"] : [],
     require_country_relevance: structuredQuery?.type === "country",
     require_awards_relevance: structuredQuery?.type === "awards",
     time_constraint: timeConstraint,

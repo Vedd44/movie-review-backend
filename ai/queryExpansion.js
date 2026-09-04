@@ -133,7 +133,7 @@ const inferAudienceAgeBucket = (prompt = "", audienceSignals = {}) => {
 const inferContentSafety = (prompt = "", audienceSignals = {}, audienceAge = null) => {
   if (audienceAge === "toddler" || audienceAge === "preschool") return "very_safe";
   if (audienceAge === "young_kids" || audienceSignals?.guardrails?.child_family_safe) return "safe";
-  if (/not too scary|safe for/i.test(prompt)) return "safe";
+  if (/not too scary|safe for|spooky but safe|\bsafe\b/i.test(prompt)) return "safe";
   return "standard";
 };
 
@@ -180,7 +180,7 @@ const inferTonePreferences = (prompt = "", audienceAge = null) => {
   const normalizedPrompt = lower(prompt);
   const tonePreferences = [];
 
-  if (/gentle|soft|easygoing|easy going|cozy|cosy|quiet night|low[-\s]?key/i.test(normalizedPrompt)) tonePreferences.push("gentle");
+  if (/gentle|soft|easygoing|easy going|cozy|cosy|quiet night|low[-\s]?key|lighter|lighthearted/i.test(normalizedPrompt)) tonePreferences.push("gentle");
   if (/playful|fun|silly/i.test(normalizedPrompt)) tonePreferences.push("playful");
   if (/bright|cheerful|sunny/i.test(normalizedPrompt)) tonePreferences.push("bright");
   if (/spooky/i.test(normalizedPrompt)) tonePreferences.push("spooky");
@@ -213,8 +213,17 @@ const inferSoftPreferences = (prompt = "", audienceAge = null) => {
   if (/smart/i.test(normalizedPrompt)) {
     softPreferences.push("thoughtful");
   }
-  if (/won't melt my brain|wont melt my brain|accessible|not too confusing/i.test(normalizedPrompt)) {
+  if (/funny but not dumb|not dumb|witty/i.test(normalizedPrompt)) {
+    softPreferences.push("thoughtful", "broadly_accessible");
+  }
+  if (/won't melt my brain|wont melt my brain|accessible|not too confusing|smart but easy|turn[-\s]+(?:my|your|the)[-\s]+brain[-\s]+off|easy watch/i.test(normalizedPrompt)) {
     softPreferences.push("accessible", "clear_storytelling");
+  }
+  if (/more mainstream|mainstream|not obscure/i.test(normalizedPrompt)) {
+    softPreferences.push("low_regret", "broadly_accessible", "consensus_friendly");
+  }
+  if (/lighter|lighthearted|not depressing|not bleak|not too heavy/i.test(normalizedPrompt)) {
+    softPreferences.push("comforting", "warm");
   }
   if (/sweeping|epic|immersive|romantic/i.test(normalizedPrompt)) {
     softPreferences.push("immersive");
