@@ -5245,6 +5245,16 @@ const normalizeMovieDetails = (movie) => {
       stimulation_level: derivedSignals.stimulation_level,
       confusion_risk: derivedSignals.confusion_risk,
     },
+    watch_signals: {
+      cozy_score: derivedSignals.cozy_score,
+      warmth_score: derivedSignals.warmth_score,
+      polarization_risk: derivedSignals.polarization_risk,
+      rewatchability: derivedSignals.rewatchability,
+      sweeping_epic_score: derivedSignals.sweeping_epic_score,
+      vibe_tags: derivedSignals.vibe_tags,
+      audience_fit_tags: derivedSignals.audience_fit_tags,
+      practical_watch_fit: derivedSignals.practical_watch_fit,
+    },
     original_language: movie.original_language || "",
     spoken_languages: Array.isArray(movie.spoken_languages)
       ? movie.spoken_languages.map((language) => language.english_name)

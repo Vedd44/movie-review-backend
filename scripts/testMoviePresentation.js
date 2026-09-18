@@ -25,10 +25,15 @@ const movieMatches = rankMovieSlugMatches([
 assert.strictEqual(movieMatches[0].id, 1, "title and year should resolve deterministically");
 
 const personMatches = rankPersonSlugMatches([
-  { id: 20, name: "Alex Smith", popularity: 4 },
-  { id: 10, name: "Alex Smith", popularity: 12 },
+  { id: 20, name: "Alex Smith", popularity: 100 },
+  { id: 10, name: "Alex Smith", popularity: 1 },
 ], "alex-smith");
-assert.strictEqual(personMatches[0].id, 10, "same-name people should resolve by popularity then ID");
+assert.strictEqual(personMatches[0].id, 10, "the oldest stable TMDB ID should own the clean slug regardless of popularity");
+const reorderedPersonMatches = rankPersonSlugMatches([
+  { id: 10, name: "Alex Smith", popularity: 500 },
+  { id: 20, name: "Alex Smith", popularity: 0 },
+], "alex-smith");
+assert.strictEqual(reorderedPersonMatches[0].id, 10, "popularity changes must not transfer clean-slug ownership");
 const disambiguatedPersonMatches = rankPersonSlugMatches([
   { id: 20, name: "Alex Smith", popularity: 4 },
   { id: 10, name: "Alex Smith", popularity: 12 },

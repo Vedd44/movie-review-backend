@@ -70,12 +70,13 @@ const rankPersonSlugMatches = (people = [], requestedSlug = "") => {
   const collisionMatch = String(requestedSlug || "").match(/--([a-z0-9]{5})$/i);
   const requestedToken = collisionMatch?.[1]?.toLowerCase() || "";
   const requestedNameSlug = collisionMatch ? slugify(String(requestedSlug).slice(0, collisionMatch.index)) : normalizedSlug;
+  // TMDB popularity is volatile. The lowest immutable TMDB ID owns the clean
+  // name slug; later same-name records receive their opaque hash suffix.
   return (Array.isArray(people) ? people : [])
     .filter((person) => person?.id)
     .sort((left, right) =>
       Number(requestedToken && getPersonCollisionToken(right.id) === requestedToken) - Number(requestedToken && getPersonCollisionToken(left.id) === requestedToken)
       || Number(getPersonSlug(right) === requestedNameSlug) - Number(getPersonSlug(left) === requestedNameSlug)
-      || Number(right.popularity || 0) - Number(left.popularity || 0)
       || Number(left.id) - Number(right.id)
     );
 };
