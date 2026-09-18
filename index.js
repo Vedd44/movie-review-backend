@@ -21,6 +21,7 @@ const {
   buildTimeConstraintGenreFilter,
 } = require("./ai/timeConstraintRetrieval");
 const { MODELS } = require("./src/config/models");
+const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
 const { ASK_INTENTS, classifyAskIntent } = require("./src/ask/askIntent");
 const {
   normalizeConversationState,
@@ -6654,16 +6655,32 @@ const fetchFilledDiscoverResults = async (type, pageNumber, options = {}, fillCo
   const hasFilters = Boolean(options.genre) || options.runtime !== "any";
 
   if (!hasFilters) {
+    if (minimumCount <= 0) {
+      const sourcePage = resolveProgressiveSourcePage({
+        requestedPage: pageNumber,
+        firstSourcePage: getRotatedPage(normalizedType, 0),
+      });
+      const payload = await fetchFeedBatch(normalizedType, sourcePage);
+      return {
+        ...payload,
+        page: pageNumber,
+        source_page: sourcePage,
+      };
+    }
+
     return fetchHomepageFeed(normalizedType, pageNumber);
   }
 
   if (minimumCount <= 0 || pageNumber !== 1) {
-    const discoverPage = pageNumber > 1 ? pageNumber : getRotatedPage("discover", 0);
+    const discoverPage = minimumCount <= 0
+      ? resolveProgressiveSourcePage({ requestedPage: pageNumber, firstSourcePage: getRotatedPage("discover", 0) })
+      : pageNumber;
     const payload = await fetchTmdbCached("/discover/movie", buildDiscoverParams(normalizedType, discoverPage, options), CACHE_TTLS.discover);
     const sourcedResults = withMovieSource(payload.results, "discover", "/discover/movie");
     return {
       ...payload,
       page: pageNumber,
+      source_page: discoverPage,
       results: sortDiscoveryResults(normalizedType, sourcedResults),
     };
   }
