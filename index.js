@@ -28,6 +28,15 @@ const {
   buildContextualRecommendationPrompt,
   getConversationExcludedIds,
 } = require("./src/ask/conversationState");
+const {
+  buildMovieCanonicalPath,
+  getMovieSlug,
+  getPersonSlug,
+  parseMovieSlug,
+  rankMovieSlugMatches,
+  rankPersonSlugMatches,
+  rankRelatedMovies,
+} = require("./src/moviePresentation");
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -284,16 +293,6 @@ const PROMPT_STOPWORDS = new Set([
 const SIGNAL_SCORE_THRESHOLD = 10;
 const SITE_ORIGIN = (process.env.SITE_ORIGIN || process.env.REACT_APP_SITE_URL || "https://reelbot.movie").trim().replace(/\/$/, "");
 
-const slugifyMovieTitle = (title = "movie") =>
-  String(title || "movie")
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "movie";
-
-const buildMovieCanonicalPath = (movie = {}) => `/movies/${movie.id}/${slugifyMovieTitle(movie.title)}`;
-
 const escapeXml = (value = "") => String(value || "")
   .replace(/&/g, "&amp;")
   .replace(/</g, "&lt;")
@@ -487,6 +486,7 @@ const getDirectorCredit = (credits) => {
         name: director.name,
         job: director.job || "Director",
         profile_path: director.profile_path || null,
+        canonical_slug: getPersonSlug(director),
       }
     : null;
 };
@@ -5214,6 +5214,7 @@ const normalizeMovieDetails = (movie) => {
   return {
     id: movie.id,
     title: movie.title,
+    canonical_slug: getMovieSlug(movie),
     original_title: movie.original_title || movie.title,
     tagline: movie.tagline || "",
     description: movie.overview || "No description available.",
@@ -5260,6 +5261,7 @@ const normalizeMovieDetails = (movie) => {
           name: castMember.name,
           character: castMember.character || "",
           profile_path: castMember.profile_path || null,
+          canonical_slug: getPersonSlug(castMember),
         }))
       : [],
     poster_path: movie.poster_path || null,
@@ -5268,18 +5270,13 @@ const normalizeMovieDetails = (movie) => {
     trailer: pickTrailer(movie.videos?.results),
     watch_providers: watchProviders,
     availability_status: buildAvailabilityStatus(movie, watchProviders),
-    similar: Array.isArray(movie.similar?.results)
-      ? movie.similar.results
-          .filter((similarMovie) => similarMovie.poster_path)
-          .sort((left, right) => (right.vote_count || 0) - (left.vote_count || 0) || (right.popularity || 0) - (left.popularity || 0))
-          .slice(0, 6)
-          .map((similarMovie) => ({
-            id: similarMovie.id,
-            title: similarMovie.title,
-            release_date: similarMovie.release_date || "",
-            poster_path: similarMovie.poster_path || null,
-          }))
-      : [],
+    similar: rankRelatedMovies(movie, 6).map((similarMovie) => ({
+      id: similarMovie.id,
+      title: similarMovie.title,
+      release_date: similarMovie.release_date || "",
+      poster_path: similarMovie.poster_path || null,
+      relation_source: similarMovie.relation_source || "similar",
+    })),
   };
 };
 
@@ -6363,23 +6360,108 @@ app.get("/movies/watch-providers", async (req, res) => {
   }
 });
 
+const fetchMovieDetailPayload = async (movieId) => {
+  const movie = await fetchTmdb(`/movie/${movieId}`, {
+    append_to_response: "credits,reviews,similar,recommendations,videos,watch/providers,release_dates,keywords",
+  });
+
+  rememberMovieForSitemap(movie);
+  (movie.similar?.results || []).slice(0, 6).forEach((item) => rememberMovieForSitemap(item));
+  (movie.recommendations?.results || []).slice(0, 6).forEach((item) => rememberMovieForSitemap(item));
+  const normalizedMovie = normalizeMovieDetails(movie);
+  const people = [normalizedMovie.director_credit, ...(normalizedMovie.top_cast_credits || [])].filter((person) => person?.id && person?.name);
+  const canonicalSlugs = await Promise.all(people.map((person) => resolveCanonicalPersonSlug(person)));
+  const personSlugMap = new Map(people.map((person, index) => [person.id, canonicalSlugs[index]]));
+
+  if (normalizedMovie.director_credit?.id) {
+    normalizedMovie.director_credit.canonical_slug = personSlugMap.get(normalizedMovie.director_credit.id);
+  }
+  normalizedMovie.top_cast_credits = (normalizedMovie.top_cast_credits || []).map((person) => ({
+    ...person,
+    canonical_slug: personSlugMap.get(person.id) || getPersonSlug(person),
+  }));
+  return normalizedMovie;
+};
+
+const resolveCanonicalPersonSlug = async (person = {}) => {
+  if (!person?.id || !person?.name) return getPersonSlug(person);
+  try {
+    const searchPayload = await fetchTmdbCached("/search/person", {
+      query: person.name,
+      include_adult: "false",
+    }, CACHE_TTLS.movie_details);
+    const exactMatches = (searchPayload.results || []).filter((candidate) => getPersonSlug(candidate) === getPersonSlug(person));
+    const rankedMatches = rankPersonSlugMatches(exactMatches, getPersonSlug(person));
+    const needsDisambiguation = exactMatches.length > 1 && rankedMatches[0]?.id !== person.id;
+    return getPersonSlug(person, { disambiguate: needsDisambiguation });
+  } catch (error) {
+    return getPersonSlug(person, { disambiguate: true });
+  }
+};
+
+const fetchPersonDetailPayload = async (personId) => {
+  const [person, credits] = await Promise.all([
+    fetchTmdbCached(`/person/${personId}`, {}, CACHE_TTLS.movie_details),
+    fetchTmdbCached(`/person/${personId}/movie_credits`, {}, CACHE_TTLS.movie_details),
+  ]);
+
+  return {
+    id: person.id,
+    name: person.name || "Unknown",
+    canonical_slug: await resolveCanonicalPersonSlug(person),
+    known_for_department: person.known_for_department || "",
+    biography: person.biography || "",
+    profile_path: person.profile_path || null,
+    movie_credits: normalizePersonMovieCredits(credits),
+  };
+};
+
+app.get("/movies/resolve/:slug", async (req, res) => {
+  const parsedSlug = parseMovieSlug(req.params.slug);
+
+  try {
+    const searchPayload = await fetchTmdbCached("/search/movie", {
+      query: parsedSlug.titleQuery,
+      include_adult: "false",
+      region: "US",
+      ...(parsedSlug.year ? { primary_release_year: parsedSlug.year } : {}),
+    }, CACHE_TTLS.movie_details);
+    const match = rankMovieSlugMatches(searchPayload.results, req.params.slug)[0];
+    if (!match?.id) return res.status(404).json({ error: "Movie not found" });
+    res.set("Cache-Control", "public, s-maxage=21600, stale-while-revalidate=3600");
+    return res.json(await fetchMovieDetailPayload(match.id));
+  } catch (error) {
+    console.error("❌ Error resolving movie slug:", error.response?.data || error.message);
+    return res.status(500).json({ error: "Failed to resolve movie" });
+  }
+});
+
 app.get("/movies/:id", async (req, res) => {
   const movieId = req.params.id;
 
   try {
     console.log(`Fetching details for movie ID: ${movieId}`);
-    const movie = await fetchTmdb(`/movie/${movieId}`, {
-      append_to_response: "credits,reviews,similar,recommendations,videos,watch/providers,release_dates,keywords",
-    });
-
-    rememberMovieForSitemap(movie);
-    (movie.similar?.results || []).slice(0, 6).forEach((item) => rememberMovieForSitemap(item));
-    (movie.recommendations?.results || []).slice(0, 6).forEach((item) => rememberMovieForSitemap(item));
-
-    res.json(normalizeMovieDetails(movie));
+    res.json(await fetchMovieDetailPayload(movieId));
   } catch (error) {
     console.error("❌ Error fetching movie details:", error.response?.data || error.message);
     res.status(500).json({ error: "Failed to fetch movie details" });
+  }
+});
+
+app.get("/people/resolve/:slug", async (req, res) => {
+  try {
+    const personQuery = String(req.params.slug || "").replace(/--[a-z0-9]{5}$/i, "").replace(/-/g, " ");
+    const searchPayload = await fetchTmdbCached("/search/person", {
+      query: personQuery,
+      include_adult: "false",
+    }, CACHE_TTLS.movie_details);
+    const match = rankPersonSlugMatches(searchPayload.results, req.params.slug)[0];
+    if (!match?.id) return res.status(404).json({ error: "Person not found" });
+    res.set("Cache-Control", "public, s-maxage=21600, stale-while-revalidate=3600");
+    return res.json(await fetchPersonDetailPayload(match.id));
+  } catch (error) {
+    console.error("❌ Error resolving person slug:", error.response?.data || error.message);
+    return res.status(500).json({ error: "Failed to resolve person" });
   }
 });
 
@@ -6387,20 +6469,8 @@ app.get("/person/:id", async (req, res) => {
   const personId = req.params.id;
 
   try {
-    const [person, credits] = await Promise.all([
-      fetchTmdbCached(`/person/${personId}`, {}, CACHE_TTLS.movie_details),
-      fetchTmdbCached(`/person/${personId}/movie_credits`, {}, CACHE_TTLS.movie_details),
-    ]);
-
     res.set("Cache-Control", "public, s-maxage=21600, stale-while-revalidate=3600");
-    res.json({
-      id: person.id,
-      name: person.name || "Unknown",
-      known_for_department: person.known_for_department || "",
-      biography: person.biography || "",
-      profile_path: person.profile_path || null,
-      movie_credits: normalizePersonMovieCredits(credits),
-    });
+    res.json(await fetchPersonDetailPayload(personId));
   } catch (error) {
     console.error("❌ Error fetching person details:", error.response?.data || error.message);
     res.status(500).json({ error: "Failed to fetch person details" });

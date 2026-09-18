@@ -9,6 +9,7 @@
     "test:strict-intent": "node scripts/testStrictIntentFilters.js",
     "test:ask-intent": "node scripts/testAskIntentRouting.js",
     "test:interaction-hardening": "node scripts/testInteractionHardening.js",
+    "test:presentation": "node scripts/testMoviePresentation.js",
     "benchmark:models": "node scripts/benchmarkReelbotModels.js",
     "inspect:sitemap": "node scripts/inspectSitemap.js"
   },
