@@ -21,6 +21,13 @@ const {
   buildTimeConstraintGenreFilter,
 } = require("./ai/timeConstraintRetrieval");
 const { MODELS } = require("./src/config/models");
+const {
+  REELBOT_TAKE_VERSION,
+  reelbotTakeSchema,
+  buildTakePrompts,
+  createReelbotTakeService,
+} = require("./src/takes/reelbotTake");
+const { createSupabaseTakeStore } = require("./src/takes/supabaseTakeStore");
 const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
 const { ASK_INTENTS, classifyAskIntent } = require("./src/ask/askIntent");
 const {
@@ -4095,6 +4102,31 @@ const callStructuredOpenAI = async ({ systemPrompt, userPrompt, schema, schemaNa
   }
 };
 
+const reelbotTakeModel = MODELS.ask;
+const reelbotTakeStore = createSupabaseTakeStore({
+  baseUrl: SUPABASE_URL,
+  serviceKey: SUPABASE_SERVICE_ROLE_KEY,
+  httpClient: axios,
+});
+const reelbotTakeService = createReelbotTakeService({
+  version: REELBOT_TAKE_VERSION,
+  model: reelbotTakeModel,
+  persistentStore: reelbotTakeStore.enabled ? reelbotTakeStore : null,
+  generateTake: async (movie) => {
+    if (!OPENAI_API_KEY) return null;
+    const { systemPrompt, userPrompt } = buildTakePrompts(movie);
+    return callStructuredOpenAIWithModel({
+      systemPrompt,
+      userPrompt,
+      schema: reelbotTakeSchema,
+      schemaName: "reelbot_movie_take_v2",
+      maxTokens: 260,
+      type: "reelbot_take",
+      model: reelbotTakeModel,
+    });
+  },
+});
+
 const BACKUP_ROLE_LABELS = {
   safer_option: "More familiar",
   lighter_option: "Lighter option",
@@ -6372,9 +6404,9 @@ app.get("/movies/watch-providers", async (req, res) => {
 });
 
 const fetchMovieDetailPayload = async (movieId) => {
-  const movie = await fetchTmdb(`/movie/${movieId}`, {
+  const movie = await fetchTmdbCached(`/movie/${movieId}`, {
     append_to_response: "credits,reviews,similar,recommendations,videos,watch/providers,release_dates,keywords",
-  });
+  }, CACHE_TTLS.movie_details);
 
   rememberMovieForSitemap(movie);
   (movie.similar?.results || []).slice(0, 6).forEach((item) => rememberMovieForSitemap(item));
@@ -6444,6 +6476,21 @@ app.get("/movies/resolve/:slug", async (req, res) => {
   } catch (error) {
     console.error("❌ Error resolving movie slug:", error.response?.data || error.message);
     return res.status(500).json({ error: "Failed to resolve movie" });
+  }
+});
+
+app.get("/movies/:id/reelbot-take", async (req, res) => {
+  const movieId = Number.parseInt(req.params.id, 10);
+  if (!movieId) return res.status(400).json({ error: "Invalid movie ID" });
+
+  try {
+    const movie = await fetchMovieDetailPayload(movieId);
+    const result = await reelbotTakeService.getTake(movie);
+    res.set("Cache-Control", result.source === "fallback" ? "no-store" : "private, max-age=300");
+    return res.json({ movie_id: movieId, ...result });
+  } catch (error) {
+    console.error("❌ Error fetching ReelBot Take context:", error.response?.data || error.message);
+    return res.status(503).json({ error: "ReelBot's Take is temporarily unavailable" });
   }
 });
 

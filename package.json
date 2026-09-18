@@ -11,6 +11,7 @@
     "test:interaction-hardening": "node scripts/testInteractionHardening.js",
     "test:presentation": "node scripts/testMoviePresentation.js",
     "test:discovery-pagination": "node scripts/testDiscoveryPagination.js",
+    "test:reelbot-take": "node scripts/testReelbotTake.js",
     "benchmark:models": "node scripts/benchmarkReelbotModels.js",
     "inspect:sitemap": "node scripts/inspectSitemap.js"
   },
