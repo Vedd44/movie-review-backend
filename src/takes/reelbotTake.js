@@ -1,6 +1,6 @@
 const crypto = require("node:crypto");
 
-const REELBOT_TAKE_VERSION = "v2";
+const REELBOT_TAKE_VERSION = "v3";
 const REELBOT_TAKE_FIELDS = ["assessment", "good_fit_if", "maybe_not_if"];
 
 const reelbotTakeSchema = {
@@ -82,17 +82,18 @@ const buildTakePrompts = (movie = {}) => {
       "Prioritize tone, pacing, emotional character, intensity, scale, humor, accessibility, narrative style, intellectual demands, viewing commitment, and distinctive qualities only where the supplied context supports them.",
       "Derived audience, content, and watch signals are approximate retrieval aids, not authoritative facts. Reconcile them with the overview, keywords, certification, runtime, and genres; ignore a derived label when those sources do not support it.",
       "Do not claim a movie is background-friendly, appropriate for toddlers, frightening, gentle, confusing, or easy solely because a derived signal says so.",
-      "Runtime is a viewing implication only when meaningful. Plot details belong only when they clarify the experience.",
+      "Mention runtime only when it meaningfully shapes the viewing decision, and express it naturally, such as nearly three hours, just over two hours, or a brisk 90 minutes rather than defaulting to an exact minute count. Plot details belong only when they clarify the experience.",
       "Be willing to name tradeoffs. Maybe-not-if is a viewing-context mismatch, not a criticism section.",
       "Never invent plot events, relationships, themes, production facts, awards, reception, cast, runtime, or certification.",
       "If evidence is thin, be restrained instead of filling gaps.",
-      "Avoid generic praise, marketing language, first person, scores, markdown, headings, and phrases such as fans of, viewers seeking, audiences who appreciate, this film offers, compelling blend, captivating, engaging, or thought-provoking.",
-      "Avoid field-by-field boilerplate: do not habitually begin assessment with Choosing, good_fit_if with Pick it, or maybe_not_if with Choose something else. The UI already supplies Good fit if and Maybe not if labels; make each value read naturally beneath its label, usually addressing the viewer as you.",
+      "Avoid generic praise, marketing language, first person, scores, markdown, headings, and phrases such as fans of, viewers seeking, audiences who appreciate, this film offers, compelling blend, captivating, engaging, thought-provoking, or intelligent-feeling.",
+      "Start the assessment directly with the movie or its viewing experience, using its distinctive tone, scale, pacing, emotional character, or a meaningful relationship among those qualities. Do not default to framing the viewer's act of selecting it: avoid openings such as Choosing [movie] means, Choosing this means, Settling into [movie] means, or This means committing to. Vary sentence structure rather than replacing them with another rigid opening template.",
+      "Avoid field-by-field boilerplate: do not habitually begin good_fit_if with Pick it. The UI already supplies Good fit if and Maybe not if labels; make each value read naturally beneath its label, usually addressing the viewer as you. Begin maybe_not_if with the mismatch itself rather than commands such as Skip it tonight, Avoid it, or Choose something else.",
       "Write concise, confident, conversational, movie-literate editorial prose. Vary sentence structure naturally.",
       "Assessment is normally 25–55 words in one or two sentences. Good fit if and maybe not if are each one sentence, normally 12–30 words.",
       "Return only the required structured fields.",
     ].join("\n"),
-    userPrompt: `Grounded movie context:\n${JSON.stringify(grounding, null, 2)}\n\nWrite ReelBot's Take for the decision: What does choosing this particular movie tonight actually mean?`,
+    userPrompt: `Grounded movie context:\n${JSON.stringify(grounding, null, 2)}\n\nWrite ReelBot's Take to help someone decide whether this particular movie fits tonight. Talk directly about the movie and its viewing experience.`,
   };
 };
 
