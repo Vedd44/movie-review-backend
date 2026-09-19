@@ -85,6 +85,31 @@ const run = async () => {
   }).getTake(movie);
   assert.equal(malformed.source, "fallback");
 
+  let unavailableStoreGenerations = 0;
+  const unavailableStoreService = createReelbotTakeService({
+    persistentStore: {
+      async get() { throw new Error("store unavailable"); },
+      async set() { throw new Error("store unavailable"); },
+    },
+    generateTake: async () => {
+      unavailableStoreGenerations += 1;
+      return validTake;
+    },
+  });
+  assert.equal((await unavailableStoreService.getTake(movie)).source, "generated");
+  assert.equal((await unavailableStoreService.getTake(movie)).source, "memory_cache");
+  assert.equal(unavailableStoreGenerations, 1);
+
+  const bothUnavailable = await createReelbotTakeService({
+    persistentStore: {
+      async get() { throw new Error("store unavailable"); },
+      async set() { throw new Error("store unavailable"); },
+    },
+    generateTake: async () => { throw new Error("model unavailable"); },
+  }).getTake(movie);
+  assert.equal(bothUnavailable.source, "fallback");
+  assert.match(bothUnavailable.take.assessment, /temporarily unavailable/i);
+
   let versionGenerations = 0;
   const oldRows = createMemoryStore(new Map([
     [`${movie.id}:v1`, { context_hash: "old", take: validTake, model: "old" }],
