@@ -31,5 +31,14 @@ assert.equal(
   classifyAskIntent({ prompt: "pick something easy tonight", context: { page: "my_movies" } }),
   ASK_INTENTS.ACCOUNT_LIBRARY_RECOMMENDATION
 );
+const homepagePickContext = { page: "home", currentPick: { id: 393, title: "Knives Out" } };
+assert.equal(
+  classifyAskIntent({ prompt: "What movies are out now that I might like?", context: homepagePickContext }),
+  ASK_INTENTS.GENERAL_RECOMMENDATION
+);
+assert.equal(
+  classifyAskIntent({ prompt: "Something gentler", context: homepagePickContext }),
+  ASK_INTENTS.REFINE_RECOMMENDATION
+);
 
 console.log("Ask ReelBot intent routing checks passed.");
