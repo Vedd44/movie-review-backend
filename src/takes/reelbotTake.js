@@ -1,6 +1,6 @@
 const crypto = require("node:crypto");
 
-const REELBOT_TAKE_VERSION = "v3";
+const REELBOT_TAKE_VERSION = "v4";
 const REELBOT_TAKE_FIELDS = ["assessment", "good_fit_if", "maybe_not_if"];
 
 const reelbotTakeSchema = {

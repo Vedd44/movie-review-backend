@@ -4021,11 +4021,11 @@ const safeJsonParse = (value) => {
 
 const OPENAI_FALLBACK_MODEL = "gpt-5-mini";
 const getModelForEndpoint = (type = "reco") => MODELS[type] || MODELS.reco || OPENAI_FALLBACK_MODEL;
-const isGpt5FamilyModel = (model = "") => /^gpt-5/i.test(String(model || ""));
+const isReasoningModel = (model = "") => /^gpt-(?:5|6)/i.test(String(model || ""));
 const getReasoningEffort = (model = "") => {
   const normalizedModel = String(model || "");
   if (normalizedModel.includes("pro")) return "high";
-  return /^gpt-5\.6/i.test(normalizedModel) ? "low" : "minimal";
+  return /^gpt-(?:5\.6|6)/i.test(normalizedModel) ? "low" : "minimal";
 };
 const shouldFallbackModel = (model = "") => String(model || "").trim() !== OPENAI_FALLBACK_MODEL;
 
@@ -4046,7 +4046,7 @@ const callStructuredOpenAIWithModel = async ({ systemPrompt, userPrompt, schema,
       input: buildResponsesInput(systemPrompt, userPrompt),
       max_output_tokens: maxTokens,
       store: false,
-      reasoning: { effort: isGpt5FamilyModel(model) ? getReasoningEffort(model) : undefined },
+      reasoning: { effort: isReasoningModel(model) ? getReasoningEffort(model) : undefined },
       text: {
         verbosity: "low",
         format: {
@@ -4102,7 +4102,7 @@ const callStructuredOpenAI = async ({ systemPrompt, userPrompt, schema, schemaNa
   }
 };
 
-const reelbotTakeModel = MODELS.ask;
+const reelbotTakeModel = MODELS.take;
 const reelbotTakeStore = createSupabaseTakeStore({
   baseUrl: SUPABASE_URL,
   serviceKey: SUPABASE_SERVICE_ROLE_KEY,
@@ -5439,7 +5439,7 @@ const createOpenAIRequestBody = (action, systemPrompt, userPrompt, type = "ratio
     store: false,
   };
 
-  if (isGpt5FamilyModel(model)) {
+  if (isReasoningModel(model)) {
     body.reasoning = { effort: getReasoningEffort(model) };
     body.text = { verbosity: "low" };
   }
