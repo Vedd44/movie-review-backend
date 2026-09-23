@@ -266,8 +266,13 @@ const askAnswerSchema = {
     answer: { type: "string" },
     confidence: { type: "string", enum: ["high", "medium", "low"] },
     suggested_action: { type: "string" },
+    follow_ups: {
+      type: "array",
+      maxItems: 4,
+      items: { type: "string", minLength: 1, maxLength: 140 },
+    },
   },
-  required: ["answer", "confidence", "suggested_action"],
+  required: ["answer", "confidence", "suggested_action", "follow_ups"],
 };
 
 module.exports = {

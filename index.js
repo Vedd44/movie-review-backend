@@ -6293,6 +6293,40 @@ const buildFallbackAskAnswer = (prompt, context = {}, intent = ASK_INTENTS.CURRE
   return `I don’t have enough verified detail to answer that confidently about ${title}. The available movie information does not support a more specific claim.`;
 };
 
+const buildFallbackAskFollowUps = (prompt, answer, context = {}) => {
+  const question = String(prompt || "").toLowerCase();
+  const answerText = String(answer || "").toLowerCase();
+  const certification = String(context.certification || "").trim();
+  const candidates = [];
+  const add = (value) => {
+    if (value && !candidates.includes(value)) candidates.push(value);
+  };
+
+  if (certification && /rated|rating|group|younger|teen|child/.test(`${question} ${answerText}`)) {
+    add(`What makes it ${certification}-rated?`);
+  }
+  if (/violent|violence|peril|action|group|intense/.test(`${question} ${answerText}`)) {
+    add("How violent is it?");
+  }
+  if (/scary|horror|jump scare|gore/.test(`${question} ${answerText}`)) {
+    add("How scary does it get?");
+  }
+  if (/runtime|minutes|long/.test(answerText) && !/runtime|how long/.test(question)) {
+    add("How much time should I set aside?");
+  }
+  if (/slow|pace|confus|attention|follow/.test(`${question} ${answerText}`)) {
+    add("Is it easy to follow?");
+  }
+  if (/cast|stars|directed|director/.test(question)) {
+    add("What else have they been in?");
+  }
+  if (/ending|explain the ending|spoiler/.test(question)) {
+    add("What does the ending mean?");
+  }
+
+  return candidates.slice(0, 4);
+};
+
 const getComparisonMovieContext = async (prompt, currentMovieId) => {
   const match = String(prompt || "").match(/(?:\bor\b|\bversus\b|\bvs\.?\b)\s+(.+?)[?.!]*$/i);
   const titleQuery = String(match?.[1] || "").trim();
@@ -6310,7 +6344,12 @@ const generateGroundedAskAnswer = async ({ prompt, intent, movieId, previousTurn
   const fallbackAnswer = buildFallbackAskAnswer(prompt, context, intent, comparisonContext);
 
   if (!OPENAI_API_KEY) {
-    return { answer: fallbackAnswer, confidence: "medium", suggested_action: "" };
+    return {
+      answer: fallbackAnswer,
+      confidence: "medium",
+      suggested_action: "",
+      follow_ups: buildFallbackAskFollowUps(prompt, fallbackAnswer, context),
+    };
   }
 
   const prompts = buildAskAnswerPrompts({ prompt, intent, context, comparisonContext, previousTurn });
@@ -6319,14 +6358,24 @@ const generateGroundedAskAnswer = async ({ prompt, intent, movieId, previousTurn
     userPrompt: prompts.userPrompt,
     schema: askAnswerSchema,
     schemaName: "reelbot_contextual_answer_v1",
-    maxTokens: 180,
+    maxTokens: 260,
     type: "ask",
   }).catch((error) => {
     console.error("Contextual Ask ReelBot answer failed:", error.response?.data || error.message);
     return null;
   });
 
-  return payload?.answer ? payload : { answer: fallbackAnswer, confidence: "medium", suggested_action: "" };
+  return payload?.answer
+    ? {
+      ...payload,
+      follow_ups: Array.isArray(payload.follow_ups) ? payload.follow_ups.slice(0, 4) : [],
+    }
+    : {
+      answer: fallbackAnswer,
+      confidence: "medium",
+      suggested_action: "",
+      follow_ups: buildFallbackAskFollowUps(prompt, fallbackAnswer, context),
+    };
 };
 
 const normalizeAskPageContext = (value = {}) => ({

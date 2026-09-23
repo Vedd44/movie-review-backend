@@ -43,6 +43,10 @@ const buildAskAnswerPrompts = ({ prompt, intent, context, comparisonContext = nu
     "For cast questions, name the supplied top cast. For director, runtime, release, theater, or streaming questions, use the corresponding structured facts directly.",
     "Keep the answer to 1-3 concise, natural sentences. Distinguish horror from action, peril, intensity, sadness, or complexity when useful.",
     "For comparisons or should-I-watch questions, answer the decision directly and name the relevant tradeoff.",
+    "After answering, return 0-4 concise follow_up questions that help the user go one level deeper into a useful subject you raised. Ground them in the supplied answer and movie/person context; do not invent unsupported facts.",
+    "Prefer specific follow-ups about rating, violence, scariness, intensity, pacing, complexity, suitability, runtime, tone, themes, cast, or filmmaker when relevant. Do not use generic prompts such as 'Tell me more', 'Anything else?', 'Why?', or 'Is it good?'. Do not ask a question the answer already settled.",
+    "Keep follow-ups short enough for buttons. Usually return 2-3, but return fewer or an empty array when no useful grounded follow-up exists.",
+    "Respect spoiler boundaries: stay spoiler-light unless the user explicitly asks for spoilers or an ending explanation. Do not suggest plot-revealing or ending-specific follow-ups casually.",
     "Do not mention metadata, scores, models, classification, or internal signals.",
   ].join("\n"),
   userPrompt: [
