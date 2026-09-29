@@ -118,7 +118,15 @@ const createReelbotTakeService = ({
   model = "",
   version = REELBOT_TAKE_VERSION,
   memoryCache = new Map(),
+  memoryCacheMaxEntries = 200,
 } = {}) => {
+  const rememberTake = (cacheKey, take) => {
+    memoryCache.delete(cacheKey);
+    memoryCache.set(cacheKey, { take });
+    while (memoryCache.size > memoryCacheMaxEntries) {
+      memoryCache.delete(memoryCache.keys().next().value);
+    }
+  };
   const inFlight = new Map();
   const getTake = async (movie = {}) => {
     const movieId = Number(movie.id);
@@ -134,7 +142,7 @@ const createReelbotTakeService = ({
           const stored = await persistentStore.get({ movieId, version });
           const storedTake = stored?.context_hash === contextHash ? validateReelbotTake(stored.take) : null;
           if (storedTake) {
-            memoryCache.set(cacheKey, { take: storedTake });
+            rememberTake(cacheKey, storedTake);
             return { take: storedTake, source: "persistent_cache", version, model: stored.model || model };
           }
         } catch (error) {
@@ -145,7 +153,7 @@ const createReelbotTakeService = ({
       try {
         const generatedTake = validateReelbotTake(await generateTake?.(movie));
         if (!generatedTake) throw new Error("invalid_take");
-        memoryCache.set(cacheKey, { take: generatedTake });
+        rememberTake(cacheKey, generatedTake);
         if (persistentStore?.set && movieId) {
           try {
             await persistentStore.set({ movieId, version, contextHash, take: generatedTake, model });
