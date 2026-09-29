@@ -62,6 +62,30 @@ const pickSurfaceTally = new Map();
 const promptLookupCache = new Map();
 const sitemapMovieIndex = new Map();
 
+const CACHE_LIMITS = {
+  reelbot: 150,
+  pick: 150,
+  tmdb: 400,
+  prompt_lookup: 150,
+  pick_surface_tally: 1000,
+  sitemap_movie_index: 2500,
+};
+
+const trimMap = (cache, maxEntries) => {
+  while (cache.size > maxEntries) {
+    cache.delete(cache.keys().next().value);
+  }
+};
+
+const pruneExpiredCache = (cache) => {
+  const now = Date.now();
+  for (const [key, entry] of cache) {
+    if (entry?.expiresAt && entry.expiresAt <= now) {
+      cache.delete(key);
+    }
+  }
+};
+
 const CACHE_TTLS = {
   now_playing: 5 * 60 * 1000,
   popular: 10 * 60 * 1000,
@@ -313,12 +337,14 @@ const rememberMovieForSitemap = (movie = {}) => {
     return;
   }
 
+  sitemapMovieIndex.delete(movie.id);
   sitemapMovieIndex.set(movie.id, {
     id: movie.id,
     title: movie.title,
     release_date: movie.release_date || "",
     updated_at: new Date().toISOString(),
   });
+  trimMap(sitemapMovieIndex, CACHE_LIMITS.sitemap_movie_index);
 };
 
 console.log("OpenAI models configured:", MODELS);
@@ -397,12 +423,14 @@ const readCache = (cache, key) => {
   return entry.value;
 };
 
-const writeCache = (cache, key, value, ttlMs) => {
+const writeCache = (cache, key, value, ttlMs, maxEntries = 250) => {
+  pruneExpiredCache(cache);
+  cache.delete(key);
   cache.set(key, {
     value,
     expiresAt: Date.now() + ttlMs,
   });
-
+  trimMap(cache, maxEntries);
   return value;
 };
 
@@ -415,7 +443,7 @@ const fetchTmdbCached = async (path, params = {}, ttlMs = CACHE_TTLS.discover) =
   }
 
   const payload = await fetchTmdb(path, params);
-  return writeCache(tmdbCache, cacheKey, payload, ttlMs);
+  return writeCache(tmdbCache, cacheKey, payload, ttlMs, CACHE_LIMITS.tmdb);
 };
 
 const getFeedCacheTtl = (type) => {
@@ -1297,8 +1325,9 @@ const getPromptMovieBoosts = async (prompt = "", intent = null) => {
 
   const intentCacheKey = intent?.lane_key ? (normalizedPrompt + ":" + intent.lane_key) : normalizedPrompt;
 
-  if (promptLookupCache.has(intentCacheKey)) {
-    return promptLookupCache.get(intentCacheKey);
+  const cachedPromptLookup = readCache(promptLookupCache, intentCacheKey);
+  if (cachedPromptLookup) {
+    return cachedPromptLookup;
   }
 
   const promptTokens = tokenizePrompt(prompt).filter((token) => !PROMPT_STOPWORDS.has(token));
@@ -1450,7 +1479,7 @@ const getPromptMovieBoosts = async (prompt = "", intent = null) => {
     }
   }
 
-  promptLookupCache.set(intentCacheKey, result);
+  writeCache(promptLookupCache, intentCacheKey, result, CACHE_TTLS.prompt_lookup, CACHE_LIMITS.prompt_lookup);
   return result;
 };
 
@@ -5124,11 +5153,13 @@ const generatePickPayload = async (rawPreferences = {}) => {
   };
 
   [primaryPick, ...alternatePicks].filter(Boolean).forEach((movie) => {
+    pickSurfaceTally.delete(movie.id);
     pickSurfaceTally.set(movie.id, (pickSurfaceTally.get(movie.id) || 0) + 1);
+    trimMap(pickSurfaceTally, CACHE_LIMITS.pick_surface_tally);
   });
 
   if (!refreshKey) {
-    writeCache(pickCache, cacheKey, payload, CACHE_TTLS.pick);
+    writeCache(pickCache, cacheKey, payload, CACHE_TTLS.pick, CACHE_LIMITS.pick);
   }
 
   return attachPickDebugTrace({ ...payload, cached: false }, includeDebug, {
@@ -6207,7 +6238,9 @@ const generateReelbotPayload = async (movieId, requestedAction = "quick_take", r
     generated_at: new Date().toISOString(),
   };
 
+  reelbotCache.delete(cacheKey);
   reelbotCache.set(cacheKey, payload);
+  trimMap(reelbotCache, CACHE_LIMITS.reelbot);
   return { ...payload, cached: false };
 };
 
