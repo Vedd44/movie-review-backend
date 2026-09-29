@@ -5389,11 +5389,12 @@ const normalizePersonMovieCredits = (credits = {}) => {
     addCredit(movie, { role: movie.character ? `Actor: ${movie.character}` : "Actor" });
   });
 
-  (Array.isArray(credits.crew) ? credits.crew : [])
-    .filter((movie) => movie.department === "Directing" || movie.job === "Director")
-    .forEach((movie) => {
-      addCredit(movie, { role: movie.job || "Director" });
-    });
+  (Array.isArray(credits.crew) ? credits.crew : []).forEach((movie) => {
+    const department = String(movie.department || "").trim();
+    const job = String(movie.job || "").trim();
+    const role = job || department || "Crew";
+    addCredit(movie, { role });
+  });
 
   return Array.from(creditMap.values()).sort((left, right) => {
     const rightTime = getCreditReleaseTime(right);
