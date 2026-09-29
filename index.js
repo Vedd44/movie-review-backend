@@ -7128,7 +7128,7 @@ app.post("/reelbot/ask", async (req, res) => {
     const isNowPlaying = pageContext.page === "now_playing";
     const constrainedIds = pageContext.page === "my_movies"
       ? pageContext.savedMovieIds
-      : (pageContext.page === "browse" || pageContext.page === "now_playing")
+      : (pageContext.page === "browse" || pageContext.page === "now_playing" || pageContext.page === "collection")
         ? pageContext.visibleMovieIds
         : [];
     const anchorTitle = (pageContext.movie || pageContext.currentPick || conversation.anchorMovie)?.title || "";
