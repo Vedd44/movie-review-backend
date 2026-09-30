@@ -61,6 +61,7 @@ const tmdbCache = new Map();
 const pickSurfaceTally = new Map();
 const promptLookupCache = new Map();
 const sitemapMovieIndex = new Map();
+const sitemapPersonIndex = new Map();
 
 const CACHE_LIMITS = {
   reelbot: 150,
@@ -69,6 +70,7 @@ const CACHE_LIMITS = {
   prompt_lookup: 150,
   pick_surface_tally: 1000,
   sitemap_movie_index: 2500,
+  sitemap_person_index: 5000,
 };
 
 const trimMap = (cache, maxEntries) => {
@@ -345,6 +347,19 @@ const rememberMovieForSitemap = (movie = {}) => {
     updated_at: new Date().toISOString(),
   });
   trimMap(sitemapMovieIndex, CACHE_LIMITS.sitemap_movie_index);
+};
+
+const rememberPersonForSitemap = (person = {}) => {
+  if (!person?.id || !person?.name) return;
+  const slug = person.canonical_slug || getPersonSlug(person);
+  sitemapPersonIndex.delete(person.id);
+  sitemapPersonIndex.set(person.id, {
+    id: person.id,
+    name: person.name,
+    slug,
+    updated_at: new Date().toISOString(),
+  });
+  trimMap(sitemapPersonIndex, CACHE_LIMITS.sitemap_person_index);
 };
 
 console.log("OpenAI models configured:", MODELS);
@@ -6498,6 +6513,7 @@ const fetchMovieDetailPayload = async (movieId) => {
   const people = [normalizedMovie.director_credit, ...(normalizedMovie.top_cast_credits || [])].filter((person) => person?.id && person?.name);
   const canonicalSlugs = await Promise.all(people.map((person) => resolveCanonicalPersonSlug(person)));
   const personSlugMap = new Map(people.map((person, index) => [person.id, canonicalSlugs[index]]));
+  people.forEach((person, index) => rememberPersonForSitemap({ ...person, canonical_slug: canonicalSlugs[index] }));
 
   if (normalizedMovie.director_credit?.id) {
     normalizedMovie.director_credit.canonical_slug = personSlugMap.get(normalizedMovie.director_credit.id);
@@ -6894,6 +6910,35 @@ app.get("/sitemap.xml", async (req, res) => {
       { path: "/trending", priority: "0.8", changefreq: "daily" },
       { path: "/coming-soon", priority: "0.8", changefreq: "daily" },
       { path: "/how-reelbot-works", priority: "0.6", changefreq: "weekly" },
+      { path: "/collections", priority: "0.9", changefreq: "weekly" },
+      { path: "/collections/best-90s-action-movies", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/movies-like-heat", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/movies-like-interstellar", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/great-thrillers-under-2-hours", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/smart-sci-fi-movies", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/great-90-minute-movies", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/dark-crime-thrillers", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/comfort-movies-that-arent-rom-coms", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-movies-under-90-minutes", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/movies-when-you-dont-know-what-to-watch", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-feel-good-movies", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-comfort-movies", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-date-night-movies", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-movies-to-watch-with-friends", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-sunday-night-movies", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-friday-night-movies", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/movies-that-hook-you-immediately", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-edge-of-your-seat-thrillers", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-psychological-thrillers", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-mind-bending-movies", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-sci-fi-movies", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-horror-movies", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-comedy-movies", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-movies-of-the-1980s", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-movies-of-the-1990s", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-movies-of-the-2000s", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/best-hidden-gem-movies", priority: "0.8", changefreq: "weekly" },
+      { path: "/collections/movies-everyone-should-see-once", priority: "0.8", changefreq: "weekly" },
     ];
 
     const movieEntries = Array.from(sitemapMovieIndex.values())
@@ -6906,6 +6951,16 @@ app.get("/sitemap.xml", async (req, res) => {
         priority: "0.7",
       }));
 
+    const personEntries = Array.from(sitemapPersonIndex.values())
+      .sort((left, right) => new Date(right.updated_at || 0) - new Date(left.updated_at || 0))
+      .slice(0, 1000)
+      .map((person) => ({
+        loc: `${SITE_ORIGIN}/people/${person.slug}`,
+        lastmod: person.updated_at || undefined,
+        changefreq: "monthly",
+        priority: "0.6",
+      }));
+
     const xmlEntries = [
       ...staticEntries.map((entry) => [
         "  <url>",
@@ -6915,6 +6970,14 @@ app.get("/sitemap.xml", async (req, res) => {
         "  </url>",
       ].join("\n")),
       ...movieEntries.map((entry) => [
+        "  <url>",
+        `    <loc>${escapeXml(entry.loc)}</loc>`,
+        entry.lastmod ? `    <lastmod>${escapeXml(entry.lastmod)}</lastmod>` : null,
+        `    <changefreq>${entry.changefreq}</changefreq>`,
+        `    <priority>${entry.priority}</priority>`,
+        "  </url>",
+      ].filter(Boolean).join("\n")),
+      ...personEntries.map((entry) => [
         "  <url>",
         `    <loc>${escapeXml(entry.loc)}</loc>`,
         entry.lastmod ? `    <lastmod>${escapeXml(entry.lastmod)}</lastmod>` : null,
