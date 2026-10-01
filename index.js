@@ -5391,6 +5391,7 @@ const normalizePersonMovieCredits = (credits = {}) => {
       poster_path: movie.poster_path || null,
       overview: movie.overview || "",
       vote_average: movie.vote_average || 0,
+      vote_count: movie.vote_count || 0,
       popularity: movie.popularity || 0,
       roles: [],
     };
