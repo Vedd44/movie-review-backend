@@ -58,4 +58,12 @@ const related = rankRelatedMovies({
 });
 assert.deepStrictEqual(related.slice(0, 2).map((movie) => movie.title), ["The Terminator", "Avatar"]);
 
+const { isMovieSlugMatch } = require("../src/moviePresentation");
+assert.equal(isMovieSlugMatch({id:1,title:"Dr. Rage",release_date:"2005-01-01"}, "hostel-2005"), false);
+assert.equal(isMovieSlugMatch({id:2,title:"Hostel",release_date:"2006-01-06"}, "hostel-2005"), true);
+assert.equal(isMovieSlugMatch({id:3,title:"Julie & Julia",release_date:"2009-01-01"}, "julie-and-julia-2009"), true);
+assert.equal(isMovieSlugMatch({id:4,title:"The School of Rock",release_date:"2003-01-01"}, "school-of-rock-2003"), true);
+assert.equal(isMovieSlugMatch({id:5,title:"The Invitation",release_date:"2022-01-01"}, "the-invitation-2015"), false);
+assert.equal(isMovieSlugMatch({id:6,title:"Deadly Games",release_date:""}, "deadly-games-1989"), false);
+
 console.log("Movie presentation tests passed.");

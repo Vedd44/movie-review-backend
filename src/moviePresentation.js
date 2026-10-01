@@ -46,6 +46,17 @@ const parseMovieSlug = (slug = "") => {
   };
 };
 
+const normalizeMovieTitle = (value = "") => slugify(value).replace(/^(the|a|an)-/, "").replace(/(?:^|-)and(?=-|$)/g, "").replace(/-/g, "");
+const isMovieSlugMatch = (movie, requestedSlug) => {
+  if (!movie?.id || movie.adult) return false;
+  const parsed = parseMovieSlug(requestedSlug);
+  const titleMatches = [movie.title, movie.original_title].some((title) => title && normalizeMovieTitle(title) === normalizeMovieTitle(parsed.titleSlug));
+  const year = getReleaseYear(movie);
+  // Festival and wide-release dates can differ. Never turn an unrelated search
+  // result into a canonical movie page when a requested title does not match.
+  return Boolean(titleMatches && (!parsed.year || (year && Math.abs(year - parsed.year) <= 2)));
+};
+
 const rankMovieSlugMatches = (movies = [], requestedSlug = "") => {
   const parsed = parseMovieSlug(requestedSlug);
   return (Array.isArray(movies) ? movies : [])
@@ -134,6 +145,7 @@ module.exports = {
   getPersonSlug,
   parseMovieSlug,
   rankMovieSlugMatches,
+  isMovieSlugMatch,
   rankPersonSlugMatches,
   rankRelatedMovies,
   slugify,

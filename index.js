@@ -42,8 +42,11 @@ const {
   getPersonSlug,
   parseMovieSlug,
   rankMovieSlugMatches,
+  isMovieSlugMatch,
   rankPersonSlugMatches,
   rankRelatedMovies,
+  slugify,
+  getPersonCollisionToken,
 } = require("./src/moviePresentation");
 
 const app = express();
@@ -6547,10 +6550,12 @@ const fetchPersonDetailPayload = async (personId) => {
     fetchTmdbCached(`/person/${personId}/movie_credits`, {}, CACHE_TTLS.movie_details),
   ]);
 
+  const canonicalSlug = await resolveCanonicalPersonSlug(person);
+  rememberPersonForSitemap({ ...person, canonical_slug: canonicalSlug });
   return {
     id: person.id,
     name: person.name || "Unknown",
-    canonical_slug: await resolveCanonicalPersonSlug(person),
+    canonical_slug: canonicalSlug,
     known_for_department: person.known_for_department || "",
     biography: person.biography || "",
     profile_path: person.profile_path || null,
@@ -6568,7 +6573,11 @@ app.get("/movies/resolve/:slug", async (req, res) => {
       region: "US",
       ...(parsedSlug.year ? { primary_release_year: parsedSlug.year } : {}),
     }, CACHE_TTLS.movie_details);
-    const match = rankMovieSlugMatches(searchPayload.results, req.params.slug)[0];
+    let match = rankMovieSlugMatches(searchPayload.results, req.params.slug).find((movie) => isMovieSlugMatch(movie, req.params.slug));
+    if (!match && parsedSlug.year) {
+      const widerSearch = await fetchTmdbCached("/search/movie", { query: parsedSlug.titleQuery, include_adult: "false", region: "US" }, CACHE_TTLS.movie_details);
+      match = rankMovieSlugMatches(widerSearch.results, req.params.slug).find((movie) => isMovieSlugMatch(movie, req.params.slug));
+    }
     if (!match?.id) return res.status(404).json({ error: "Movie not found" });
     res.set("Cache-Control", "public, s-maxage=21600, stale-while-revalidate=3600");
     return res.json(await fetchMovieDetailPayload(match.id));
@@ -6595,13 +6604,15 @@ app.get("/movies/:id/reelbot-take", async (req, res) => {
 
 app.get("/movies/:id", async (req, res) => {
   const movieId = req.params.id;
+  if (!/^\d+$/.test(movieId) || Number(movieId) < 1) return res.status(404).json({ error: "Movie not found" });
 
   try {
     console.log(`Fetching details for movie ID: ${movieId}`);
     res.json(await fetchMovieDetailPayload(movieId));
   } catch (error) {
     console.error("❌ Error fetching movie details:", error.response?.data || error.message);
-    res.status(500).json({ error: "Failed to fetch movie details" });
+    const status = error.response?.status === 404 ? 404 : 503;
+    res.status(status).json({ error: status === 404 ? "Movie not found" : "Movie details temporarily unavailable" });
   }
 });
 
@@ -6613,7 +6624,9 @@ app.get("/people/resolve/:slug", async (req, res) => {
       include_adult: "false",
     }, CACHE_TTLS.movie_details);
     const match = rankPersonSlugMatches(searchPayload.results, req.params.slug)[0];
-    if (!match?.id) return res.status(404).json({ error: "Person not found" });
+    const requestedToken = req.params.slug.match(/--([a-z0-9]{5})$/i)?.[1];
+    const requestedName = slugify(req.params.slug.replace(/--[a-z0-9]{5}$/i, ""));
+    if (!match?.id || slugify(match.name) !== requestedName || (requestedToken && getPersonCollisionToken(match.id) !== requestedToken.toLowerCase())) return res.status(404).json({ error: "Person not found" });
     res.set("Cache-Control", "public, s-maxage=21600, stale-while-revalidate=3600");
     return res.json(await fetchPersonDetailPayload(match.id));
   } catch (error) {
@@ -6624,13 +6637,15 @@ app.get("/people/resolve/:slug", async (req, res) => {
 
 app.get("/person/:id", async (req, res) => {
   const personId = req.params.id;
+  if (!/^\d+$/.test(personId) || Number(personId) < 1) return res.status(404).json({ error: "Person not found" });
 
   try {
     res.set("Cache-Control", "public, s-maxage=21600, stale-while-revalidate=3600");
     res.json(await fetchPersonDetailPayload(personId));
   } catch (error) {
     console.error("❌ Error fetching person details:", error.response?.data || error.message);
-    res.status(500).json({ error: "Failed to fetch person details" });
+    const status = error.response?.status === 404 ? 404 : 503;
+    res.status(status).json({ error: status === 404 ? "Person not found" : "Filmography temporarily unavailable" });
   }
 });
 
@@ -6946,7 +6961,6 @@ app.get("/sitemap.xml", async (req, res) => {
       .slice(0, 500)
       .map((movie) => ({
         loc: `${SITE_ORIGIN}${buildMovieCanonicalPath(movie)}`,
-        lastmod: movie.updated_at || undefined,
         changefreq: "weekly",
         priority: "0.7",
       }));
@@ -6956,7 +6970,6 @@ app.get("/sitemap.xml", async (req, res) => {
       .slice(0, 1000)
       .map((person) => ({
         loc: `${SITE_ORIGIN}/people/${person.slug}`,
-        lastmod: person.updated_at || undefined,
         changefreq: "monthly",
         priority: "0.6",
       }));
@@ -7295,6 +7308,7 @@ app.post("/movies/:id/reelbot", async (req, res) => {
 
 app.get("/movies/:id/ai-summary", async (req, res) => {
   const movieId = req.params.id;
+  if (!/^\d+$/.test(movieId) || Number(movieId) < 1) return res.status(404).json({ error: "Movie not found" });
 
   try {
     console.warn(`Legacy ai-summary route hit for movie ID: ${movieId}. Returning non-AI fallback.`);
