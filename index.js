@@ -1,4 +1,5 @@
 require("dotenv").config();
+const { passesRecommendationContract, recommendationCacheScope, needsVerifiedContentGuide } = require("./ai/recommendationContract");
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
@@ -887,11 +888,10 @@ const normalizeStructuredCandidate = (movie = {}, overrides = {}) => ({
   production_countries: Array.isArray(movie.production_countries)
     ? movie.production_countries.map((entry) => (typeof entry === "string" ? entry : entry?.name)).filter(Boolean)
     : [],
-  production_country_codes: Array.isArray(movie.production_countries)
-    ? movie.production_countries.map((entry) => (typeof entry === "string" ? null : entry?.iso_3166_1)).filter(Boolean)
-    : Array.isArray(movie.production_country_codes)
-      ? movie.production_country_codes
-      : [],
+  production_country_codes: [...new Set([
+    ...(Array.isArray(movie.production_country_codes) ? movie.production_country_codes : []),
+    ...(Array.isArray(movie.production_countries) ? movie.production_countries.map(entry => entry?.iso_3166_1).filter(Boolean) : []),
+  ])],
   spoken_language_codes: Array.isArray(movie.spoken_languages)
     ? movie.spoken_languages.map((entry) => entry?.iso_639_1).filter(Boolean)
     : Array.isArray(movie.spoken_language_codes)
@@ -1065,7 +1065,7 @@ const getIntentQueryType = (intent = {}) => {
   if (intent?.entity_anchor?.kind === "actor") return "PERSON";
   if (intent?.entity_anchor?.kind === "director") return "DIRECTOR";
   if (intent?.entity_anchor?.kind === "franchise") return "FRANCHISE";
-  if (intent?.prompt_type === "title_similarity" || (intent?.entity_anchor?.kind === "movie_title" && /like|similar to/i.test(String(intent?.raw_prompt || "")))) {
+  if (intent?.anchors?.title || intent?.prompt_type === "title_similarity" || (intent?.entity_anchor?.kind === "movie_title" && /like|similar to/i.test(String(intent?.raw_prompt || "")))) {
     return "TITLE_SIMILARITY";
   }
   if (intent?.prompt_type === "mixed_anchor_modifiers") return "MIXED";
@@ -1210,7 +1210,9 @@ const hydrateResolvedIntent = async (preferences = {}, rawPreferences = {}) => {
   return applyRefinementToIntent(finalIntent, refinement);
 };
 
-const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}) => {
+const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}, options = {}) => {
+  if (!passesRecommendationContract(movie, intent, options)) return false;
+  if (promptBoosts?.anchorMovieIds?.has(movie?.id)) return false;
   const queryType = intent?.query_type || getIntentQueryType(intent);
   if (!movie?.id) {
     return false;
@@ -1267,7 +1269,11 @@ const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}) => {
   }
 
   if (queryType === "TITLE_SIMILARITY") {
-    return Boolean(promptBoosts?.titleSimilarMovieIds?.has(movie.id) || promptBoosts?.constrainedAnchorMovieIds?.has(movie.id));
+    const anchored = promptBoosts?.titleSimilarMovieIds?.has(movie.id) || promptBoosts?.constrainedAnchorMovieIds?.has(movie.id);
+    const anchorGenres = promptBoosts?.anchorGenreIds || [];
+    // TMDB recommendations include co-popular films. Require the defining genre too.
+    const definingGenres = anchorGenres.filter(id => [878, 80, 53, 27, 35, 16, 10749, 99].includes(id));
+    return Boolean(anchored && (!definingGenres.length || definingGenres.every(id => (movie.genre_ids || []).includes(id))));
   }
 
   if (queryType === "COUNTRY" || queryType === "AWARDS" || queryType === "GENRE_THEME") {
@@ -1439,7 +1445,7 @@ const getPromptMovieBoosts = async (prompt = "", intent = null) => {
           fetchTmdb("/movie/" + anchorMovie.id + "/similar"),
           fetchTmdb("/movie/" + anchorMovie.id + "/recommendations"),
         ]);
-        [similarPayload, recommendationPayload]
+        [recommendationPayload, similarPayload]
           .filter((response) => response.status === "fulfilled")
           .flatMap((response) => response.value?.results || [])
           .forEach((movie) => {
@@ -1454,11 +1460,7 @@ const getPromptMovieBoosts = async (prompt = "", intent = null) => {
     }
   }
 
-  const movieQueries = [...new Set([
-    normalizedPrompt,
-    ...queries,
-    ...(intent?.thematic_terms || []).map((term) => term + " movie"),
-  ])].slice(0, 8);
+  const movieQueries = intent?.anchors?.title ? [intent.anchors.title] : [];
 
   for (const query of movieQueries) {
     try {
@@ -1473,7 +1475,7 @@ const getPromptMovieBoosts = async (prompt = "", intent = null) => {
     }
   }
 
-  for (const query of queries) {
+  for (const query of (intent?.anchors?.person ? [intent.anchors.person] : [])) {
     try {
       const payload = await fetchTmdb("/search/person", { query, include_adult: "false", page: 1 });
       const person = (payload.results || []).find((entry) => {
@@ -1993,8 +1995,8 @@ const sanitizeWhyThisNowLine = (value, preferences = {}) => {
     return buildWhyThisNowLine(preferences);
   }
 
-  const limited = clampWords(candidate, 10);
-  return limited || buildWhyThisNowLine(preferences);
+  // Preserve a complete thought; a word-count cut can leave visible fragments.
+  return candidate.length <= 240 ? candidate : buildWhyThisNowLine(preferences);
 };
 
 const getTextSimilarity = (value = "", reference = "") => {
@@ -2943,7 +2945,7 @@ const scorePickCandidate = (
   score += Math.min(movie.vote_count || 0, 1800) / 38;
   score += Math.min(movie.popularity || 0, 800) / 48;
   score += Math.min(getMovieSignalScore(movie), 42) / 4;
-  score += Math.min(movie.structured_match_score || 0, 220);
+  score += Math.min(movie.structured_match_score || 0, 100);
   score += getQualityFitBoost(movie);
   score -= getExposurePenalty(movie);
   score -= getMoodMismatchPenalty(movie, preferences);
@@ -3196,6 +3198,7 @@ const getPickCandidatePool = async (preferences, intent = null, promptBoosts = n
   const supportingView = normalizeDiscoveryView(preferences.view) === "popular" ? "now_playing" : "popular";
   const shouldUseExpandedRecommendationRetrieval =
     intent?.query_type === "GENRE_OR_VIBE"
+    || intent?.query_type === "GENRE_THEME"
     || intent?.query_type === "MIXED"
     || (Array.isArray(intent?.subject_entities) && intent.subject_entities.length > 0)
     || Boolean(intent?.audience_age)
@@ -3638,7 +3641,7 @@ const parseOscarTitlesFromHtml = (html = "") => {
   return Array.from(tallies.values()).sort((left, right) => right.score - left.score || right.nomination_count - left.nomination_count);
 };
 
-const resolveCountryQueryCandidates = async (structuredQuery) => {
+const resolveCountryQueryCandidates = async (structuredQuery, intent = {}) => {
   const country = structuredQuery.country || {};
   const keywordTerms = uniqueStrings([country.display_name, ...(country.aliases || []), ...(country.location_terms || [])]);
   const keywordMatches = await resolveTmdbKeywordIds(keywordTerms);
@@ -3670,6 +3673,15 @@ const resolveCountryQueryCandidates = async (structuredQuery) => {
       )
     );
   };
+
+  const hard = intent.hard_filters || {};
+  const countryDiscover = await Promise.allSettled(["vote_average.desc", "popularity.desc"].map(sort_by => fetchTmdb("/discover/movie", {
+    with_origin_country: country.iso_3166_1, include_adult: "false", "vote_count.gte": 100, sort_by,
+    ...(hard.required_genre_ids?.length ? { with_genres: hard.required_genre_ids.join(",") } : {}),
+    ...(hard.min_release_year ? { "primary_release_date.gte": `${hard.min_release_year}-01-01` } : {}),
+    ...(hard.max_release_year ? { "primary_release_date.lte": `${hard.max_release_year}-12-31` } : {}),
+  })));
+  countryDiscover.filter(item => item.status === "fulfilled").forEach(item => (item.value.results || []).forEach(movie => rememberCandidate(movie, { source_endpoint: "/discover/movie" })));
 
   for (const term of keywordTerms) {
     try {
@@ -3724,6 +3736,8 @@ const resolveCountryQueryCandidates = async (structuredQuery) => {
         structured_match_reasons: scored.reasons.length ? scored.reasons : merged.structured_match_reasons,
       });
     })
+    .filter(movie => passesRecommendationContract(movie, intent, { final: true }))
+    .filter(movie => intent.specificity?.place_theme || (movie.production_country_codes || []).includes(country.iso_3166_1))
     .filter((movie) => movie.structured_match_score >= 70)
     .sort((left, right) => right.structured_match_score - left.structured_match_score)
     .slice(0, 28);
@@ -3976,13 +3990,12 @@ const resolveStructuredQueryCandidates = async (prompt = "", intent = null, opti
   }
 
   if (structuredQuery.type === "country") {
-    const movies = await resolveCountryQueryCandidates(structuredQuery);
+    const movies = await resolveCountryQueryCandidates(structuredQuery, intent);
     return { structuredQuery, movies };
   }
 
   if (structuredQuery.type === "genre_theme") {
-    const movies = await resolveGenreThemeCandidates(structuredQuery, intent, options);
-    return { structuredQuery, movies };
+    return null; // Genre discovery and validation are handled by the shared retrieval path.
   }
 
   return null;
@@ -4026,6 +4039,7 @@ const buildCompactCandidate = (movie, intent = null) => {
     structured_match_score: movie.structured_match_score || 0,
     structured_match_reasons: Array.isArray(movie.structured_match_reasons) ? movie.structured_match_reasons : [],
     source_type: movie.source_type || "discover",
+    person_credit: intent?.person_context?.credits?.[movie.id] || null,
     derived_signals: {
       animal_presence: derivedSignals.animal_presence,
       entity_prominence: derivedSignals.entity_prominence,
@@ -4113,6 +4127,10 @@ const callStructuredOpenAIWithModel = async ({ systemPrompt, userPrompt, schema,
   );
 
   logOpenAIUsage(type, model, { ...(response.data?.usage || {}), latency_ms: Date.now() - startedAt });
+  if (response.data?.status === "incomplete") {
+    console.warn({ type: "structured_output_incomplete", endpoint: type, reason: response.data.incomplete_details?.reason });
+    return null;
+  }
   return safeJsonParse(extractResponsesText(response.data));
 };
 
@@ -4278,39 +4296,12 @@ const buildFallbackWhyThisWorks = (movie, preferences, intent = {}, behavioralMe
   return bullets.map((item) => normalizeAiCopy(item)).filter(Boolean).slice(0, 2);
 };
 
-const buildFallbackBackupReason = (movie, roleKey, preferences, intent = {}) => {
-  const reason = buildPickReason(movie, preferences);
-
-  switch (roleKey) {
-    case "safer_option":
-      return `The more familiar route from the same request. ${reason}`;
-    case "stretch_option":
-      return `A little bolder if you want something stronger. ${reason}`;
-    case "lighter_option":
-      return `Keeps more air in the experience if you want less weight. ${reason}`;
-    case "darker_option":
-      return `Pushes the mood further if you want a heavier version of the idea. ${reason}`;
-    case "shorter_option":
-      return `Cuts down the time commitment without leaving the core idea behind. ${reason}`;
-    case "more_mainstream":
-      return `The more familiar, crowd-friendly route. ${reason}`;
-    case "more_emotional":
-      return `Leans further into character and emotional payoff. ${reason}`;
-    case "more_intense":
-      return `Raises the tension if you want a sharper edge. ${reason}`;
-    case "more_recent":
-      return `A newer take on the same broad appeal. ${reason}`;
-    case "more_classic":
-      return `The older reference point, with a more established style. ${reason}`;
-    case "more_action_forward":
-      return `Better if you want more propulsion and less lingering. ${reason}`;
-    case "more_demanding":
-      return `Asks for a little more patience, but pays it back with specificity. ${reason}`;
-    case "wildcard":
-      return `The less obvious option, but still a credible one. ${reason}`;
-    default:
-      return reason;
-  }
+const buildFallbackBackupReason = (movie) => {
+  // A metadata fallback should describe what is known, never invent a relative mood.
+  const genres = (movie.genre_names || movie.genres?.map(genre => genre.name) || []).slice(0, 2).join(" / ");
+  const facts = [genres, movie.runtime ? `${movie.runtime} minutes` : "", String(movie.release_date || "").slice(0, 4)].filter(Boolean).join(" · ");
+  const overview = truncateText(String(movie.overview || "").trim(), 170);
+  return [facts, overview].filter(Boolean).join(". ");
 };
 
 const buildFallbackPickPresentation = (preferences, intent, primaryMovie, backups = [], rankedBackups = [], behavioralMemory = {}) => {
@@ -4321,7 +4312,7 @@ const buildFallbackPickPresentation = (preferences, intent, primaryMovie, backup
         : (index === 0 ? "safer_option" : index === 1 ? "lighter_option" : index === 2 ? "darker_option" : "wildcard"));
     return {
       id: movie.id,
-      role_label: getBackupRoleLabelFromKey(roleKey),
+      role_label: "Another option",
       reason: buildFallbackBackupReason(movie, roleKey, preferences, intent),
     };
   });
@@ -4331,7 +4322,7 @@ const buildFallbackPickPresentation = (preferences, intent, primaryMovie, backup
     summary_line: buildFallbackPickSummaryLine(primaryMovie, intent),
     why_this_works: buildFallbackWhyThisWorks(primaryMovie, preferences, intent, behavioralMemory),
     assistant_note: "The original request and its constraints stay in place across these options.",
-    primary_reason: buildPickReason(primaryMovie, preferences),
+    primary_reason: buildFallbackBackupReason(primaryMovie),
     backups: backupEntries,
   };
 };
@@ -4373,7 +4364,7 @@ const rankCandidatesWithOpenAI = async (preferences, intent, candidates) => {
 };
 
 const writePickPresentationWithOpenAI = async (preferences, intent, primaryMovie, backups = [], rankedBackups = [], behavioralMemory = {}, timeConstraintState = null) => {
-  if (!OPENAI_API_KEY || !primaryMovie || backups.length < 3) {
+  if (!OPENAI_API_KEY || !primaryMovie) {
     return null;
   }
 
@@ -4394,7 +4385,7 @@ const writePickPresentationWithOpenAI = async (preferences, intent, primaryMovie
       userPrompt: prompts.userPrompt,
       schema: pickWriterSchema,
       schemaName: "reelbot_pick_writer_v2",
-      maxTokens: 360,
+      maxTokens: 1200,
       type: "rationale",
       temperature: 0.45,
     });
@@ -4730,29 +4721,26 @@ const attachPickDebugTrace = (payload = {}, includeDebug = false, debugTrace = n
 
 const generatePickPayload = async (rawPreferences = {}) => {
   const preferences = resolvePickPreferences(rawPreferences);
+  if (needsVerifiedContentGuide(preferences.prompt)) {
+    return { primary: null, alternates: [], candidate_pool_ids: [], no_pick_reason: "unverified_content",
+      user_message: "I can suggest gentler movies, but I can’t verify that every scene meets that restriction. Try a broader request, then check a detailed parents’ guide before choosing.", cached: false };
+  }
   const includeDebug = shouldIncludePickDebug(rawPreferences);
   const behavioralMemory = normalizeBehavioralMemory(rawPreferences.behavioral_memory);
   const isMovieSeen = (movie) => Boolean(movie?.id && behavioralMemory.seenMovieIds.has(movie.id));
   const refinement = normalizePickRefinement(rawPreferences.refinement);
   const allowTimeConstraintFallback = rawPreferences.time_constraint_fallback_mode === "relaxed";
   let resolvedIntent = await hydrateResolvedIntent(preferences, rawPreferences);
+  if (rawPreferences.person_context) resolvedIntent.person_context = rawPreferences.person_context;
   ensureTimeConstraintFilter(resolvedIntent, preferences.prompt);
+  const relative = rawPreferences.constraint_overrides || {};
+  if (!/\bshort film|\bshorts?\b/i.test(preferences.prompt)) resolvedIntent.hard_filters.min_runtime_minutes = resolvedIntent.hard_filters.min_runtime_minutes || 40;
+  if (Number(relative.maxRuntime) > 0) resolvedIntent.hard_filters.max_runtime_minutes = Math.min(resolvedIntent.hard_filters.max_runtime_minutes || Infinity, Number(relative.maxRuntime));
+  if (Number(relative.minYear) > 1880) resolvedIntent.hard_filters.min_release_year = Number(relative.minYear);
   const structuredResolution = preferences.prompt
     ? await resolveStructuredQueryCandidates(preferences.prompt, resolvedIntent, { allowTimeConstraintFallback })
     : null;
-  const shouldUseStructuredResolution =
-    structuredResolution?.structuredQuery
-    && (
-      structuredResolution.structuredQuery.type === "country"
-      || structuredResolution.structuredQuery.type === "awards"
-      || (
-        structuredResolution.structuredQuery.type === "genre_theme"
-        && !hasMeaningfulSubjectRequirement(resolvedIntent)
-        && !resolvedIntent.audience_age
-        && (resolvedIntent.content_safety === "standard" || !resolvedIntent.content_safety)
-        && !(Array.isArray(resolvedIntent.watch_context) && resolvedIntent.watch_context.length)
-      )
-    );
+  const shouldUseStructuredResolution = ["country", "awards"].includes(structuredResolution?.structuredQuery?.type);
 
   if (shouldUseStructuredResolution) {
     const baseLaneKey =
@@ -4782,7 +4770,8 @@ const generatePickPayload = async (rawPreferences = {}) => {
   behavioralMemory.hiddenMovieIds.forEach((movieId) => excludedIds.add(movieId));
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
-  const cacheKey = `pick:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
+  const cacheKey = `pick:v3:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);
@@ -4804,7 +4793,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const providedCandidatePoolIds = Array.isArray(rawPreferences.candidate_pool_ids)
     ? rawPreferences.candidate_pool_ids.map((value) => Number.parseInt(value, 10)).filter(Boolean)
     : [];
-  const hasProvidedCandidatePool = providedCandidatePoolIds.length > 0;
+  const hasProvidedCandidatePool = Boolean(rawPreferences.bounded_pool) || providedCandidatePoolIds.length > 0;
   const usesHardEntityPool = ["PERSON", "DIRECTOR", "FRANCHISE", "TITLE_SIMILARITY", "COUNTRY", "AWARDS"].includes(queryType)
     || (queryType === "GENRE_THEME" && shouldUseStructuredResolution);
 
@@ -4813,7 +4802,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
     : shouldUseStructuredResolution
       ? structuredResolution.movies
       : await getPickCandidatePool(preferences, resolvedIntent, promptBoosts);
-  let fallbackPool = !candidatePool.length && !usesHardEntityPool && (preferences.mood !== "all" || preferences.runtime !== "any")
+  let fallbackPool = !candidatePool.length && !hasProvidedCandidatePool && !usesHardEntityPool && (preferences.mood !== "all" || preferences.runtime !== "any")
     ? await getPickCandidatePool({ ...preferences, mood: "all", runtime: "any" }, resolvedIntent, promptBoosts)
     : candidatePool;
 
@@ -4822,6 +4811,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
     minStrictCandidates: TIME_CONSTRAINT_MIN_STRICT_CANDIDATES,
   });
   fallbackPool = timeConstraintResult.movies;
+  if (Number(relative.minYear) > 1880) resolvedIntent.hard_filters.min_release_year = Math.max(resolvedIntent.hard_filters.min_release_year || 0, Number(relative.minYear));
   candidatePool = fallbackPool;
 
   const locallyFilteredPool = fallbackPool.filter((movie) => !excludedIds.has(movie.id) && !isLowSignalMovie(movie));
@@ -4861,7 +4851,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const detailedIntentFilteredPool = detailedCandidates
     .filter((movie) => availabilityFilteredDetailedCandidates.some((availableMovie) => availableMovie.id === movie.id))
     .filter((movie) => !isLowSignalMovie(movie) && !excludedIds.has(movie.id))
-    .filter((movie) => isMovieValidForIntent(movie, resolvedIntent, promptBoosts));
+    .filter((movie) => isMovieValidForIntent(movie, resolvedIntent, promptBoosts, { final: true }));
   const strictDetailedPrefilter = strictPrefilter.enforced
     ? applyStrictIntentPrefilter(detailedIntentFilteredPool, resolvedIntent, { disableThemeExpansion: !strictPrefilter.usedExpandedThemeTerms })
     : { enforced: false, movies: detailedIntentFilteredPool };
@@ -4884,7 +4874,8 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const rescueRankingEntries = !usesHardEntityPool
     ? dedupeMoviesById(detailedCandidates.length ? availabilityFilteredDetailedCandidates : filterTheatricalOnlyMovies(topPreliminaryCandidates, preferences, resolvedIntent, queryType))
         .filter((movie) => !excludedIds.has(movie.id) && !isLowSignalMovie(movie))
-        .filter((movie) => passesAudienceGuardrails(movie, resolvedIntent))
+        .filter((movie) => isMovieValidForIntent(movie, resolvedIntent, promptBoosts, { final: true }))
+        .filter((movie) => !hasStrictIntentFilters(resolvedIntent) || passesStrictIntentFilter(movie, resolvedIntent, { allowExpandedThemes: true }))
         .filter((movie) => {
           const hardFilters = resolvedIntent.hard_filters || {};
           const runtime = Number(movie.runtime || 0);
@@ -4958,19 +4949,15 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const primaryRankingEntry = rankingSourceEntries.find((entry) => entry.movie.id === primaryPick?.id)
     || rescueRankingEntries.find((entry) => entry.movie.id === primaryPick?.id)
     || null;
-  const trustedAlternateEntries = buildTrustedAlternateEntries([...rankingSourceEntries, ...rescueRankingEntries], primaryRankingEntry, resolvedIntent);
+  const trustedAlternateEntries = buildTrustedAlternateEntries([...rankingSourceEntries, ...rescueRankingEntries].filter(entry => isMovieValidForIntent(entry.movie, resolvedIntent, promptBoosts, { final: true })), primaryRankingEntry, resolvedIntent);
   const aiOrderedAlternateEntries = Array.isArray(aiRanking?.backups)
-    ? aiRanking.backups
-        .map((entry) => trustedAlternateEntries.find((candidate) => candidate.movie?.id === entry.id))
-        .filter(Boolean)
-    : [];
-  const mergedAlternateEntries = dedupeMoviesById([
-    ...aiOrderedAlternateEntries.map((entry) => entry.movie),
-    ...trustedAlternateEntries.map((entry) => entry.movie),
-  ])
-    .map((movie) => trustedAlternateEntries.find((entry) => entry.movie?.id === movie.id))
-    .filter(Boolean)
-    .slice(0, 3);
+    ? aiRanking.backups.map(entry => rankingSourceEntries.find(candidate => candidate.movie?.id === entry.id))
+        .filter(entry => entry && entry.movie.id !== primaryPick?.id && isMovieValidForIntent(entry.movie, resolvedIntent, promptBoosts, { final: true }))
+    : null;
+  // A ranker may deliberately return fewer suitable alternatives. Do not pad
+  // that decision with candidates it rejected for tone or audience fit.
+  const alternateSource = aiOrderedAlternateEntries || trustedAlternateEntries;
+  const mergedAlternateEntries = alternateSource.filter((entry, index, list) => list.findIndex(other => other.movie.id === entry.movie.id) === index).slice(0, 3);
   const alternatePicks = mergedAlternateEntries.map((entry) => entry.movie);
 
   const debugTrace = includeDebug
@@ -5394,9 +5381,11 @@ const normalizePersonMovieCredits = (credits = {}) => {
       vote_count: movie.vote_count || 0,
       popularity: movie.popularity || 0,
       roles: [],
+      cast_order: null,
     };
 
     const role = String(credit.role || "").trim();
+    if (Number.isInteger(credit.castOrder)) existing.cast_order = existing.cast_order === null ? credit.castOrder : Math.min(existing.cast_order, credit.castOrder);
     if (role && !existing.roles.includes(role)) {
       existing.roles.push(role);
     }
@@ -5405,7 +5394,7 @@ const normalizePersonMovieCredits = (credits = {}) => {
   };
 
   (Array.isArray(credits.cast) ? credits.cast : []).forEach((movie) => {
-    addCredit(movie, { role: movie.character ? `Actor: ${movie.character}` : "Actor" });
+    addCredit(movie, { role: movie.character ? `Actor: ${movie.character}` : "Actor", castOrder: movie.order });
   });
 
   (Array.isArray(credits.crew) ? credits.crew : []).forEach((movie) => {
@@ -6433,6 +6422,7 @@ const generateGroundedAskAnswer = async ({ prompt, intent, movieId, previousTurn
 
 const normalizeAskPageContext = (value = {}) => ({
   page: String(value.page || "general").slice(0, 40),
+  personId: Number(value.personId || value.person?.id) || null,
   movie: value.movie && typeof value.movie === "object" ? value.movie : null,
   currentPick: value.currentPick && typeof value.currentPick === "object" ? value.currentPick : null,
   originalPrompt: String(value.originalPrompt || "").slice(0, 500),
@@ -6452,8 +6442,8 @@ const extractAskQuestionTitle = (prompt = "") => String(prompt || "")
   .trim();
 
 const resolveAskAnchorMovie = async (prompt, pageContext, conversation) => {
-  const existing = pageContext.movie || pageContext.currentPick || conversation.anchorMovie;
-  if (existing?.id) return { id: Number(existing.id), title: String(existing.title || "") };
+  const existing = conversation.recommendationHistory?.length ? conversation.anchorMovie : (pageContext.movie || pageContext.currentPick || conversation.anchorMovie);
+  if (existing?.id) return { id: Number(existing.id), title: String(existing.title || ""), runtime: Number(existing.runtime) || null, release_date: String(existing.release_date || "") };
   const titleQuery = extractAskQuestionTitle(prompt);
   if (!titleQuery || titleQuery.length < 2) return null;
   const search = await fetchTmdbCached("/search/movie", { query: titleQuery, include_adult: "false", region: "US" }, 5 * 60 * 1000);
@@ -7079,8 +7069,33 @@ app.post("/auth/delete-account", async (req, res) => {
   }
 });
 
+app.get("/search/suggest", async (req, res) => {
+  const query = String(req.query.query || "").trim().slice(0, 120);
+  if (query.length < 2) return res.json({ results: [] });
+  try {
+    const [movies, people] = await Promise.all([
+      fetchTmdbCached("/search/movie", { query, include_adult: "false", page: 1 }, 300000),
+      fetchTmdbCached("/search/person", { query, include_adult: "false", page: 1 }, 300000),
+    ]);
+    const normalized = normalizeSearchText(query);
+    const entries = [
+      ...(movies.results || []).slice(0, 10).map(movie => ({ id: movie.id, title: movie.title, poster_path: movie.poster_path, release_date: movie.release_date, popularity: movie.popularity, media_type: "movie" })),
+      ...(people.results || []).filter(person => ["Acting", "Directing", "Writing", "Production"].includes(person.known_for_department)).slice(0, 6).map(person => ({ id: person.id, name: person.name, profile_path: person.profile_path, known_for_department: person.known_for_department, popularity: person.popularity, media_type: "person" })),
+    ];
+    const relevance = entry => {
+      const name = normalizeSearchText(entry.title || entry.name);
+      return (name === normalized ? 1000 : name.startsWith(normalized) ? 500 : name.includes(normalized) ? 250 : 0) + Math.log1p(entry.popularity || 0) * 10;
+    };
+    res.set("Cache-Control", "public, s-maxage=300, stale-while-revalidate=60");
+    return res.json({ results: entries.sort((a, b) => relevance(b) - relevance(a)).slice(0, 7) });
+  } catch (error) {
+    return res.status(503).json({ error: "Search is temporarily unavailable." });
+  }
+});
+
 app.get("/search", async (req, res) => {
-  const { query, page = 1 } = req.query;
+  const query = String(req.query.query || "").trim().slice(0, 120);
+  const page = Math.max(1, Math.min(500, Number.parseInt(req.query.page, 10) || 1));
 
   if (!query) {
     return res.status(400).json({ error: "Search query is required" });
@@ -7105,7 +7120,7 @@ app.get("/search", async (req, res) => {
       total_results: rankedResults.length,
     });
   } catch (error) {
-    console.error("❌ Error fetching search results:", error);
+    console.error("Error fetching search results:", error.message);
     res.status(500).json({ error: "Failed to fetch search results" });
   }
 });
@@ -7154,7 +7169,7 @@ app.post("/reelbot/ask", async (req, res) => {
   try {
     const resolvedAnchor = intent === ASK_INTENTS.CURRENT_MOVIE_QUESTION || intent === ASK_INTENTS.MOVIE_COMPARISON
       ? await resolveAskAnchorMovie(prompt, pageContext, incomingConversation)
-      : (pageContext.movie || pageContext.currentPick || incomingConversation.anchorMovie);
+      : (incomingConversation.anchorMovie || pageContext.movie || pageContext.currentPick);
     const movieId = Number(resolvedAnchor?.id || req.body?.movie_id || 0) || null;
     let conversation = updateConversationForPrompt({ ...incomingConversation, anchorMovie: resolvedAnchor || incomingConversation.anchorMovie }, prompt, intent, pageContext);
 
@@ -7182,6 +7197,7 @@ app.post("/reelbot/ask", async (req, res) => {
           previous_user_message: incomingConversation.lastUserMessage,
           previous_assistant_response: incomingConversation.lastAssistantResponse,
           active_constraints: incomingConversation.activeConstraints,
+          original_request: incomingConversation.activeRequest,
         },
       });
       conversation = { ...conversation, anchorMovie: resolvedAnchor, lastAssistantResponse: answer.answer };
@@ -7203,14 +7219,28 @@ app.post("/reelbot/ask", async (req, res) => {
 
     const filters = pageContext.activeFilters || {};
     const isNowPlaying = pageContext.page === "now_playing";
-    const constrainedIds = pageContext.page === "my_movies"
+    let constrainedIds = pageContext.page === "my_movies"
       ? pageContext.savedMovieIds
       : (pageContext.page === "browse" || pageContext.page === "now_playing" || pageContext.page === "collection")
         ? pageContext.visibleMovieIds
         : [];
-    const anchorTitle = (pageContext.movie || pageContext.currentPick || conversation.anchorMovie)?.title || "";
+    let personContext = null;
+    if (pageContext.page === "person") {
+      if (!pageContext.personId) return res.status(400).json({ error: "Open a filmography first." });
+      const person = await fetchPersonDetailPayload(pageContext.personId);
+      const allowed = new Set((person.movie_credits || []).map(movie => movie.id));
+      constrainedIds = pageContext.visibleMovieIds.filter(id => allowed.has(id));
+      const credits = person.movie_credits.filter(movie => constrainedIds.includes(movie.id));
+      if (/where.*start|starting point|best.*(?:performance|role)/i.test(prompt) && person.known_for_department === "Acting") {
+        const substantive = credits.filter(movie => movie.cast_order !== null && movie.cast_order <= 8);
+        if (substantive.length) constrainedIds = substantive.map(movie => movie.id);
+      }
+      personContext = { name: person.name, credits: Object.fromEntries(credits.map(movie => [movie.id, { roles: movie.roles, cast_order: movie.cast_order }])) };
+    }
+    const boundedPool = ["person", "collection", "my_movies", "browse", "now_playing"].includes(pageContext.page);
+    const anchorTitle = (conversation.anchorMovie || pageContext.movie || pageContext.currentPick)?.title || "";
     const contextualPrompt = buildContextualRecommendationPrompt(prompt, conversation, intent);
-    const recommendationPrompt = [ASK_INTENTS.MOVIE_RECOMMENDATION, ASK_INTENTS.REFINE_RECOMMENDATION].includes(intent) && anchorTitle
+    const recommendationPrompt = !boundedPool && [ASK_INTENTS.MOVIE_RECOMMENDATION, ASK_INTENTS.REFINE_RECOMMENDATION, ASK_INTENTS.NEXT_RECOMMENDATION].includes(intent) && anchorTitle && !/\b(?:similar to|like|loved)\s+\S/i.test(contextualPrompt)
       ? (/\b(?:this|it)\b/i.test(contextualPrompt)
           ? contextualPrompt.replace(/\b(?:this|it)\b/gi, anchorTitle)
           : `${contextualPrompt} Similar to ${anchorTitle}.`)
@@ -7232,6 +7262,9 @@ app.post("/reelbot/ask", async (req, res) => {
       company: "any",
       include_theatrical: isNowPlaying ? true : Boolean(pageContext.activeConstraints?.includeTheatrical),
       candidate_pool_ids: constrainedIds,
+      bounded_pool: boundedPool,
+      person_context: personContext,
+      constraint_overrides: conversation.activeConstraints,
       excluded_ids: excludedIds,
       behavioral_memory: req.body?.behavioral_memory || {},
       request_mode: req.body?.request_mode || "initial",
@@ -7243,6 +7276,8 @@ app.post("/reelbot/ask", async (req, res) => {
       conversation = {
         ...conversation,
         activeIntent: intent,
+        activeRequest: /REFINE_RECOMMENDATION|NEXT_RECOMMENDATION/.test(intent) ? conversation.activeRequest : recommendationPrompt,
+        anchorMovie: { id: primary.id, title: primary.title, runtime: primary.runtime, release_date: primary.release_date },
         lastAssistantResponse: `Recommended ${primary.title || "a movie"}.`,
         recommendationHistory: [
           ...conversation.recommendationHistory,

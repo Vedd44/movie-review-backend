@@ -99,11 +99,9 @@ const getMovieThemeMatchScore = (movie = {}, strictFilters = {}, options = {}) =
     ? strictFilters.expanded_theme_terms || strictFilters.theme_terms || []
     : strictFilters.theme_terms || [];
   const searchableText = lower([
-    movie.title,
     movie.overview,
     movie.tagline,
     ...(Array.isArray(movie.keyword_names) ? movie.keyword_names : []),
-    ...(Array.isArray(movie.structured_match_reasons) ? movie.structured_match_reasons : []),
   ].filter(Boolean).join(" "));
 
   return uniqueStrings(themeTerms).reduce((score, term) => {
@@ -130,11 +128,9 @@ const passesStrictIntentFilter = (movie = {}, intent = {}, options = {}) => {
 
   const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
   const searchableText = lower([
-    movie.title,
     movie.overview,
     movie.tagline,
     ...(Array.isArray(movie.keyword_names) ? movie.keyword_names : []),
-    ...(Array.isArray(movie.structured_match_reasons) ? movie.structured_match_reasons : []),
   ].filter(Boolean).join(" "));
   const certification = String(movie.us_certification || "").trim().toUpperCase();
   const supportiveGenreMatch = matchesAnyGenre(genreIds, strictFilters.supportive_genre_ids || []);

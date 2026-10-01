@@ -1,3 +1,4 @@
+const { explicitGenreIds } = require("./recommendationContract");
 const { getMatchedRubricKeys } = require("./recommendationRubrics");
 const { getAudienceIntentSignals } = require("./audienceSignals");
 const { detectStructuredQuery } = require("./queryInterpreter");
@@ -18,11 +19,13 @@ const lower = (value = "") => compact(value).toLowerCase();
 const sanitizeAnchorText = (value = "") =>
   compact(
     String(value || "")
+      .replace(/\.\s+(?:Correction:|Similar to|No longer than|Released from).*$/i, "")
       .replace(/\b(?:under|over|but|that are|that's|that is|for|from)\b.*$/i, " ")
   );
 const sanitizeTitleAnchorText = (value = "") =>
   compact(
     String(value || "")
+      .replace(/\.\s+(?:Correction:|Similar to|No longer than|Released from).*$/i, "")
       .replace(/\b(?:under|over|but|that are|that's|that is|from)\b.*$/i, " ")
   );
 
@@ -54,6 +57,7 @@ const PERSON_ANCHOR_PATTERNS = [
 ];
 
 const TITLE_ANCHOR_PATTERNS = [
+  /^(?:i |we )?(?:loved|enjoyed|really liked)\s+[“"']?(.+?)[”"']?[.!?]*$/i,
   /movies? like\s+(.+?)(?:\s+or\s+.+)?$/i,
   /something like\s+(.+?)(?:\s+or\s+.+)?$/i,
   /similar to\s+(.+?)(?:\s+or\s+.+)?$/i,
@@ -62,14 +66,14 @@ const TITLE_ANCHOR_PATTERNS = [
 ];
 
 const inferPreferredGenreIds = (prompt = "") => {
-  const normalizedPrompt = lower(prompt);
+  const normalizedPrompt = lower(prompt).replace(/\b(?:nothing|not) (?:too )?heavy\b/g, "light");
   const genreIds = [];
 
   if (/sci-?fi|science fiction|space/i.test(normalizedPrompt)) addUnique(genreIds, [878]);
   if (/mystery|whodunit|detective/i.test(normalizedPrompt)) addUnique(genreIds, [9648]);
   if (/thriller|tense|suspense/i.test(normalizedPrompt)) addUnique(genreIds, [53]);
   if (/drama|emotional|moving|heavy|serious/i.test(normalizedPrompt)) addUnique(genreIds, [18]);
-  if (/comedy|funny|laugh/i.test(normalizedPrompt)) addUnique(genreIds, [35]);
+  if (/comedy|funny|funnier|laugh|stupid/i.test(normalizedPrompt)) addUnique(genreIds, [35]);
   if (/romance|romantic|date-night|date night/i.test(normalizedPrompt)) addUnique(genreIds, [10749]);
   if (/action/i.test(normalizedPrompt)) addUnique(genreIds, [28]);
   if (/fantasy/i.test(normalizedPrompt)) addUnique(genreIds, [14]);
@@ -179,7 +183,7 @@ const getAudienceContext = (prompt = "") => {
   const watchCompany = [];
 
   if (/solo|alone|by myself|myself/i.test(normalizedPrompt)) addUnique(watchCompany, ["solo"]);
-  if (/date night|date-night|with my partner|with my wife|with my husband|with my boyfriend|with my girlfriend/i.test(normalizedPrompt)) {
+  if (/date night|date-night|with my partner|with my wife|with my husband|with my boyfriend|with my girlfriend|my (?:wife|husband|partner) and i/i.test(normalizedPrompt)) {
     addUnique(watchCompany, ["date_night"]);
   }
   if (/group watch|with friends|friends over|for a group|crowd/i.test(normalizedPrompt)) addUnique(watchCompany, ["group_watch"]);
@@ -197,11 +201,11 @@ const getAudienceContext = (prompt = "") => {
 const getEmotionalTolerance = (prompt = "", audienceSignals = {}) => {
   const normalizedPrompt = lower(prompt);
   const darkButManageable = /dark but not depressing|dark without being depressing|dark but not bleak/i.test(normalizedPrompt);
-  const comforting = /comfort(?:ing)?|cozy|warm|soothing|feel good|feel-good|lighter|lighthearted/i.test(normalizedPrompt);
+  const comforting = /rainy sunday|nothing (?:too )?heavy|not (?:too )?heavy|comfort(?:ing)?|cozy|warm|soothing|feel good|feel-good|lighter|lighthearted/i.test(normalizedPrompt);
   const lowStress = /low stress|easy watch|gentle|easy|not exhausting|less intense|emotionally safe|lighter|turn[-\s]+(?:my|your|the)[-\s]+brain[-\s]+off/i.test(normalizedPrompt)
     || audienceSignals.friction_level === "low";
-  const heavy = /heavy|dark|bleak|grim|emotionally heavy/i.test(normalizedPrompt);
-  const avoidsDepressing = /not depressing|not miserable|not bleak|without being miserable|without being bleak|not too heavy|lighter/i.test(normalizedPrompt);
+  const heavy = !comforting && /heavy|dark|bleak|grim|emotionally heavy/i.test(normalizedPrompt);
+  const avoidsDepressing = /not depressing|not miserable|not bleak|without being miserable|without being bleak|not too heavy|nothing (?:too )?heavy|lighter/i.test(normalizedPrompt);
 
   return {
     level: comforting || lowStress ? "light" : heavy ? "heavy" : darkButManageable ? "medium_dark" : "medium",
@@ -279,20 +283,21 @@ const getPacingEnergyProfile = (prompt = "", emotionalTolerance = {}) => {
 
 const getRuntimeCommitment = (prompt = "") => {
   const normalizedPrompt = lower(prompt);
-  const numericMaximum = normalizedPrompt.match(/\b(?:under|less than|no more than|max(?:imum)?(?: of)?)\s*(\d{2,3})\s*(?:minutes?|mins?)?\b/i);
+  const numericMaximum = normalizedPrompt.match(/\b(?:under|less than|no more than|no longer than|at most|max(?:imum)?(?: of)?)\s*(\d{1,3})\s*(?:minutes?|mins?)?\b(?!\s*hours?\b)/i);
   const underTwoHours = /\bunder\s*(?:2|two)\s*hours?\b|\bunder\s*120\s*(?:minutes?|mins?)?\b/i.test(normalizedPrompt);
   const softShort = /\bnot too long\b|\bsomething shorter\b|\bshort(?:er)?\b|\bquick watch\b|\bmanageable runtime\b/i.test(normalizedPrompt);
+  const duration = normalizedPrompt.match(/\b(\d{2,3})[- ]minutes?\b/i);
   const maxRuntimeMinutes = numericMaximum
     ? Number(numericMaximum[1])
     : /\bunder ninety\b|\b90 minutes? or less\b/i.test(normalizedPrompt)
       ? 90
       : underTwoHours
         ? 120
-        : null;
+        : duration ? Number(duration[1]) : null;
 
   return {
     max_runtime_minutes: maxRuntimeMinutes,
-    min_runtime_minutes: /over\s*2\s*hours|over\s*two\s*hours/i.test(normalizedPrompt) ? 121 : null,
+    min_runtime_minutes: /over\s*2\s*hours|over\s*two\s*hours/i.test(normalizedPrompt) ? 121 : /\bfeature/i.test(normalizedPrompt) ? 40 : null,
     preference:
       maxRuntimeMinutes || softShort
         ? "short"
@@ -314,7 +319,7 @@ const getSpecificity = (prompt = "", structuredQuery = null, titleAnchor = "", p
     awards_hint: structuredQuery?.type === "awards" ? { award: structuredQuery.award, year: structuredQuery.year } : null,
     place_theme: /movies?\s+about\s+|movies?\s+set\s+in\s+|stories?\s+about\s+/i.test(prompt),
     actor_or_director_requested: /starring|with|featuring|directed by/i.test(normalizedPrompt),
-    title_similarity_requested: /movies? like|something like|similar to|\blike\s+[a-z0-9].+\s+or\s+[a-z0-9]/i.test(normalizedPrompt),
+    title_similarity_requested: Boolean(titleAnchor) || /movies? like|something like|similar to|\blike\s+[a-z0-9].+\s+or\s+[a-z0-9]/i.test(normalizedPrompt),
   };
 };
 
@@ -466,7 +471,7 @@ const parseReelbotIntent = (prompt = "") => {
     runtime_commitment: runtimeCommitment,
     constraint_priority: {
       order: ["safety", "tone", "cognitive_load", "genre", "runtime", "secondary"],
-      requested_tone: /lighter|lighthearted|not depressing|not bleak|not too heavy/i.test(normalizedPrompt) ? "lighter" : null,
+      requested_tone: /lighter|lighthearted|not depressing|not bleak|not too heavy|nothing (?:too )?heavy/i.test(normalizedPrompt) ? "lighter" : null,
       cognitive_load: attentionProfile.low_cognitive_load ? "easy" : null,
       runtime_strength: runtimeCommitment.strength,
     },
@@ -474,6 +479,8 @@ const parseReelbotIntent = (prompt = "") => {
     constraints,
     hard_filters: {
     family_safe_only: Boolean(audienceSignals.guardrails.child_family_safe),
+    required_genre_ids: explicitGenreIds(rawPrompt),
+    genre_match: /\bor\b/i.test(rawPrompt) ? "any" : "all",
     max_runtime_minutes: runtimeCommitment.strength === "hard" ? runtimeCommitment.max_runtime_minutes : null,
     min_runtime_minutes: runtimeCommitment.min_runtime_minutes,
     exclude_genre_ids: Array.from(new Set([

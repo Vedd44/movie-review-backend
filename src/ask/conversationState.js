@@ -2,7 +2,7 @@ const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim();
 const unique = (values = []) => [...new Set(values.filter(Boolean))];
 
 const normalizeMovie = (movie = null) => movie && typeof movie === "object" && Number(movie.id)
-  ? { id: Number(movie.id), title: compact(movie.title).slice(0, 160) }
+  ? { id: Number(movie.id), title: compact(movie.title).slice(0, 160), runtime: Number(movie.runtime) || null, release_date: compact(movie.release_date).slice(0, 10) }
   : null;
 
 const normalizeConversationState = (value = {}, pageContext = {}) => ({
@@ -27,7 +27,7 @@ const isCorrection = (prompt = "") => /^(?:no\b|not\b|i meant\b|actually\b|keep 
 const extractConstraintMutation = (prompt = "") => {
   const text = compact(prompt).toLowerCase();
   const mutation = { priority: null, add: [], hard: [], secondary: [] };
-  if (/lighter|lighthearted|less (?:dark|heavy|intense|scary)/i.test(text)) {
+  if (/lighter|lighthearted|less (?:dark|heavy|intense|scary|violent)/i.test(text)) {
     mutation.priority = "tone";
     mutation.add.push("lighter");
   }
@@ -38,7 +38,7 @@ const extractConstraintMutation = (prompt = "") => {
   if (/\bunder\s*(\d{2,3})\b|\bunder\s*(?:2|two)\s*hours?\b/i.test(text)) mutation.hard.push("runtime_cap");
   if (/not too long|short(?:er)?/i.test(text)) mutation.secondary.push("shorter");
   if (/mainstream|not obscure/i.test(text)) mutation.secondary.push("mainstream");
-  if (/funny/i.test(text)) mutation.add.push("funny");
+  if (/funny|funnier/i.test(text)) mutation.add.push("funny");
   if (/spooky/i.test(text)) mutation.add.push("spooky");
   if (/not depressing|not bleak/i.test(text)) mutation.add.push("not_depressing");
   return mutation;
@@ -47,14 +47,18 @@ const extractConstraintMutation = (prompt = "") => {
 const updateConversationForPrompt = (stateValue = {}, prompt = "", intent = "", pageContext = {}) => {
   const state = normalizeConversationState(stateValue, pageContext);
   const correction = isCorrection(prompt) || intent === "REFINE_RECOMMENDATION";
-  const rejectsLast = /\b(?:not that one|skip that|not that)\b/i.test(prompt);
+  const rejectsLast = /\b(?:not that one|skip that|not that|i(?:[’']ve| have) (?:already )?seen (?:that|this|it))\b/i.test(prompt);
   const recommendationHistory = rejectsLast
     ? state.recommendationHistory.map((entry, index, list) => index === list.length - 1 ? { ...entry, status: "rejected" } : entry)
     : state.recommendationHistory;
   const mutation = extractConstraintMutation(prompt);
   const previous = state.activeConstraints || {};
+  const relative = {};
+  if (/\bshorter\b/i.test(prompt) && state.anchorMovie?.runtime) relative.maxRuntime = Math.min(previous.maxRuntime || Infinity, state.anchorMovie.runtime - 1);
+  if (/\bnewer\b|more recent/i.test(prompt) && state.anchorMovie?.release_date) relative.minYear = Number(state.anchorMovie.release_date.slice(0, 4)) + 1;
   const nextConstraints = {
     ...previous,
+    ...relative,
     priority: mutation.priority || previous.priority || null,
     preferences: unique([...(previous.preferences || []), ...mutation.add]),
     hardExclusions: unique([...(previous.hardExclusions || []), ...mutation.hard]),
@@ -81,7 +85,9 @@ const buildContextualRecommendationPrompt = (prompt = "", state = {}, intent = "
   const base = compact(state.activeRequest);
   if (!base || (!/REFINE_RECOMMENDATION|NEXT_RECOMMENDATION/.test(intent) && !isCorrection(current))) return current;
   const corrections = unique([...(state.userCorrections || []), ...(isCorrection(current) ? [current] : [])]);
-  return [base, ...corrections.map((item) => `Correction: ${item}`)].filter(Boolean).join(". ");
+  return [base, ...corrections.map((item) => `Correction: ${item}`),
+    state.activeConstraints?.maxRuntime ? `No longer than ${state.activeConstraints.maxRuntime} minutes` : "",
+  ].filter(Boolean).join(". ");
 };
 
 const getConversationExcludedIds = (state = {}) => (state.recommendationHistory || [])

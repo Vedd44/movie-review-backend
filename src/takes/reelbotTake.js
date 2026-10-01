@@ -1,6 +1,6 @@
 const crypto = require("node:crypto");
 
-const REELBOT_TAKE_VERSION = "v5";
+const REELBOT_TAKE_VERSION = "v6";
 const REELBOT_TAKE_FIELDS = ["assessment", "good_fit_if", "maybe_not_if"];
 
 const reelbotTakeSchema = {
@@ -55,6 +55,8 @@ const compactObject = (value) => {
 const buildTakeGrounding = (movie = {}) => compactObject({
   title: movie.title,
   release_year: movie.release_year,
+  release_date: movie.release_date,
+  status: movie.status,
   overview: movie.description,
   tagline: movie.tagline,
   runtime_minutes: movie.runtime,
@@ -90,6 +92,9 @@ const buildTakePrompts = (movie = {}) => {
       "Be willing to name tradeoffs. Maybe-not-if is a viewing-context mismatch, not a criticism section.",
       "Never invent plot events, relationships, themes, production facts, awards, reception, cast, runtime, or certification.",
       "If evidence is thin, be restrained instead of filling gaps.",
+      "Runtime establishes time commitment, not whether a movie is slow or well paced. Animation and family genres do not prove emotional safety. Treat derived signals as fallible hints, never as verified scene or parental-guide facts.",
+      "For an unreleased movie, describe the known premise as a preview; do not imply a finished viewing or established audience response.",
+      "The three fields should add different information: a specific viewing character, one reason to choose it, and one concrete mismatch. Do not repeat the overview or restate the same tradeoff in all three.",
       "Avoid generic praise, marketing language, first person, scores, markdown, headings, and phrases such as fans of, viewers seeking, audiences who appreciate, this film offers, compelling blend, captivating, engaging, thought-provoking, or intelligent-feeling.",
       "Start the assessment directly with the movie or its viewing experience, using its distinctive tone, scale, pacing, emotional character, or a meaningful relationship among those qualities. Do not default to framing the viewer's act of selecting it: avoid openings such as Choosing [movie] means, Choosing this means, Settling into [movie] means, or This means committing to. Vary sentence structure rather than replacing them with another rigid opening template.",
       "Avoid field-by-field boilerplate: do not habitually begin good_fit_if with Pick it. The UI already supplies Good fit if and Maybe not if labels; make each value read naturally beneath its label, usually addressing the viewer as you. Begin maybe_not_if with the mismatch itself rather than commands such as Skip it tonight, Avoid it, or Choose something else.",

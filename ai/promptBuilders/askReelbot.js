@@ -42,6 +42,7 @@ const buildAskAnswerPrompts = ({ prompt, intent, context, comparisonContext = nu
     "Never offer to browse, search the web, check a studio page, check listings, or perform any future lookup. If the supplied facts do not answer the question, say that the information is not available and stop.",
     "For cast questions, name the supplied top cast. For director, runtime, release, theater, or streaming questions, use the corresponding structured facts directly.",
     "Keep the answer to 1-3 concise, natural sentences. Distinguish horror from action, peril, intensity, sadness, or complexity when useful.",
+    "For why-this-pick questions, connect the supplied current movie to the original request in the previous panel turn. Explain the fit, not just its synopsis. Do not claim the system knows the viewer better than the request supports.",
     "For comparisons or should-I-watch questions, answer the decision directly and name the relevant tradeoff.",
     "After answering, return 0-4 concise follow_up questions that help the user go one level deeper into a useful subject you raised. Ground them in the supplied answer and movie/person context; do not invent unsupported facts.",
     "Prefer specific follow-ups about rating, violence, scariness, intensity, pacing, complexity, suitability, runtime, tone, themes, cast, or filmmaker when relevant. Do not use generic prompts such as 'Tell me more', 'Anything else?', 'Why?', or 'Is it good?'. Do not ask a question the answer already settled.",

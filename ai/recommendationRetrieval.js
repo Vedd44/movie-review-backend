@@ -113,7 +113,7 @@ const buildRecommendationRetrievalPlan = (intent = {}) => {
 };
 
 const buildRecommendationStructuredScore = (movie = {}, plan = {}, matchReasons = []) => {
-  const searchableText = [movie.title, movie.overview, movie.tagline, ...matchReasons].filter(Boolean).join(" ");
+  const searchableText = [movie.overview, movie.tagline].filter(Boolean).join(" ");
   let score = 0;
   const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
 
@@ -235,7 +235,7 @@ const resolveExpandedRecommendationCandidates = async ({
         };
 
         if (plan.family_safe_bias) {
-          discoverParams.with_genres = FAMILY_DISCOVER_GENRES.join(",");
+          discoverParams.with_genres = FAMILY_DISCOVER_GENRES.join("|");
           discoverParams.certification_country = "US";
           discoverParams["certification.lte"] = "PG";
         }
@@ -257,7 +257,7 @@ const resolveExpandedRecommendationCandidates = async ({
   if (plan.family_safe_bias) {
     try {
       const payload = await fetchTmdb("/discover/movie", {
-        with_genres: FAMILY_DISCOVER_GENRES.join(","),
+        with_genres: FAMILY_DISCOVER_GENRES.join("|"),
         certification_country: "US",
         "certification.lte": "PG",
         sort_by: "popularity.desc",
@@ -279,7 +279,7 @@ const resolveExpandedRecommendationCandidates = async ({
   if (plan.historical_sweep_bias) {
     try {
       const payload = await fetchTmdb("/discover/movie", {
-        with_genres: SWEEPING_EPIC_GENRES.join(","),
+        with_genres: SWEEPING_EPIC_GENRES.join("|"),
         sort_by: "vote_average.desc",
         "vote_count.gte": 150,
         include_adult: "false",
@@ -296,6 +296,29 @@ const resolveExpandedRecommendationCandidates = async ({
       console.error("Error fetching historical-sweep recommendation candidates:", error.response?.data || error.message);
     }
   }
+
+  // Retrieve across the catalog, not only this week's popular releases.
+  // The two orderings balance established films with less overexposed options.
+  const hard = intent.hard_filters || {};
+  const requestedGenres = hard.required_genre_ids?.length ? hard.required_genre_ids : plan.discover_genre_ids;
+  const broadParams = {
+    include_adult: "false", "vote_count.gte": 250,
+    "primary_release_date.lte": new Date().toISOString().slice(0, 10),
+    ...(requestedGenres.length ? { with_genres: requestedGenres.join(!hard.required_genre_ids?.length || hard.genre_match === "any" ? "|" : ",") } : {}),
+    ...(hard.exclude_genre_ids?.length ? { without_genres: hard.exclude_genre_ids.join(",") } : {}),
+    ...(hard.max_runtime_minutes ? { "with_runtime.lte": hard.max_runtime_minutes } : {}),
+    ...(hard.min_runtime_minutes ? { "with_runtime.gte": hard.min_runtime_minutes } : {}),
+    ...(hard.time_constraint?.range ? {
+      "primary_release_date.gte": `${hard.time_constraint.range.min_year}-01-01`,
+      "primary_release_date.lte": `${hard.time_constraint.range.max_year}-12-31`,
+    } : {}),
+  };
+  const catalogResponses = await Promise.allSettled(["vote_average.desc", "vote_count.desc", "popularity.desc"].map(sort_by =>
+    fetchTmdb("/discover/movie", { ...broadParams, sort_by, page: 1 })
+  ));
+  catalogResponses.filter(response => response.status === "fulfilled").forEach(response => {
+    (response.value.results || []).forEach(movie => rememberCandidate(movie, { source_endpoint: "/discover/movie" }));
+  });
 
   const detailedCandidates = await fetchStructuredMoviesByIds(Array.from(candidateMap.keys()), {
     source_type: "semantic_prompt_search",

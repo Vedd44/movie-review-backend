@@ -35,7 +35,7 @@ const hasSweepingEpicAsk = (intent = {}) => {
     || softPreferences.includes("nature_scale")
     || softPreferences.includes("romantic_prestige")
     || softPreferences.includes("immersive")
-    || Boolean(intent.specificity?.title_similarity_requested && intent.anchors?.title);
+;
 };
 
 const getBestEntityScore = (signals = {}, subjectEntities = []) =>
@@ -82,7 +82,7 @@ const getSafetyScore = (signals = {}, intent = {}) => {
   const safetyComposite = 1 - ((signals.scariness + signals.peril) / 2);
   if (safetyLevel === "very_safe") return Math.round((safetyComposite - 0.42) * 120);
   if (safetyLevel === "safe") return Math.round((safetyComposite - 0.36) * 100);
-  return Math.round((safetyComposite - 0.3) * 50);
+  return 0;
 };
 
 // Priority is deliberately non-linear: a runtime preference must never buy back
@@ -174,6 +174,7 @@ const getConsensusScore = (movie = {}, signals = {}, intent = {}) => {
   if (Number(movie.vote_count || 0) >= 5000) score += 10;
   if (Number(movie.popularity || 0) >= 45) score += 8;
   if (Array.isArray(signals.practical_watch_fit) && signals.practical_watch_fit.includes("easy_group_watch")) score += 10;
+  if (genreIds.includes(27) && !(intent.hard_filters?.required_genre_ids || []).includes(27)) score -= 40;
   if (!intent.audience_age && (genreIds.includes(16) || genreIds.includes(10751))) score -= 18;
 
   return score;
@@ -437,7 +438,11 @@ const getRecommendationFitBreakdown = (movie = {}, intent = {}, extra = {}, sign
   const priorityConstraints = getPriorityConstraintScore(movie, derivedSignals, intent);
   const bonus = clamp(Number(extra.structured_match_score || movie.structured_match_score || 0) / 20, 0, 18);
 
-  const total = entity.score + audience + safety + tone + consensus + cozy + sweepingEpic + canonicalEntry + context + lowRegret + bonus + penalties.total + priorityConstraints.total;
+  const genres = movie.genre_ids || [];
+  const requestedGenres = intent.hard_filters?.required_genre_ids || [];
+  const constraintFit = requestedGenres.length && (intent.hard_filters?.genre_match === "any" ? requestedGenres.some(id => genres.includes(id)) : requestedGenres.every(id => genres.includes(id)))
+    ? 42 : intent.anchors?.title ? 35 : 20;
+  const total = constraintFit + entity.score + audience + safety + tone + consensus + cozy + sweepingEpic + canonicalEntry + context + lowRegret + bonus + penalties.total + priorityConstraints.total;
   const fitTier = getFitTier(total);
 
   return {
@@ -445,6 +450,7 @@ const getRecommendationFitBreakdown = (movie = {}, intent = {}, extra = {}, sign
     fit_tier: fitTier,
     confidence_label: fitTier === "exact_fit" || fitTier === "strong_fit" ? "high" : fitTier === "decent_fit" ? "medium" : "low",
     components: {
+      constraint_fit: constraintFit,
       entity_match: entity.score,
       audience_fit: audience,
       safety_fit: safety,

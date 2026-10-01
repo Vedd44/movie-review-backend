@@ -33,8 +33,8 @@ const getAudienceIntentSignals = (prompt = "") => {
   let ageSuitability = null;
   let frictionLevel = null;
 
-  const hasYoungChildSignal = YOUNG_CHILD_PATTERN.test(rawPrompt) || YOUNG_CHILD_RELATION_PATTERN.test(rawPrompt);
-  const hasChildSignal = hasYoungChildSignal || CHILD_PATTERN.test(rawPrompt);
+  const hasYoungChildSignal = /\b(?:[1-5]|one|two|three|four|five)[ -]year[ -]old\b/i.test(rawPrompt) || YOUNG_CHILD_PATTERN.test(rawPrompt) || YOUNG_CHILD_RELATION_PATTERN.test(rawPrompt);
+  const hasChildSignal = hasYoungChildSignal || /\b(?:[6-9]|1[0-2]|six|seven|eight|nine|ten|eleven|twelve)[ -]year[ -]old\b/i.test(rawPrompt) || CHILD_PATTERN.test(rawPrompt);
   const hasFamilySignal = FAMILY_PATTERN.test(rawPrompt);
   const hasSickDaySignal = SICK_DAY_PATTERN.test(rawPrompt);
   const hasComfortSignal = COMFORT_PATTERN.test(rawPrompt);

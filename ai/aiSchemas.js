@@ -32,7 +32,7 @@ const pickRankingSchema = {
     },
     backups: {
       type: "array",
-      minItems: 3,
+      minItems: 0,
       maxItems: 3,
       items: {
         type: "object",
@@ -65,7 +65,7 @@ const pickWriterSchema = {
     primary_reason: { type: "string" },
     backups: {
       type: "array",
-      minItems: 3,
+      minItems: 0,
       maxItems: 3,
       items: {
         type: "object",

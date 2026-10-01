@@ -14,7 +14,8 @@
     "test:discovery-pagination": "node scripts/testDiscoveryPagination.js",
     "test:reelbot-take": "node scripts/testReelbotTake.js",
     "benchmark:models": "node scripts/benchmarkReelbotModels.js",
-    "inspect:sitemap": "node scripts/inspectSitemap.js"
+    "inspect:sitemap": "node scripts/inspectSitemap.js",
+    "test:recommendations": "node scripts/testRecommendationContract.js"
   },
   "keywords": [],
   "author": "",

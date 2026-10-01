@@ -80,6 +80,12 @@ const parseExplicitTimeConstraint = (prompt = "") => {
     }
   }
 
+  const numericDecade = /\b((?:19|20)\d0|[2-6]0)[’']?s\b/i.exec(normalizedPrompt);
+  if (numericDecade && !isSettingContext(normalizedPrompt, numericDecade.index)) {
+    const min = Number(numericDecade[1]) < 100 ? 1900 + Number(numericDecade[1]) : Number(numericDecade[1]);
+    return buildTimeConstraint({ type: "decade", label: `${min}s`, min, max: min + 9 });
+  }
+
   const yearPattern = /\b(19[0-9]{2}|20[0-9]{2})\b/g;
   let yearMatch = yearPattern.exec(normalizedPrompt);
   while (yearMatch) {

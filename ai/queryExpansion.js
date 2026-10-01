@@ -119,6 +119,15 @@ const findAudienceAgeRule = (prompt = "") => {
 };
 
 const inferAudienceAgeBucket = (prompt = "", audienceSignals = {}) => {
+  const ages = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
+  const ageMatch = String(prompt).toLowerCase().match(/\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)[ -]year[ -]old\b/);
+  if (ageMatch) {
+    const age = ages[ageMatch[1]] || Number(ageMatch[1]);
+    if (age <= 3) return "toddler";
+    if (age <= 5) return "preschool";
+    if (age <= 8) return "young_kids";
+    if (age <= 12) return "tweens";
+  }
   const matchedRule = findAudienceAgeRule(prompt);
   if (matchedRule) {
     return matchedRule.bucket;
@@ -204,7 +213,7 @@ const inferSoftPreferences = (prompt = "", audienceAge = null) => {
   if (/not too loud|not loud|not chaotic|not too chaotic|gentle|quiet night|cozy|cosy|low[-\s]?intensity|low[-\s]?key/i.test(normalizedPrompt)) {
     softPreferences.push("calm", "low_stimulation");
   }
-  if (/crowd-pleaser|crowd pleaser|everyone will agree/i.test(normalizedPrompt)) {
+  if (/crowd-pleaser|crowd pleaser|everyone will agree|my (?:wife|husband|partner) and i|don[’']?t know what i want/i.test(normalizedPrompt)) {
     softPreferences.push("low_regret", "broadly_accessible", "consensus_friendly", "rewatchable");
   }
   if (/safe movie night|low-regret|everyone will agree/i.test(normalizedPrompt)) {
@@ -222,7 +231,7 @@ const inferSoftPreferences = (prompt = "", audienceAge = null) => {
   if (/more mainstream|mainstream|not obscure/i.test(normalizedPrompt)) {
     softPreferences.push("low_regret", "broadly_accessible", "consensus_friendly");
   }
-  if (/lighter|lighthearted|not depressing|not bleak|not too heavy/i.test(normalizedPrompt)) {
+  if (/lighter|lighthearted|not depressing|not bleak|not too heavy|nothing (?:too )?heavy|rainy sunday/i.test(normalizedPrompt)) {
     softPreferences.push("comforting", "warm");
   }
   if (/sweeping|epic|immersive|romantic/i.test(normalizedPrompt)) {
