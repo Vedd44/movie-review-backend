@@ -7,4 +7,5 @@ assert.match(contentFallback('Is it slow?',context), /inference/);
 assert.match(contentFallback('Is it scary?',{}), /enough story/);
 assert.deepEqual(filterGroundedFollowUps(['How scary is it?','How violent is it?','What makes it R-rated?','How long is it?','Who directed it?','Explain the ending'],'How intense is it?',context),['How long is it?','Who directed it?']);
 assert.equal(contentFallback('Who stars in it?',context),null);
+assert.deepEqual(filterGroundedFollowUps(['Would its 101-minute runtime suit you?','What are your favorite films?','How much time should I set aside?'],'How intense is it?',context),['How much time should I set aside?']);
 console.log('Ask evidence preserves useful inference, uncertainty, and non-repeating follow-ups.');

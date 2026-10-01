@@ -7,6 +7,8 @@ const filterGroundedFollowUps = (items, prompt, context, previousTurn = {}) => {
     if (typeof value !== 'string' || !value.trim()) return false;
     const text = value.trim();
     const topic = topicOf(text);
+    // Suggestions are messages the viewer can send, not questions directed at them.
+    if (/\b(?:you|your)\b/i.test(text)) return false;
     // A rating code alone cannot answer why that rating was assigned.
     if (/what makes.*rat|why.*rat|how many.*scare|exact.*gore/i.test(text)) return false;
     if (settled.has(topic) || seen.has(topic || text.toLowerCase())) return false;
