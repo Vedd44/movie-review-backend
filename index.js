@@ -3292,7 +3292,7 @@ const getPickCandidatePool = async (preferences, intent = null, promptBoosts = n
     return finalPool;
   }
 
-  const anchoredMovies = (await Promise.allSettled(anchorIds.map((movieId) => fetchTmdbCached(`/movie/${movieId}`, {}, CACHE_TTLS.movie_details))))
+  const anchoredMovies = (await Promise.allSettled(anchorIds.map((movieId) => fetchTmdbCached(`/movie/${movieId}`, { append_to_response: "release_dates,keywords,watch/providers" }, CACHE_TTLS.movie_details))))
     .filter((response) => response.status === "fulfilled")
     .map((response) => ({
       ...response.value,
@@ -3390,7 +3390,7 @@ const fetchStructuredMoviesByIds = async (movieIds = [], overrides = {}) => {
     return [];
   }
 
-  const responses = await Promise.allSettled(ids.map((movieId) => fetchTmdbCached(`/movie/${movieId}`, {}, CACHE_TTLS.movie_details)));
+  const responses = await Promise.allSettled(ids.map((movieId) => fetchTmdbCached(`/movie/${movieId}`, { append_to_response: "release_dates,keywords,watch/providers" }, CACHE_TTLS.movie_details)));
   return responses
     .filter((response) => response.status === "fulfilled")
     .map((response) => normalizeStructuredCandidate(response.value, overrides));
@@ -3649,7 +3649,9 @@ const parseOscarTitlesFromHtml = (html = "") => {
 
 const resolveCountryQueryCandidates = async (structuredQuery, intent = {}) => {
   const country = structuredQuery.country || {};
-  const keywordTerms = uniqueStrings([country.display_name, ...(country.aliases || []), ...(country.location_terms || [])]);
+  // Origin requests are answered by country-filtered discovery. Location/title
+  // searches are relevant only when the user asks about a place or setting.
+  const keywordTerms = intent.specificity?.place_theme ? uniqueStrings([country.display_name, ...(country.aliases || []), ...(country.location_terms || [])]) : [];
   const keywordMatchesPromise = resolveTmdbKeywordIds(keywordTerms);
   const countrySearchPromise = Promise.allSettled(keywordTerms.map(term => fetchTmdbCached("/search/movie", { query: term, include_adult: "false", page: 1 })));
   const candidateMap = new Map();
@@ -3682,7 +3684,7 @@ const resolveCountryQueryCandidates = async (structuredQuery, intent = {}) => {
   };
 
   const hard = intent.hard_filters || {};
-  const countryDiscover = await Promise.allSettled(["vote_average.desc", "popularity.desc"].map(sort_by => fetchTmdb("/discover/movie", {
+  const countryDiscover = await Promise.allSettled(["vote_average.desc", "popularity.desc"].map(sort_by => fetchTmdbCached("/discover/movie", {
     with_origin_country: country.iso_3166_1, include_adult: "false", "vote_count.gte": 100, sort_by,
     ...(hard.required_genre_ids?.length ? { with_genres: hard.required_genre_ids.join(",") } : {}),
     ...(hard.min_release_year ? { "primary_release_date.gte": `${hard.min_release_year}-01-01` } : {}),
@@ -6311,7 +6313,7 @@ const generateGroundedAskAnswer = async ({ prompt, intent, movieId, previousTurn
   return payload?.answer
     ? {
       ...payload,
-      follow_ups: filterGroundedFollowUps(payload.follow_ups, prompt, context, previousTurn),
+      follow_ups: filterGroundedFollowUps([...(payload.follow_ups || []), "Who stars in it?", "How long is it?", "Who directed it?", "What is the story about?"], prompt, context, previousTurn),
     }
     : {
       answer: fallbackAnswer,
@@ -6372,7 +6374,7 @@ app.get("/movies/watch-providers", async (req, res) => {
       ids.map(async (movieId) => {
         const [watchProviderPayload, moviePayload] = await Promise.all([
           fetchTmdbCached(`/movie/${movieId}/watch/providers`, {}, CACHE_TTLS.movie_details),
-          fetchTmdbCached(`/movie/${movieId}`, {}, CACHE_TTLS.movie_details),
+          fetchTmdbCached(`/movie/${movieId}`, { append_to_response: "release_dates,keywords,watch/providers" }, CACHE_TTLS.movie_details),
         ]);
         const availability = normalizeWatchProviders(watchProviderPayload);
         return {
