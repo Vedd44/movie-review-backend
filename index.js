@@ -2,6 +2,8 @@ require("dotenv").config();
 const { passesRecommendationContract, recommendationCacheScope, needsVerifiedContentGuide } = require("./ai/recommendationContract");
 const express = require("express");
 const { timingMiddleware, measureStage, finishTiming } = require("./ai/requestTiming");
+const { decisionReasons } = require("./ai/decisionPresentation");
+const { contentFallback, filterGroundedFollowUps } = require("./ai/askEvidence");
 const axios = require("axios");
 const cors = require("cors");
 const { parseReelbotIntent, isIntentSnapshotValid, detectTimeConstraint } = require("./ai/intentParser");
@@ -10,10 +12,10 @@ const { hasChildFamilyGuardrails, passesAudienceGuardrails, getAudienceContextFi
 const { detectStructuredQuery } = require("./ai/queryInterpreter");
 const { getKnownBadPatternAdjustments, summarizeAppliedConstraints } = require("./ai/knownBadPatterns");
 const { hasStrictIntentFilters, passesStrictIntentFilter } = require("./ai/strictIntentFilters");
-const { buildPickRankerPrompts, buildPickWriterPrompts } = require("./ai/promptBuilders/homepagePick");
+const { buildPickDecisionPrompts } = require("./ai/promptBuilders/homepagePick");
 const { buildDetailPrompts } = require("./ai/promptBuilders/detailPage");
 const { buildAskAnswerPrompts } = require("./ai/promptBuilders/askReelbot");
-const { pickRankingSchema, pickWriterSchema, getDetailSchema, askAnswerSchema } = require("./ai/aiSchemas");
+const { pickDecisionSchema, getDetailSchema, askAnswerSchema } = require("./ai/aiSchemas");
 const { REELBOT_BANNED_PHRASES } = require("./ai/reelbotPrinciples");
 const { deriveMovieSignals } = require("./ai/movieSignals");
 const { getRecommendationFitBreakdown } = require("./ai/recommendationScoring");
@@ -4347,7 +4349,7 @@ const rankCandidatesWithOpenAI = async (preferences, intent, candidates) => {
     return null;
   }
 
-  const prompts = buildPickRankerPrompts({
+  const prompts = buildPickDecisionPrompts({
     preferences,
     intent,
     candidates: candidates.map((movie) => buildCompactCandidate(movie, intent)),
@@ -4356,97 +4358,12 @@ const rankCandidatesWithOpenAI = async (preferences, intent, candidates) => {
   return callStructuredOpenAI({
     systemPrompt: prompts.systemPrompt,
     userPrompt: prompts.userPrompt,
-    schema: pickRankingSchema,
-    schemaName: "reelbot_pick_ranking_v2",
-    maxTokens: 420,
+    schema: pickDecisionSchema,
+    schemaName: "reelbot_pick_decision_v3",
+    maxTokens: 850,
     type: "reco",
     temperature: 0.25,
   });
-};
-
-const writePickPresentationWithOpenAI = async (preferences, intent, primaryMovie, backups = [], rankedBackups = [], behavioralMemory = {}, timeConstraintState = null) => {
-  if (!OPENAI_API_KEY || !primaryMovie) {
-    return null;
-  }
-
-  const generatePresentation = async (focus) => {
-    const writerPreferences = focus ? { ...preferences, variation_focus: focus } : preferences;
-    const prompts = buildPickWriterPrompts({
-      preferences: writerPreferences,
-      intent,
-      primary: buildCompactCandidate(primaryMovie, intent),
-      backups: backups.map((movie, index) => ({
-        ...buildCompactCandidate(movie, intent),
-        role_key: rankedBackups[index]?.role_key || null,
-      })),
-    });
-
-    const payload = await callStructuredOpenAI({
-      systemPrompt: prompts.systemPrompt,
-      userPrompt: prompts.userPrompt,
-      schema: pickWriterSchema,
-      schemaName: "reelbot_pick_writer_v2",
-      maxTokens: 1200,
-      type: "rationale",
-      temperature: 0.45,
-    });
-
-    if (!payload) {
-      return null;
-    }
-
-    const contextCandidate = sanitizeWhyThisNowLine(payload.context_line, writerPreferences);
-    payload.context_line = isWeakAiCopy(contextCandidate) ? buildWhyThisNowLine(writerPreferences) : contextCandidate;
-    payload.summary_line = isWeakAiCopy(payload.summary_line) ? buildFallbackPickSummaryLine(primaryMovie, intent) : payload.summary_line;
-    payload.primary_reason = isWeakAiCopy(payload.primary_reason) ? buildPickReason(primaryMovie, preferences) : payload.primary_reason;
-    payload.why_this_works = Array.isArray(payload.why_this_works)
-      ? payload.why_this_works.map((item) => normalizeAiCopy(item)).filter((item) => item && !isWeakAiCopy(item)).slice(0, 2)
-      : [];
-
-    if (payload.why_this_works.length < 2) {
-      payload.why_this_works = buildFallbackWhyThisWorks(primaryMovie, preferences, intent, behavioralMemory);
-    }
-
-    const personalizationLine = buildBehavioralPreferenceReason(primaryMovie, behavioralMemory);
-    if (personalizationLine) {
-      payload.why_this_works = [personalizationLine, ...payload.why_this_works]
-        .map((item) => normalizeAiCopy(item))
-        .filter((item, index, items) => item && items.indexOf(item) === index)
-        .slice(0, 2);
-    }
-
-    payload.backups = Array.isArray(payload.backups)
-      ? payload.backups.map((entry, index) => ({
-          id: entry.id,
-          role_label: normalizeAiCopy(entry.role_label) || getBackupRoleLabelFromKey(rankedBackups[index]?.role_key),
-          reason: isWeakAiCopy(entry.reason)
-            ? buildFallbackBackupReason(backups[index], rankedBackups[index]?.role_key, preferences, intent)
-            : normalizeAiCopy(entry.reason),
-        }))
-      : [];
-
-    return attachTimeConstraintFallbackNote(payload, timeConstraintState);
-  };
-
-  const presentation = await generatePresentation(preferences.variation_focus || null);
-  if (!presentation) {
-    return null;
-  }
-
-  if (shouldRegenerateForSimilarity(presentation.primary_reason, preferences.last_pick_reason)) {
-    const alternateFocus = getNextVariationFocus(preferences.variation_focus);
-    if (alternateFocus) {
-      const alternatePresentation = await generatePresentation(alternateFocus);
-      if (
-        alternatePresentation &&
-        !shouldRegenerateForSimilarity(alternatePresentation.primary_reason, preferences.last_pick_reason)
-      ) {
-        return alternatePresentation;
-      }
-    }
-  }
-
-  return presentation;
 };
 
 const buildMatchScore = (score, topScore) => {
@@ -4772,7 +4689,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
-  const cacheKey = `pick:v3:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const cacheKey = `pick:v4:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);
@@ -4932,7 +4849,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
         }))
     );
   }
-  const aiRanking = rankingPool.length >= 4 ? await measureStage("ranking", () => rankCandidatesWithOpenAI(preferences, resolvedIntent, rankingPool)).catch((error) => {
+  const aiRanking = rankingPool.length ? await measureStage("ranking", () => rankCandidatesWithOpenAI(preferences, resolvedIntent, rankingPool)).catch((error) => {
     console.error("OpenAI ranking failed:", error.response?.data || error.message);
     return null;
   }) : null;
@@ -5072,18 +4989,19 @@ const generatePickPayload = async (rawPreferences = {}) => {
           : (index === 0 ? "safer_option" : index === 1 ? "lighter_option" : index === 2 ? "darker_option" : "wildcard"),
       }));
 
-  let presentation = await measureStage("rationale", () => writePickPresentationWithOpenAI(
-    preferences,
-    resolvedIntent,
-    primaryPick,
-    alternatePicks,
-    rankedBackups,
-    behavioralMemory,
-    resolvedIntent.time_constraint_state || null
-  )).catch((error) => {
-    console.error("OpenAI pick writer failed:", error.response?.data || error.message);
-    return null;
-  }) || buildFallbackPickPresentation(preferences, resolvedIntent, primaryPick, alternatePicks, rankedBackups, behavioralMemory);
+  const reasons = decisionReasons(aiRanking, primaryPick, alternatePicks);
+  const groundedReason = reasons.get(primaryPick.id);
+  let presentation = buildFallbackPickPresentation(preferences, resolvedIntent, primaryPick, alternatePicks, rankedBackups, behavioralMemory);
+  if (groundedReason && !isWeakAiCopy(groundedReason)) {
+    presentation.primary_reason = normalizeAiCopy(groundedReason);
+    presentation.summary_line = presentation.primary_reason;
+    presentation.why_this_works = [presentation.primary_reason];
+  }
+  presentation.backups = alternatePicks.map((movie, index) => ({
+    id: movie.id,
+    role_label: getBackupRoleLabelFromKey(rankedBackups.find(entry => entry.id === movie.id)?.role_key),
+    reason: reasons.get(movie.id) && !isWeakAiCopy(reasons.get(movie.id)) ? normalizeAiCopy(reasons.get(movie.id)) : buildFallbackBackupReason(movie, rankedBackups[index]?.role_key, preferences, resolvedIntent),
+  }));
 
   presentation = attachTimeConstraintFallbackNote(presentation, resolvedIntent.time_constraint_state || null);
 
@@ -6256,6 +6174,8 @@ const generateReelbotPayload = async (movieId, requestedAction = "quick_take", r
 
 const buildFallbackAskAnswer = (prompt, context = {}, intent = ASK_INTENTS.CURRENT_MOVIE_QUESTION, comparisonContext = null) => {
   const question = String(prompt || "").toLowerCase();
+  const evidenceAnswer = contentFallback(prompt, context);
+  if (evidenceAnswer && intent !== ASK_INTENTS.MOVIE_COMPARISON) return evidenceAnswer;
   const title = context.movie?.title || "This movie";
   const signals = context.signals || {};
   const certification = context.certification || "";
@@ -6391,7 +6311,7 @@ const generateGroundedAskAnswer = async ({ prompt, intent, movieId, previousTurn
       answer: fallbackAnswer,
       confidence: "medium",
       suggested_action: "",
-      follow_ups: buildFallbackAskFollowUps(prompt, fallbackAnswer, context),
+      follow_ups: filterGroundedFollowUps(["What is the story about?", "How long is it?", "Who directed it?"], prompt, context, previousTurn),
     };
   }
 
@@ -6411,13 +6331,13 @@ const generateGroundedAskAnswer = async ({ prompt, intent, movieId, previousTurn
   return payload?.answer
     ? {
       ...payload,
-      follow_ups: Array.isArray(payload.follow_ups) ? payload.follow_ups.slice(0, 4) : [],
+      follow_ups: filterGroundedFollowUps(payload.follow_ups, prompt, context, previousTurn),
     }
     : {
       answer: fallbackAnswer,
       confidence: "medium",
       suggested_action: "",
-      follow_ups: buildFallbackAskFollowUps(prompt, fallbackAnswer, context),
+      follow_ups: filterGroundedFollowUps(["What is the story about?", "How long is it?", "Who directed it?"], prompt, context, previousTurn),
     };
 };
 
@@ -7152,7 +7072,7 @@ app.post("/reelbot/pick", timingMiddleware, async (req, res) => {
   }
 });
 
-app.post("/reelbot/ask", async (req, res) => {
+app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
   if (!hasExplicitUserTrigger(req)) {
     return res.status(400).json({ error: "Ask ReelBot requests must come from an explicit user action." });
   }
@@ -7272,6 +7192,7 @@ app.post("/reelbot/ask", async (req, res) => {
       is_swap: req.body?.request_mode === "swap",
     });
 
+    recommendation.performance = finishTiming(res, recommendation.primary ? "pick" : "no_match", Boolean(recommendation.cached));
     const primary = recommendation?.primary || null;
     if (primary?.id || primary?.title) {
       conversation = {

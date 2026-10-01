@@ -82,6 +82,14 @@ const pickWriterSchema = {
   required: ["context_line", "summary_line", "why_this_works", "assistant_note", "primary_reason", "backups"],
 };
 
+// A single decision contains its explanation. IDs remain subject to the same
+// server-side candidate and constraint validation as the separate ranker.
+const pickDecisionSchema = JSON.parse(JSON.stringify(pickRankingSchema));
+for (const item of [pickDecisionSchema.properties.primary, pickDecisionSchema.properties.backups.items]) {
+  item.properties.reason = { type: "string" };
+  item.required.push("reason");
+}
+
 const DETAIL_SCHEMAS = {
   quick_take: {
     type: "object",
@@ -278,6 +286,7 @@ const askAnswerSchema = {
 module.exports = {
   BACKUP_ROLE_KEYS,
   pickRankingSchema,
+  pickDecisionSchema,
   pickWriterSchema,
   DETAIL_SCHEMAS,
   getDetailSchema,

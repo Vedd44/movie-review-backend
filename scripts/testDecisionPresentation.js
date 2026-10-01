@@ -1,0 +1,14 @@
+const assert = require('node:assert/strict');
+const { decisionReasons } = require('../ai/decisionPresentation');
+const { pickDecisionSchema } = require('../ai/aiSchemas');
+const { buildPickDecisionPrompts } = require('../ai/promptBuilders/homepagePick');
+const reasons = decisionReasons({primary:{id:1,reason:'Wrong final choice'},backups:[{id:2,reason:'Correct alternate'},{id:999,reason:'Outside pool'}]}, {id:3}, [{id:2}]);
+assert.equal(reasons.get(3), undefined);
+assert.equal(reasons.get(2), 'Correct alternate');
+assert.equal(reasons.has(999), false);
+assert.ok(pickDecisionSchema.properties.primary.required.includes('reason'));
+const prompts = buildPickDecisionPrompts({preferences:{},intent:{},candidates:[]});
+assert.ok(!prompts.systemPrompt.includes('Do not write user-facing copy'));
+assert.ok(prompts.systemPrompt.includes('hard filters'));
+assert.ok(prompts.systemPrompt.includes('Runtime is not evidence of pacing'));
+console.log('Combined decision keeps hard filters and ID-bound explanations.');

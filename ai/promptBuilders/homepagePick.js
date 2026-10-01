@@ -173,4 +173,18 @@ const buildPickWriterPrompts = ({ preferences, intent, primary, backups }) => {
 module.exports = {
   buildPickRankerPrompts,
   buildPickWriterPrompts,
+  buildPickDecisionPrompts: (args) => {
+    const prompts = buildPickRankerPrompts(args);
+    return {
+      systemPrompt: prompts.systemPrompt.replace("- Do not write user-facing copy.", [
+        "- Explain each selected movie in its reason field. Selection and explanation are one decision.",
+        "- Primary reason: 30–45 words, one specific fit and one useful tradeoff. Backup reasons: 15–25 words naming a real difference.",
+        "- Ground every claim in the supplied overview, credits, genre, runtime and evidence. Do not invent scenes, awards or content-guide details.",
+        "- Derived signals are estimates: qualify tone or intensity inferences. Runtime is not evidence of pacing. Never promise no scary scenes or guaranteed age suitability.",
+        "- No generic praise, internal scoring language, metadata references, or repetition of the request. Write like a thoughtful film guide.",
+        "- Preserve the request and previous-pick context when explaining a swap. Do not repeat the previous reason's phrasing.",
+      ].join("\n")),
+      userPrompt: prompts.userPrompt,
+    };
+  },
 };

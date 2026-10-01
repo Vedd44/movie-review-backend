@@ -1,0 +1,10 @@
+const assert = require('node:assert/strict');
+const { contentFallback, filterGroundedFollowUps } = require('../ai/askEvidence');
+const context = {movie:{title:'Test Film',runtime:101,overview:'A family searches for their missing son.'},genreNames:['Crime','Drama'],certification:'R',director:'Director',topCastNames:['Actor']};
+assert.match(contentFallback('How violent is it?',context), /remain uncertain/);
+assert.match(contentFallback('Is it suitable for teens?',context), /cautious/);
+assert.match(contentFallback('Is it slow?',context), /inference/);
+assert.match(contentFallback('Is it scary?',{}), /enough story/);
+assert.deepEqual(filterGroundedFollowUps(['How scary is it?','How violent is it?','What makes it R-rated?','How long is it?','Who directed it?','Explain the ending'],'How intense is it?',context),['How long is it?','Who directed it?']);
+assert.equal(contentFallback('Who stars in it?',context),null);
+console.log('Ask evidence preserves useful inference, uncertainty, and non-repeating follow-ups.');
