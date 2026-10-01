@@ -1,6 +1,7 @@
 require("dotenv").config();
 const { passesRecommendationContract, recommendationCacheScope, needsVerifiedContentGuide } = require("./ai/recommendationContract");
 const express = require("express");
+const { timingMiddleware, measureStage, finishTiming } = require("./ai/requestTiming");
 const axios = require("axios");
 const cors = require("cors");
 const { parseReelbotIntent, isIntentSnapshotValid, detectTimeConstraint } = require("./ai/intentParser");
@@ -4730,7 +4731,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const isMovieSeen = (movie) => Boolean(movie?.id && behavioralMemory.seenMovieIds.has(movie.id));
   const refinement = normalizePickRefinement(rawPreferences.refinement);
   const allowTimeConstraintFallback = rawPreferences.time_constraint_fallback_mode === "relaxed";
-  let resolvedIntent = await hydrateResolvedIntent(preferences, rawPreferences);
+  let resolvedIntent = await measureStage("intent", () => hydrateResolvedIntent(preferences, rawPreferences));
   if (rawPreferences.person_context) resolvedIntent.person_context = rawPreferences.person_context;
   ensureTimeConstraintFilter(resolvedIntent, preferences.prompt);
   const relative = rawPreferences.constraint_overrides || {};
@@ -4738,7 +4739,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   if (Number(relative.maxRuntime) > 0) resolvedIntent.hard_filters.max_runtime_minutes = Math.min(resolvedIntent.hard_filters.max_runtime_minutes || Infinity, Number(relative.maxRuntime));
   if (Number(relative.minYear) > 1880) resolvedIntent.hard_filters.min_release_year = Number(relative.minYear);
   const structuredResolution = preferences.prompt
-    ? await resolveStructuredQueryCandidates(preferences.prompt, resolvedIntent, { allowTimeConstraintFallback })
+    ? await measureStage("structured_retrieval", () => resolveStructuredQueryCandidates(preferences.prompt, resolvedIntent, { allowTimeConstraintFallback }))
     : null;
   const shouldUseStructuredResolution = ["country", "awards"].includes(structuredResolution?.structuredQuery?.type);
 
@@ -4780,7 +4781,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
     }
   }
 
-  const promptBoosts = await getPromptMovieBoosts(preferences.prompt, resolvedIntent);
+  const promptBoosts = await measureStage("query_expansion", () => getPromptMovieBoosts(preferences.prompt, resolvedIntent));
   const rabbitRetrievalTrace = [];
   if (includeDebug) {
     promptBoosts.rabbitDebugCollector = (stage) => {
@@ -4797,11 +4798,11 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const usesHardEntityPool = ["PERSON", "DIRECTOR", "FRANCHISE", "TITLE_SIMILARITY", "COUNTRY", "AWARDS"].includes(queryType)
     || (queryType === "GENRE_THEME" && shouldUseStructuredResolution);
 
-  let candidatePool = hasProvidedCandidatePool
+  let candidatePool = await measureStage("retrieval", async () => hasProvidedCandidatePool
     ? await fetchMoviesByIds(providedCandidatePoolIds)
     : shouldUseStructuredResolution
       ? structuredResolution.movies
-      : await getPickCandidatePool(preferences, resolvedIntent, promptBoosts);
+      : await getPickCandidatePool(preferences, resolvedIntent, promptBoosts));
   let fallbackPool = !candidatePool.length && !hasProvidedCandidatePool && !usesHardEntityPool && (preferences.mood !== "all" || preferences.runtime !== "any")
     ? await getPickCandidatePool({ ...preferences, mood: "all", runtime: "any" }, resolvedIntent, promptBoosts)
     : candidatePool;
@@ -4846,7 +4847,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
     ...preliminaryRanked.slice(0, 36).map((entry) => entry.movie),
     ...semanticPriorityCandidates,
   ]);
-  const detailedCandidates = await enrichCandidatesWithDetails(topPreliminaryCandidates);
+  const detailedCandidates = await measureStage("metadata", () => enrichCandidatesWithDetails(topPreliminaryCandidates));
   const availabilityFilteredDetailedCandidates = filterTheatricalOnlyMovies(detailedCandidates, preferences, resolvedIntent, queryType);
   const detailedIntentFilteredPool = detailedCandidates
     .filter((movie) => availabilityFilteredDetailedCandidates.some((availableMovie) => availableMovie.id === movie.id))
@@ -4931,7 +4932,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
         }))
     );
   }
-  const aiRanking = rankingPool.length >= 4 ? await rankCandidatesWithOpenAI(preferences, resolvedIntent, rankingPool).catch((error) => {
+  const aiRanking = rankingPool.length >= 4 ? await measureStage("ranking", () => rankCandidatesWithOpenAI(preferences, resolvedIntent, rankingPool)).catch((error) => {
     console.error("OpenAI ranking failed:", error.response?.data || error.message);
     return null;
   }) : null;
@@ -5071,7 +5072,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
           : (index === 0 ? "safer_option" : index === 1 ? "lighter_option" : index === 2 ? "darker_option" : "wildcard"),
       }));
 
-  let presentation = await writePickPresentationWithOpenAI(
+  let presentation = await measureStage("rationale", () => writePickPresentationWithOpenAI(
     preferences,
     resolvedIntent,
     primaryPick,
@@ -5079,7 +5080,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
     rankedBackups,
     behavioralMemory,
     resolvedIntent.time_constraint_state || null
-  ).catch((error) => {
+  )).catch((error) => {
     console.error("OpenAI pick writer failed:", error.response?.data || error.message);
     return null;
   }) || buildFallbackPickPresentation(preferences, resolvedIntent, primaryPick, alternatePicks, rankedBackups, behavioralMemory);
@@ -7125,7 +7126,7 @@ app.get("/search", async (req, res) => {
   }
 });
 
-app.post("/reelbot/pick", async (req, res) => {
+app.post("/reelbot/pick", timingMiddleware, async (req, res) => {
   if (!hasExplicitUserTrigger(req)) {
     return res.status(400).json({
       error: "ReelBot pick requests must come from an explicit user click.",
@@ -7138,7 +7139,7 @@ app.post("/reelbot/pick", async (req, res) => {
     const latencyMs = Date.now() - startedAt;
     res.set("Server-Timing", `reelbot;dur=${latencyMs}`);
     res.set("X-ReelBot-Models", `${MODELS.reco},${MODELS.rationale}`);
-    console.log({ type: "recommendation_total", latency_ms: latencyMs, model: MODELS.reco, rationale_model: MODELS.rationale });
+    payload.performance = finishTiming(res, payload.primary ? "pick" : "no_match", Boolean(payload.cached));
     res.json(payload);
   } catch (error) {
     console.error("Error generating ReelBot pick:", error.response?.data || error.message);
@@ -7146,7 +7147,7 @@ app.post("/reelbot/pick", async (req, res) => {
     const latencyMs = Date.now() - startedAt;
     res.set("Server-Timing", `reelbot;dur=${latencyMs}`);
     res.set("X-ReelBot-Models", `${MODELS.reco},${MODELS.rationale}`);
-    console.log({ type: "recommendation_total", latency_ms: latencyMs, fallback: true });
+    payload.performance = finishTiming(res, "fallback", false);
     res.json(payload);
   }
 });
