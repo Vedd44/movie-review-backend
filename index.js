@@ -3239,7 +3239,18 @@ const getPickCandidatePool = async (preferences, intent = null, promptBoosts = n
         { label: "feed:now_playing:page2", request: () => fetchFeedBatch("now_playing", getRotatedPage("now_playing", 2)) },
       ];
 
-  const responses = await Promise.allSettled(requestPlan.map((stage) => stage.request()));
+  const [responses, semanticCandidates] = await Promise.all([
+    Promise.allSettled(requestPlan.map((stage) => stage.request())),
+    shouldUseExpandedRecommendationRetrieval
+    ? await resolveExpandedRecommendationCandidates({
+        intent,
+        fetchTmdb,
+        fetchStructuredMoviesByIds,
+        normalizeStructuredCandidate,
+        debugCollector: (stage) => noteRabbitStage(stage.label, [], { stage_type: "expanded_retrieval", ...stage }),
+      })
+    : [],
+  ]);
   responses.forEach((response, index) => {
     const stage = requestPlan[index];
     if (response.status === "fulfilled") {
@@ -3256,15 +3267,6 @@ const getPickCandidatePool = async (preferences, intent = null, promptBoosts = n
     .filter((response) => response.status === "fulfilled")
     .flatMap((response) => Array.isArray(response.value) ? response.value : response.value?.results || []);
   noteRabbitStage("merged_feed_discover", merged);
-  const semanticCandidates = shouldUseExpandedRecommendationRetrieval
-    ? await resolveExpandedRecommendationCandidates({
-        intent,
-        fetchTmdb,
-        fetchStructuredMoviesByIds,
-        normalizeStructuredCandidate,
-        debugCollector: (stage) => noteRabbitStage(stage.label, [], { stage_type: "expanded_retrieval", ...stage }),
-      })
-    : [];
   noteRabbitStage("semantic_candidates_final", semanticCandidates);
 
   const entityKind = intent?.entity_anchor?.kind || null;
@@ -3413,9 +3415,12 @@ const resolveTmdbMovieByTitle = async (title = "") => {
 const resolveTmdbKeywordIds = async (terms = []) => {
   const keywordEntries = [];
 
-  for (const term of uniqueStrings(terms)) {
-    try {
-      const payload = await fetchTmdb("/search/keyword", { query: term, page: 1 });
+  const uniqueTerms = uniqueStrings(terms);
+  const responses = await Promise.allSettled(uniqueTerms.map(term => fetchTmdbCached("/search/keyword", { query: term, page: 1 })));
+  responses.forEach((response, index) => {
+    if (response.status === "fulfilled") {
+      const term = uniqueTerms[index];
+      const payload = response.value;
       (payload.results || []).slice(0, 6).forEach((keyword) => {
         if (!keyword?.id || !keyword?.name) {
           return;
@@ -3438,10 +3443,8 @@ const resolveTmdbKeywordIds = async (terms = []) => {
           score,
         });
       });
-    } catch (error) {
-      console.error("Error resolving TMDB keywords:", error.response?.data || error.message);
     }
-  }
+  });
 
   return keywordEntries
     .sort((left, right) => right.score - left.score)
@@ -3647,7 +3650,8 @@ const parseOscarTitlesFromHtml = (html = "") => {
 const resolveCountryQueryCandidates = async (structuredQuery, intent = {}) => {
   const country = structuredQuery.country || {};
   const keywordTerms = uniqueStrings([country.display_name, ...(country.aliases || []), ...(country.location_terms || [])]);
-  const keywordMatches = await resolveTmdbKeywordIds(keywordTerms);
+  const keywordMatchesPromise = resolveTmdbKeywordIds(keywordTerms);
+  const countrySearchPromise = Promise.allSettled(keywordTerms.map(term => fetchTmdbCached("/search/movie", { query: term, include_adult: "false", page: 1 })));
   const candidateMap = new Map();
 
   const rememberCandidate = (movie = {}, metadata = {}) => {
@@ -3686,38 +3690,14 @@ const resolveCountryQueryCandidates = async (structuredQuery, intent = {}) => {
   })));
   countryDiscover.filter(item => item.status === "fulfilled").forEach(item => (item.value.results || []).forEach(movie => rememberCandidate(movie, { source_endpoint: "/discover/movie" })));
 
-  for (const term of keywordTerms) {
-    try {
-      const payload = await fetchTmdb("/search/movie", { query: term, include_adult: "false", page: 1 });
-      (payload.results || []).slice(0, 10).forEach((movie) => {
-        rememberCandidate(movie, {
-          source_endpoint: "/search/movie",
-          match_reasons: [`TMDB search query matched "${term}".`],
-        });
-      });
-    } catch (error) {
-      console.error("Error fetching country search candidates:", error.response?.data || error.message);
-    }
-  }
-
-  for (const keyword of keywordMatches) {
-    try {
-      const payload = await fetchTmdb("/discover/movie", {
-        with_keywords: keyword.id,
-        sort_by: "popularity.desc",
-        include_adult: "false",
-        page: 1,
-      });
-      (payload.results || []).slice(0, 12).forEach((movie) => {
-        rememberCandidate(movie, {
-          source_endpoint: "/discover/movie",
-          match_reasons: [`TMDB keyword matched "${keyword.name}".`],
-        });
-      });
-    } catch (error) {
-      console.error("Error fetching country keyword candidates:", error.response?.data || error.message);
-    }
-  }
+  const [countrySearch, keywordMatches] = await Promise.all([countrySearchPromise, keywordMatchesPromise]);
+  countrySearch.forEach((response, index) => {
+    if (response.status === "fulfilled") (response.value.results || []).slice(0, 10).forEach(movie => rememberCandidate(movie, { source_endpoint: "/search/movie", match_reasons: [`TMDB search query matched "${keywordTerms[index]}".`] }));
+  });
+  const keywordResults = await Promise.allSettled(keywordMatches.map(keyword => fetchTmdbCached("/discover/movie", { with_keywords: keyword.id, sort_by: "popularity.desc", include_adult: "false", page: 1 })));
+  keywordResults.forEach((response, index) => {
+    if (response.status === "fulfilled") (response.value.results || []).slice(0, 12).forEach(movie => rememberCandidate(movie, { source_endpoint: "/discover/movie", match_reasons: [`TMDB keyword matched "${keywordMatches[index].name}".`] }));
+  });
 
   const detailedCandidates = await fetchStructuredMoviesByIds(Array.from(candidateMap.keys()), {
     source_type: "country_search",
