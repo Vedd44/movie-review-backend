@@ -1,7 +1,7 @@
 require("dotenv").config();
 const { passesRecommendationContract, recommendationCacheScope, needsVerifiedContentGuide } = require("./ai/recommendationContract");
 const express = require("express");
-const { timingMiddleware, measureStage, finishTiming } = require("./ai/requestTiming");
+const { timingMiddleware, measureStage, finishTiming, markRecovery } = require("./ai/requestTiming");
 const { decisionReasons } = require("./ai/decisionPresentation");
 const { contentFallback, filterGroundedFollowUps } = require("./ai/askEvidence");
 const axios = require("axios");
@@ -4140,6 +4140,7 @@ const callStructuredOpenAI = async ({ systemPrompt, userPrompt, schema, schemaNa
       error: error.response?.data || error.message,
     });
 
+    markRecovery();
     return callStructuredOpenAIWithModel({
       systemPrompt,
       userPrompt,
@@ -4165,6 +4166,7 @@ const reelbotTakeService = createReelbotTakeService({
   generateTake: async (movie) => {
     if (!OPENAI_API_KEY) return null;
     const { systemPrompt, userPrompt } = buildTakePrompts(movie);
+    markRecovery();
     return callStructuredOpenAIWithModel({
       systemPrompt,
       userPrompt,
@@ -4833,6 +4835,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   }
   const aiRanking = rankingPool.length ? await measureStage("ranking", () => rankCandidatesWithOpenAI(preferences, resolvedIntent, rankingPool)).catch((error) => {
     console.error("OpenAI ranking failed:", error.response?.data || error.message);
+    markRecovery();
     return null;
   }) : null;
 
@@ -5004,6 +5007,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   }
   const payload = {
     label: "Pick for Me",
+    used_fallback: !aiRanking,
     summary: presentation.summary_line || buildPickSuccessSummary(primaryPick),
     assistant_note: presentation.assistant_note || (
       primaryFitTier === "decent_fit"
@@ -7041,7 +7045,7 @@ app.post("/reelbot/pick", timingMiddleware, async (req, res) => {
     const latencyMs = Date.now() - startedAt;
     res.set("Server-Timing", `reelbot;dur=${latencyMs}`);
     res.set("X-ReelBot-Models", `${MODELS.reco},${MODELS.rationale}`);
-    payload.performance = finishTiming(res, payload.primary ? "pick" : "no_match", Boolean(payload.cached));
+    payload.performance = finishTiming(res, payload.primary ? (payload.used_fallback ? "fallback" : "pick") : "no_match", Boolean(payload.cached));
     res.json(payload);
   } catch (error) {
     console.error("Error generating ReelBot pick:", error.response?.data || error.message);
@@ -7174,7 +7178,7 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
       is_swap: req.body?.request_mode === "swap",
     });
 
-    recommendation.performance = finishTiming(res, recommendation.primary ? "pick" : "no_match", Boolean(recommendation.cached));
+    recommendation.performance = finishTiming(res, recommendation.primary ? (recommendation.used_fallback ? "fallback" : "pick") : "no_match", Boolean(recommendation.cached));
     const primary = recommendation?.primary || null;
     if (primary?.id || primary?.title) {
       conversation = {
