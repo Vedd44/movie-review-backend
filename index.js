@@ -6212,34 +6212,34 @@ const buildFallbackAskAnswer = (prompt, context = {}, intent = ASK_INTENTS.CURRE
 
   if (/scary|jump scare|gore|violent|violence|intense/.test(question)) {
     if (isHorror || Number(signals.scariness || 0) >= 0.55) {
-      return `${title} is likely to feel genuinely scary rather than merely tense. I don’t have enough verified detail to promise exact jump-scare or gore levels.`;
+      return `${title} leans into genuine horror rather than just tension. For exact jump-scare or gore specifics, ReelBot needs scene-level content data.`;
     }
     if (Number(signals.peril || 0) >= 0.35 || Number(signals.scariness || 0) >= 0.25) {
-      return `${title} looks more tense or perilous than horror-driven. The available information does not support exact claims about jump scares or gore.`;
+      return `${title} is more tense and perilous than outright horror-driven. The intensity comes primarily from danger and pressure rather than horror mechanics.`;
     }
-    return `${title} does not look positioned as a scary movie. Any concern is more likely to be action or mild peril than horror-level scares.`;
+    return `${title} is not primarily a scary movie. Any intensity is more likely to come from action or peril than horror-level scares.`;
   }
 
   if (/toddler|\b(?:[3-9]|1[0-2])\s*(?:year|yr)|kid|child|appropriate/.test(question)) {
     const ratingNote = certification ? ` It is rated ${certification} in the US.` : "";
     if (Number(signals.kid_friendliness || 0) >= 0.68) {
-      return `${title} looks broadly family-friendly, though a child’s tolerance for action and peril still matters.${ratingNote}`;
+      return `${title} is broadly family-friendly, though a child’s tolerance for action and peril still matters.${ratingNote}`;
     }
-    return `I would be cautious about calling ${title} a safe fit for a young child from the available information alone.${ratingNote}`;
+    return `${title} is not an automatic young-child pick; its genre, intensity and rating warrant a little caution.${ratingNote}`;
   }
 
   if (/slow|confusing|hard to follow/.test(question)) {
     const confusion = Number(signals.confusion_risk || 0);
     return confusion >= 0.45
-      ? `${title} may ask for closer attention than an easy background watch. Its appeal is likely to depend on whether you want that extra concentration.`
-      : `${title} does not look unusually confusing from the available information. Pace is harder to verify confidently from metadata alone.`;
+      ? `${title} asks for closer attention than an easy background watch. It works better when you are willing to stay engaged with it.`
+      : `${title} is not unusually difficult to follow. Its story and genre cues point to a reasonably accessible watch rather than a puzzle-box experience.`;
   }
 
   if (/date|group|tonight|worth|should i watch|better than|which/.test(question) || intent === ASK_INTENTS.MOVIE_COMPARISON) {
     return `${title} can work if the group is aligned on its ${genres.slice(0, 2).join(" and ").toLowerCase() || "overall"} tone. The main tradeoff is whether that mood fits what everyone wants tonight.`;
   }
 
-  return `I don’t have enough verified detail to answer that confidently about ${title}. The available movie information does not support a more specific claim.`;
+  return `There isn’t enough movie-specific evidence here for ReelBot to make that particular call without guessing.`;
 };
 
 const buildFallbackAskFollowUps = (prompt, answer, context = {}) => {
