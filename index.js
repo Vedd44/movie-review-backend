@@ -5149,32 +5149,51 @@ const normalizeWatchProviders = (watchProviderPayload) => {
 };
 
 const normalizeProviderMatchName = (value = "") => {
-  const raw = String(value || "").toLowerCase().trim();
+  const original = String(value || "").toLowerCase().trim();
+  // TMDB often names channel offers as "STARZ Apple TV Channel" or
+  // "Paramount+ Amazon Channel". Match the content brand before the host store.
+  const raw = original
+    .replace(/(?:amazon|prime video|apple tv|roku)\s+(?:channel|channels)$/g, "")
+    .replace(/\s+amazon channel$/g, "")
+    .trim();
   const compact = raw.replace(/[^a-z0-9]/g, "");
 
-  // Canonical service families. TMDB and Streaming Availability frequently
-  // use different labels for the same storefront (and ad-supported variants).
-  if (/amazon|prime/.test(raw)) return "prime";
-  if (/apple/.test(raw)) return "apple";
-  if (/fandango|vudu/.test(raw)) return "fandango";
   if (/netflix/.test(raw)) return "netflix";
-  if (/hbo|max/.test(raw)) return "max";
   if (/paramount/.test(raw)) return "paramount";
   if (/disney/.test(raw)) return "disney";
-  if (/hulu/.test(raw)) return "hulu";
-  if (/peacock/.test(raw)) return "peacock";
-  if (/plex/.test(raw)) return "plex";
-  if (/roku/.test(raw)) return "roku";
-  if (/tubi/.test(raw)) return "tubi";
+  if (/hbo|max/.test(raw)) return "max";
   if (/starz/.test(raw)) return "starz";
   if (/showtime/.test(raw)) return "showtime";
+  if (/mgm|epix/.test(raw)) return "mgm";
+  if (/britbox/.test(raw)) return "britbox";
+  if (/acorn/.test(raw)) return "acorn";
+  if (/shudder/.test(raw)) return "shudder";
+  if (/amc/.test(raw)) return "amc";
+  if (/discovery/.test(raw)) return "discovery";
+  if (/hallmark/.test(raw)) return "hallmark";
+  if (/sundance/.test(raw)) return "sundance";
+  if (/lifetime/.test(raw)) return "lifetime";
+  if (/history/.test(raw)) return "history";
+  if (/pbs/.test(raw)) return "pbs";
+  if (/crunchyroll/.test(raw)) return "crunchyroll";
+  if (/curiosity/.test(raw)) return "curiosity";
+  if (/pluto/.test(raw)) return "plutotv";
+  if (/vix/.test(raw)) return "vix";
+  if (/tubi/.test(raw)) return "tubi";
   if (/mubi/.test(raw)) return "mubi";
   if (/criterion/.test(raw)) return "criterion";
   if (/kanopy/.test(raw)) return "kanopy";
   if (/hoopla/.test(raw)) return "hoopla";
+  if (/peacock/.test(raw)) return "peacock";
+  if (/hulu/.test(raw)) return "hulu";
+  if (/roku/.test(raw)) return "roku";
+  if (/plex/.test(raw)) return "plex";
+  if (/fandango|vudu/.test(raw)) return "fandango";
   if (/youtube|google play/.test(raw)) return "google";
   if (/microsoft/.test(raw)) return "microsoft";
   if (/spectrum/.test(raw)) return "spectrum";
+  if (/amazon|prime/.test(raw)) return "prime";
+  if (/apple/.test(raw)) return "apple";
 
   return compact;
 };
@@ -5229,6 +5248,8 @@ const enrichWatchProvidersWithDirectLinks = (availability, streamingPayload, cou
       name: option?.service?.name || option?.service?.id || "",
       service_id: option?.service?.id || "",
       match_names: Array.from(new Set([
+        normalizeProviderMatchName(option?.addon?.id || ""),
+        normalizeProviderMatchName(option?.addon?.name || ""),
         normalizeProviderMatchName(option?.service?.id || ""),
         normalizeProviderMatchName(option?.service?.name || ""),
       ].filter(Boolean))),
