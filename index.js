@@ -7126,8 +7126,14 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
 
     const filters = pageContext.activeFilters || {};
     const isNowPlaying = pageContext.page === "now_playing";
+    const myMoviesPrompt = String(prompt || "").toLowerCase();
+    const asksForWatchedSavedMovie = pageContext.page === "my_movies"
+      && /\b(?:have|i['’]?ve|already)\s+(?:seen|watched)\b|\b(?:seen|watched)\s+(?:before|already)\b/.test(myMoviesPrompt)
+      && !/\b(?:not|haven['’]?t|have not|unseen|not watched|not seen)\b/.test(myMoviesPrompt);
+    const watchedSavedIds = pageContext.savedMovieIds.filter((id) => pageContext.watchedMovieIds.includes(id));
+    const unwatchedSavedIds = pageContext.savedMovieIds.filter((id) => !pageContext.watchedMovieIds.includes(id));
     let constrainedIds = pageContext.page === "my_movies"
-      ? pageContext.savedMovieIds
+      ? (asksForWatchedSavedMovie ? watchedSavedIds : unwatchedSavedIds)
       : (pageContext.page === "browse" || pageContext.page === "now_playing" || pageContext.page === "collection")
         ? pageContext.visibleMovieIds
         : [];
@@ -7155,7 +7161,7 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
       : contextualPrompt;
     const excludedIds = Array.from(new Set([
       ...pageContext.excludedMovieIds,
-      ...pageContext.watchedMovieIds,
+      ...(asksForWatchedSavedMovie ? [] : pageContext.watchedMovieIds),
       ...pageContext.rejectedMovieIds,
       ...getConversationExcludedIds(conversation),
       ...(intent === ASK_INTENTS.MOVIE_RECOMMENDATION && movieId ? [movieId] : []),
