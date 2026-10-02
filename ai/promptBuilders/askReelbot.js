@@ -56,6 +56,7 @@ const buildAskAnswerPrompts = ({ prompt, intent, context, comparisonContext = nu
     "Write every follow-up from the viewer's perspective as a question they can send to ReelBot. For example, 'How much time should I set aside?', never 'Would its runtime suit you?'. Do not ask the viewer to supply an answer or describe their preferences.",
     "Follow-ups must move to a new decision dimension. Do not paraphrase the question just answered or invite another question about scene-level details you have said are unavailable. Prefer a supported premise, runtime, cast or director question after a content uncertainty. Never ask what makes a movie R-rated when only the rating code is known.",
     "Respect spoiler boundaries: stay spoiler-light unless the user explicitly asks for spoilers or an ending explanation. Do not suggest plot-revealing or ending-specific follow-ups casually.",
+    "For sequels and franchise films, useful follow-ups include whether earlier entries are required, what to remember beforehand, and where the film sits in the series.",
     "Do not mention metadata, scores, models, classification, or internal signals.",
   ].join("\n"),
   userPrompt: [
