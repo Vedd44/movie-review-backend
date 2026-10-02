@@ -13,7 +13,7 @@ const ASK_INTENTS = Object.freeze({
 
 const normalize = (value = "") => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
 
-const RECOMMENDATION_PATTERN = /\b(?:something|anything)\s+(?:like|lighter|darker|shorter|funnier|gentler|less|more)|\b(?:another|alternative|recommend|recommendation|pick|find me|give me|watch after|what should i watch after|similar but|instead)\b|\b(?:less scary|less intense|more modern)\s+(?:then|instead)?\b/i;
+const RECOMMENDATION_PATTERN = /\b(?:something|anything)\s+(?:else\s+)?(?:like|similar|lighter|darker|shorter|funnier|gentler|less|more)|\b(?:anything|something)\s+else\s+(?:out\s+)?(?:that\s+is\s+|that\’s\s+|that\'s\s+)?like\s+(?:this|it|that)|\b(?:another|alternative|recommend|recommendation|reco|pick|find me|give me|watch after|what should i watch after|similar but|instead)\b|\b(?:less scary|less intense|more modern)\s+(?:then|instead)?\b/i;
 const COMPARISON_PATTERN = /\b(?:better than|compare|which should i watch|this or|it or|versus|vs\.?|should i watch (?:this|it) or)\b/i;
 const QUESTION_PATTERN = /^(?:is|are|does|do|will|would|can|could|should|how|what|who|when|where|why)\b|\b(?:scary|violent|violence|gore|jump scare|sad|funny|confusing|slow|appropriate|good for|happy ending|runtime|how long|toddler|kid|child|group|date movie)\b/i;
 const NEXT_PATTERN = /^(?:okay,?\s*)?(?:another|another one|next|next one|one more)(?:\s+please)?[.!?]*$/i;
