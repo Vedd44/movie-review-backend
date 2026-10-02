@@ -105,7 +105,7 @@ const CACHE_TTLS = {
   discover: 10 * 60 * 1000,
   pick: 3 * 60 * 1000,
   movie_details: 6 * 60 * 60 * 1000,
-  streaming_availability: 24 * 60 * 60 * 1000,
+  streaming_availability: 7 * 24 * 60 * 60 * 1000,
   prompt_lookup: 6 * 60 * 60 * 1000,
 };
 
@@ -5205,11 +5205,37 @@ const normalizeStreamingOptionType = (type = "") => {
   return "";
 };
 
+const STREAMING_AVAILABILITY_DAILY_LIMIT = Math.max(0, Number.parseInt(process.env.STREAMING_AVAILABILITY_DAILY_LIMIT || "25", 10) || 0);
+let streamingAvailabilityUsageDay = "";
+let streamingAvailabilityUsageCount = 0;
+
+const canSpendStreamingAvailabilityRequest = () => {
+  const day = new Date().toISOString().slice(0, 10);
+  if (streamingAvailabilityUsageDay !== day) {
+    streamingAvailabilityUsageDay = day;
+    streamingAvailabilityUsageCount = 0;
+  }
+  return STREAMING_AVAILABILITY_DAILY_LIMIT > 0
+    && streamingAvailabilityUsageCount < STREAMING_AVAILABILITY_DAILY_LIMIT;
+};
+
 const fetchStreamingAvailability = async (movieId, country = "us") => {
   if (!STREAMING_AVAILABILITY_API_KEY || !movieId) return null;
   const cacheKey = `movie:${movieId}:${country}`;
   const cached = readCache(streamingAvailabilityCache, cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    console.log(`Streaming Availability cache hit: tmdb=${movieId} country=${country}`);
+    return cached;
+  }
+
+  if (!canSpendStreamingAvailabilityRequest()) {
+    console.warn(`Streaming Availability daily guard reached: limit=${STREAMING_AVAILABILITY_DAILY_LIMIT} tmdb=${movieId}`);
+    return null;
+  }
+
+  // Count before the request so failures/rate limits cannot create a retry storm.
+  streamingAvailabilityUsageCount += 1;
+  console.log(`Streaming Availability outbound request: tmdb=${movieId} country=${country} daily=${streamingAvailabilityUsageCount}/${STREAMING_AVAILABILITY_DAILY_LIMIT}`);
 
   try {
     const response = await axios.get(
@@ -5230,7 +5256,7 @@ const fetchStreamingAvailability = async (movieId, country = "us") => {
   } catch (error) {
     // Direct-link enrichment is optional. TMDB/JustWatch remains the source of
     // truth and fallback when the enrichment service is unavailable or misses.
-    console.warn("Streaming Availability enrichment unavailable:", error.response?.status || error.message);
+    console.warn(`Streaming Availability enrichment unavailable: tmdb=${movieId} status=${error.response?.status || error.message}`);
     return null;
   }
 };
