@@ -6317,7 +6317,7 @@ const generateGroundedAskAnswer = async ({ prompt, intent, movieId, previousTurn
   return payload?.answer
     ? {
       ...payload,
-      follow_ups: filterGroundedFollowUps([...(payload.follow_ups || []), "Who stars in it?", "How long is it?", "Who directed it?", "What is the story about?"], prompt, context, previousTurn),
+      follow_ups: filterGroundedFollowUps([...(payload.follow_ups || []), "Find me something else like this", "Who stars in it?", "How long is it?", "Who directed it?", "What is the story about?"], prompt, context, previousTurn),
     }
     : {
       answer: fallbackAnswer,
