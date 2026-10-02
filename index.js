@@ -117,9 +117,9 @@ const FEED_PAGE_ROTATION_LIMITS = {
 };
 
 const HOMEPAGE_MIN_FEED_RESULTS = {
-  now_playing: 8,
-  popular: 8,
-  upcoming: 8,
+  now_playing: 10,
+  popular: 10,
+  upcoming: 10,
 };
 
 const HOMEPAGE_FILL_LOOKAHEAD = {
