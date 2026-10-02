@@ -5148,15 +5148,36 @@ const normalizeWatchProviders = (watchProviderPayload) => {
   };
 };
 
-const normalizeProviderMatchName = (value = "") =>
-  String(value || "")
-    .toLowerCase()
-    .replace(/amazon|prime video|amazon video/g, "prime")
-    .replace(/apple tv store|apple tv plus|apple tv\+/g, "apple")
-    .replace(/fandango at home|vudu/g, "fandango")
-    .replace(/hbo max|hbo|discovery plus|discovery\+/g, "max")
-    .replace(/paramount plus|paramount\+/g, "paramount")
-    .replace(/[^a-z0-9]/g, "");
+const normalizeProviderMatchName = (value = "") => {
+  const raw = String(value || "").toLowerCase().trim();
+  const compact = raw.replace(/[^a-z0-9]/g, "");
+
+  // Canonical service families. TMDB and Streaming Availability frequently
+  // use different labels for the same storefront (and ad-supported variants).
+  if (/amazon|prime/.test(raw)) return "prime";
+  if (/apple/.test(raw)) return "apple";
+  if (/fandango|vudu/.test(raw)) return "fandango";
+  if (/netflix/.test(raw)) return "netflix";
+  if (/hbo|max/.test(raw)) return "max";
+  if (/paramount/.test(raw)) return "paramount";
+  if (/disney/.test(raw)) return "disney";
+  if (/hulu/.test(raw)) return "hulu";
+  if (/peacock/.test(raw)) return "peacock";
+  if (/plex/.test(raw)) return "plex";
+  if (/roku/.test(raw)) return "roku";
+  if (/tubi/.test(raw)) return "tubi";
+  if (/starz/.test(raw)) return "starz";
+  if (/showtime/.test(raw)) return "showtime";
+  if (/mubi/.test(raw)) return "mubi";
+  if (/criterion/.test(raw)) return "criterion";
+  if (/kanopy/.test(raw)) return "kanopy";
+  if (/hoopla/.test(raw)) return "hoopla";
+  if (/youtube|google play/.test(raw)) return "google";
+  if (/microsoft/.test(raw)) return "microsoft";
+  if (/spectrum/.test(raw)) return "spectrum";
+
+  return compact;
+};
 
 const normalizeStreamingOptionType = (type = "") => {
   if (type === "subscription" || type === "free" || type === "addon") return "subscription";
@@ -5207,20 +5228,25 @@ const enrichWatchProvidersWithDirectLinks = (availability, streamingPayload, cou
     .map((option) => ({
       name: option?.service?.name || option?.service?.id || "",
       service_id: option?.service?.id || "",
-      match_name: normalizeProviderMatchName(option?.service?.name || option?.service?.id || ""),
+      match_names: Array.from(new Set([
+        normalizeProviderMatchName(option?.service?.id || ""),
+        normalizeProviderMatchName(option?.service?.name || ""),
+      ].filter(Boolean))),
       access_type: normalizeStreamingOptionType(option?.type),
       direct_url: option?.link || option?.videoLink || "",
     }))
-    .filter((option) => option.match_name && option.access_type && option.direct_url);
+    .filter((option) => option.match_names.length && option.access_type && option.direct_url);
 
   const enrichGroup = (providers = [], accessType) =>
     providers.map((provider) => {
       const providerMatch = normalizeProviderMatchName(provider?.name);
       const exactType = candidates.find((candidate) =>
         candidate.access_type === accessType
-        && (candidate.match_name === providerMatch
-          || candidate.match_name.includes(providerMatch)
-          || providerMatch.includes(candidate.match_name))
+        && candidate.match_names.some((candidateMatch) =>
+          candidateMatch === providerMatch
+          || (candidateMatch.length >= 5 && providerMatch.length >= 5
+            && (candidateMatch.includes(providerMatch) || providerMatch.includes(candidateMatch)))
+        )
       );
       if (!exactType) return provider;
       return {
