@@ -7147,9 +7147,10 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
     const boundedPool = ["person", "collection", "my_movies", "browse", "now_playing"].includes(pageContext.page);
     const anchorTitle = (conversation.anchorMovie || pageContext.movie || pageContext.currentPick)?.title || "";
     const contextualPrompt = buildContextualRecommendationPrompt(prompt, conversation, intent);
-    const recommendationPrompt = !boundedPool && [ASK_INTENTS.MOVIE_RECOMMENDATION, ASK_INTENTS.REFINE_RECOMMENDATION, ASK_INTENTS.NEXT_RECOMMENDATION].includes(intent) && anchorTitle && !/\b(?:similar to|like|loved)\s+\S/i.test(contextualPrompt)
-      ? (/\b(?:this|it)\b/i.test(contextualPrompt)
-          ? contextualPrompt.replace(/\b(?:this|it)\b/gi, anchorTitle)
+    const hasExplicitSimilarityTarget = /\b(?:similar to|like|loved)\s+(?!this\b|it\b|that\b)\S/i.test(contextualPrompt);
+    const recommendationPrompt = !boundedPool && [ASK_INTENTS.MOVIE_RECOMMENDATION, ASK_INTENTS.REFINE_RECOMMENDATION, ASK_INTENTS.NEXT_RECOMMENDATION].includes(intent) && anchorTitle && !hasExplicitSimilarityTarget
+      ? (/\b(?:this|it|that)\b/i.test(contextualPrompt)
+          ? contextualPrompt.replace(/\b(?:this|it|that)\b/gi, anchorTitle)
           : `${contextualPrompt} Similar to ${anchorTitle}.`)
       : contextualPrompt;
     const excludedIds = Array.from(new Set([
