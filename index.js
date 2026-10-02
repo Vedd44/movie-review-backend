@@ -6544,7 +6544,7 @@ app.get("/movies/watch-providers", async (req, res) => {
   }
 });
 
-const fetchMovieDetailPayload = async (movieId) => {
+const fetchMovieDetailPayload = async (movieId, { includeStreamingAvailability = true } = {}) => {
   const movie = await fetchTmdbCached(`/movie/${movieId}`, {
     append_to_response: "credits,reviews,similar,recommendations,videos,watch/providers,release_dates,keywords",
   }, CACHE_TTLS.movie_details);
@@ -6553,12 +6553,14 @@ const fetchMovieDetailPayload = async (movieId) => {
   (movie.similar?.results || []).slice(0, 6).forEach((item) => rememberMovieForSitemap(item));
   (movie.recommendations?.results || []).slice(0, 6).forEach((item) => rememberMovieForSitemap(item));
   const normalizedMovie = normalizeMovieDetails(movie);
-  const streamingAvailability = await fetchStreamingAvailability(movie.id, "us");
-  normalizedMovie.watch_providers = enrichWatchProvidersWithDirectLinks(
-    normalizedMovie.watch_providers,
-    streamingAvailability,
-    "us"
-  );
+  if (includeStreamingAvailability) {
+    const streamingAvailability = await fetchStreamingAvailability(movie.id, "us");
+    normalizedMovie.watch_providers = enrichWatchProvidersWithDirectLinks(
+      normalizedMovie.watch_providers,
+      streamingAvailability,
+      "us"
+    );
+  }
   const people = [normalizedMovie.director_credit, ...(normalizedMovie.top_cast_credits || [])].filter((person) => person?.id && person?.name);
   const canonicalSlugs = await Promise.all(people.map((person) => resolveCanonicalPersonSlug(person)));
   const personSlugMap = new Map(people.map((person, index) => [person.id, canonicalSlugs[index]]));
@@ -6638,7 +6640,8 @@ app.get("/movies/:id/reelbot-take", async (req, res) => {
   if (!movieId) return res.status(400).json({ error: "Invalid movie ID" });
 
   try {
-    const movie = await fetchMovieDetailPayload(movieId);
+    // ReelBot Take does not render Where to Watch, so avoid spending a Streaming Availability request here.
+    const movie = await fetchMovieDetailPayload(movieId, { includeStreamingAvailability: false });
     const result = await reelbotTakeService.getTake(movie);
     res.set("Cache-Control", result.source === "fallback" ? "no-store" : "private, max-age=300");
     return res.json({ movie_id: movieId, ...result });
