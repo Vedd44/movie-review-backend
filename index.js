@@ -59,12 +59,14 @@ const AI_NAME = "ReelBot";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY?.trim();
 const TMDB_API_KEY = process.env.TMDB_API_KEY?.trim();
+const STREAMING_AVAILABILITY_API_KEY = process.env.STREAMING_AVAILABILITY_API_KEY?.trim();
 const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.REACT_APP_SUPABASE_URL || "").trim();
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 const REELBOT_PICK_DEBUG_ENABLED = /^(1|true|yes)$/i.test(String(process.env.REELBOT_PICK_DEBUG || ""));
 const reelbotCache = new Map();
 const pickCache = new Map();
 const tmdbCache = new Map();
+const streamingAvailabilityCache = new Map();
 const pickSurfaceTally = new Map();
 const promptLookupCache = new Map();
 const sitemapMovieIndex = new Map();
@@ -74,6 +76,7 @@ const CACHE_LIMITS = {
   reelbot: 150,
   pick: 150,
   tmdb: 400,
+  streaming_availability: 300,
   prompt_lookup: 150,
   pick_surface_tally: 1000,
   sitemap_movie_index: 2500,
@@ -102,6 +105,7 @@ const CACHE_TTLS = {
   discover: 10 * 60 * 1000,
   pick: 3 * 60 * 1000,
   movie_details: 6 * 60 * 60 * 1000,
+  streaming_availability: 24 * 60 * 60 * 1000,
   prompt_lookup: 6 * 60 * 60 * 1000,
 };
 
@@ -372,6 +376,7 @@ const rememberPersonForSitemap = (person = {}) => {
 console.log("OpenAI models configured:", MODELS);
 console.log(`OpenAI API key present: ${OPENAI_API_KEY ? "yes" : "no"}`);
 console.log(`TMDB API key present: ${TMDB_API_KEY ? "yes" : "no"}`);
+console.log(`Streaming Availability API key present: ${STREAMING_AVAILABILITY_API_KEY ? "yes" : "no"}`);
 
 app.use(cors());
 app.use(express.json());
@@ -5143,6 +5148,96 @@ const normalizeWatchProviders = (watchProviderPayload) => {
   };
 };
 
+const normalizeProviderMatchName = (value = "") =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/amazon|prime video|amazon video/g, "prime")
+    .replace(/apple tv store|apple tv plus|apple tv\+/g, "apple")
+    .replace(/fandango at home|vudu/g, "fandango")
+    .replace(/hbo max|hbo|discovery plus|discovery\+/g, "max")
+    .replace(/paramount plus|paramount\+/g, "paramount")
+    .replace(/[^a-z0-9]/g, "");
+
+const normalizeStreamingOptionType = (type = "") => {
+  if (type === "subscription" || type === "free" || type === "addon") return "subscription";
+  if (type === "rent") return "rent";
+  if (type === "buy") return "buy";
+  return "";
+};
+
+const fetchStreamingAvailability = async (movieId, country = "us") => {
+  if (!STREAMING_AVAILABILITY_API_KEY || !movieId) return null;
+  const cacheKey = `movie:${movieId}:${country}`;
+  const cached = readCache(streamingAvailabilityCache, cacheKey);
+  if (cached) return cached;
+
+  try {
+    const response = await axios.get(
+      `https://api.movieofthenight.com/v4/shows/movie/${movieId}`,
+      {
+        headers: { "X-API-Key": STREAMING_AVAILABILITY_API_KEY },
+        params: { country, series_granularity: "show", output_language: "en" },
+        timeout: 5000,
+      }
+    );
+    return writeCache(
+      streamingAvailabilityCache,
+      cacheKey,
+      response.data || null,
+      CACHE_TTLS.streaming_availability,
+      CACHE_LIMITS.streaming_availability
+    );
+  } catch (error) {
+    // Direct-link enrichment is optional. TMDB/JustWatch remains the source of
+    // truth and fallback when the enrichment service is unavailable or misses.
+    console.warn("Streaming Availability enrichment unavailable:", error.response?.status || error.message);
+    return null;
+  }
+};
+
+const enrichWatchProvidersWithDirectLinks = (availability, streamingPayload, country = "us") => {
+  if (!availability || !streamingPayload) return availability;
+
+  const options = Array.isArray(streamingPayload?.streamingOptions?.[country])
+    ? streamingPayload.streamingOptions[country]
+    : [];
+  if (!options.length) return availability;
+
+  const candidates = options
+    .map((option) => ({
+      name: option?.service?.name || option?.service?.id || "",
+      service_id: option?.service?.id || "",
+      match_name: normalizeProviderMatchName(option?.service?.name || option?.service?.id || ""),
+      access_type: normalizeStreamingOptionType(option?.type),
+      direct_url: option?.link || option?.videoLink || "",
+    }))
+    .filter((option) => option.match_name && option.access_type && option.direct_url);
+
+  const enrichGroup = (providers = [], accessType) =>
+    providers.map((provider) => {
+      const providerMatch = normalizeProviderMatchName(provider?.name);
+      const exactType = candidates.find((candidate) =>
+        candidate.access_type === accessType
+        && (candidate.match_name === providerMatch
+          || candidate.match_name.includes(providerMatch)
+          || providerMatch.includes(candidate.match_name))
+      );
+      if (!exactType) return provider;
+      return {
+        ...provider,
+        direct_url: exactType.direct_url,
+        direct_link_source: "streaming_availability",
+      };
+    });
+
+  return {
+    ...availability,
+    subscription: enrichGroup(availability.subscription || [], "subscription"),
+    rent: enrichGroup(availability.rent || [], "rent"),
+    buy: enrichGroup(availability.buy || [], "buy"),
+  };
+};
+
 const buildProviderBadges = (availability) => {
   if (!availability) {
     return [];
@@ -6411,6 +6506,12 @@ const fetchMovieDetailPayload = async (movieId) => {
   (movie.similar?.results || []).slice(0, 6).forEach((item) => rememberMovieForSitemap(item));
   (movie.recommendations?.results || []).slice(0, 6).forEach((item) => rememberMovieForSitemap(item));
   const normalizedMovie = normalizeMovieDetails(movie);
+  const streamingAvailability = await fetchStreamingAvailability(movie.id, "us");
+  normalizedMovie.watch_providers = enrichWatchProvidersWithDirectLinks(
+    normalizedMovie.watch_providers,
+    streamingAvailability,
+    "us"
+  );
   const people = [normalizedMovie.director_credit, ...(normalizedMovie.top_cast_credits || [])].filter((person) => person?.id && person?.name);
   const canonicalSlugs = await Promise.all(people.map((person) => resolveCanonicalPersonSlug(person)));
   const personSlugMap = new Map(people.map((person, index) => [person.id, canonicalSlugs[index]]));
