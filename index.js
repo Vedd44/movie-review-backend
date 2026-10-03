@@ -6398,6 +6398,10 @@ const buildFallbackAskAnswer = (prompt, context = {}, intent = ASK_INTENTS.CURRE
       : `I don’t have a verified runtime for ${title} yet.`;
   }
 
+  if (/nudity|nude|sexual content|sex scene|sex scenes|explicit sex|sexual scene|sexual scenes|profanity|swearing|language|drug use|drugs/.test(question)) {
+    return `ReelBot couldn’t complete that specific content check just now. Try it once more.`;
+  }
+
   if (/scary|jump scare|gore|violent|violence|intense/.test(question)) {
     if (isHorror || Number(signals.scariness || 0) >= 0.55) {
       return `${title} leans into genuine horror rather than just tension. For exact jump-scare or gore specifics, ReelBot needs scene-level content data.`;
