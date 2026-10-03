@@ -9,12 +9,12 @@ const handlers={};
 const context=vm.createContext({console,Date,Set,ASK_INTENTS,classifyAskIntent,isMovieIdentificationFollowUp,
  app:{post:(path,middleware,handler)=>handlers[path]=handler},timingMiddleware:()=>{},
  hasExplicitUserTrigger:()=>true,normalizeAskPageContext:x=>x,normalizeConversationState:x=>x,
- normalizePickMovie:x=>x,MODELS:{ask:'test'},
+ normalizePickMovie:(x,p,o)=>({...x,...o}),MODELS:{ask:'test'},
  dedupeMoviesById:list=>[...new Map(list.map(m=>[m.id,m])).values()],
  callStructuredOpenAI:async options=>{calls.push(options);return options.schemaName==='movie_identification_queries'?{search_queries:queries}:ranking;},
  fetchTmdb:async(path,params)=>{searches.push({path,...params});return {results:candidates};}
 });
-vm.runInContext(source.slice(source.indexOf('const movieIdentificationSchema'),source.indexOf('app.get("/movies/:id/reelbot"'))+'\nthis.identify=identifyMovieFromMemory;',context);
+vm.runInContext(source.slice(source.indexOf('const movieIdentificationSchema'),source.indexOf('app.get("/movies/:id/reelbot"'))+'\nthis.identify=identifyMovieFromMemory;this.identificationPick=generateIdentificationPickPayload;',context);
 (async()=>{
  let result=await context.identify('What was that movie where a guy wakes up every day with no memory?');
  assert.equal(calls.length,2,'retain the existing two model stages');assert.equal(searches.length,2);assert.ok(searches.every(x=>x.path==='/search/movie'),'no detail calls');
@@ -36,5 +36,39 @@ vm.runInContext(source.slice(source.indexOf('const movieIdentificationSchema'),s
  assert.equal(response.intent,ASK_INTENTS.MOVIE_IDENTIFICATION);
  assert.match(calls[0].userPrompt,/tattoos/);assert.match(calls[0].userPrompt,/Polaroid/);
  assert.equal(classifyAskIntent({prompt:'Find me something else like this',context:{page:'movie_detail'},conversation:previous}),ASK_INTENTS.MOVIE_RECOMMENDATION);
+ // Exercise the homepage response contract, including safe abstention and bounded pools.
+ for (const prompt of ["What's that movie where the guy relives the day over and over again", "What’s that movie where a man repeats a day", "What is that film where the day repeats?"]) {
+   assert.equal(classifyAskIntent({prompt}),ASK_INTENTS.MOVIE_IDENTIFICATION,prompt);
+ }
+ calls=[];searches=[];
+ let pick=await context.identificationPick({prompt:"What's that movie where the guy relives the day over and over again"});
+ assert.equal(pick.primary.id,77);assert.match(pick.primary.reason,/One possibility is/);
+ assert.equal(pick.rationale.primary_reason,pick.primary.reason);
+ assert.equal(calls.length,2);assert.ok(searches.every(x=>x.path==='/search/movie'));
+ pick=await context.identificationPick({prompt:'What was that movie?'},{bounded_pool:true,candidate_pool_ids:[1824]});
+ assert.equal(pick.primary,null);assert.equal(pick.no_pick_reason,'identification_uncertain');assert.equal(pick.alternates.length,0);
+ pick=await context.identificationPick({prompt:'What was that movie?'},{excluded_ids:[77]});
+ assert.equal(pick.primary,null);assert.equal(pick.alternates.length,0,'frontend must not promote an alternative when primary is uncertain');
+ ranking={primary_id:77,alternative_ids:[1824],confidence:'low',reason:'Not enough clues'};
+ pick=await context.identificationPick({prompt:'What was that movie?'});
+ assert.equal(pick.primary,null);assert.equal(pick.no_pick_reason,'identification_uncertain');assert.equal(pick.alternates.length,0);assert.match(pick.user_message,/one more detail/);
+ // Run the real /pick handler: identification errors bypass recommendation fallback.
+ let fallbackCalls=0;
+ Object.assign(context,{resolvePickPreferences:x=>x,needsVerifiedContentGuide:()=>false,
+   shouldIncludePickDebug:()=>false,normalizeBehavioralMemory:()=>({seenMovieIds:new Set()}),normalizePickRefinement:()=>null,
+   measureStage:async(label,fn)=>fn(),hydrateResolvedIntent:()=>{throw new Error('normal recommendation path');},
+   finishTiming:()=>({}),buildPickFallbackPayload:async()=>{fallbackCalls++;return {primary:{id:999}};}});
+ const generateStart=source.indexOf('const generatePickPayload =');
+ const generateEnd=source.indexOf('\nconst ',generateStart+10);
+ vm.runInContext(source.slice(generateStart,generateEnd),context);
+ vm.runInContext(source.slice(source.indexOf('app.post("/reelbot/pick"'),source.indexOf('const movieIdentificationSchema')),context);
+ ranking={primary_id:77,alternative_ids:[1824],confidence:'medium',reason:'Fits the clues'};
+ await handlers['/reelbot/pick']({body:{prompt:"What's that movie where a man uses tattoos?"}},res);
+ assert.equal(response.primary.id,77);assert.equal(response.intent,ASK_INTENTS.MOVIE_IDENTIFICATION);assert.equal(fallbackCalls,0);
+ context.callStructuredOpenAI=async()=>{throw new Error('identification unavailable');};
+ await handlers['/reelbot/pick']({body:{prompt:"What's that movie where a man uses tattoos?"}},res);
+ assert.equal(response.primary,null);assert.equal(response.no_pick_reason,'identification_uncertain');assert.equal(fallbackCalls,0);
+ await handlers['/reelbot/pick']({body:{prompt:'Something funny'}},res);
+ assert.equal(fallbackCalls,1,'ordinary recommendations retain the existing path and fallback');
  console.log('Identification confidence, real-ID validation, alternatives, empty-clue fast path, call limits and existing-UI contract passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

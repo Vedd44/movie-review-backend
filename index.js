@@ -4650,6 +4650,9 @@ const attachPickDebugTrace = (payload = {}, includeDebug = false, debugTrace = n
 
 const generatePickPayload = async (rawPreferences = {}) => {
   const preferences = resolvePickPreferences(rawPreferences);
+  if (classifyAskIntent({ prompt: preferences.prompt }) === ASK_INTENTS.MOVIE_IDENTIFICATION) {
+    return generateIdentificationPickPayload(preferences, rawPreferences);
+  }
   if (needsVerifiedContentGuide(preferences.prompt)) {
     return { primary: null, alternates: [], candidate_pool_ids: [], no_pick_reason: "unverified_content",
       user_message: "I can suggest gentler movies, but I can’t verify that every scene meets that restriction. Try a broader request, then check a detailed parents’ guide before choosing.", cached: false };
@@ -7255,7 +7258,10 @@ app.post("/reelbot/pick", timingMiddleware, async (req, res) => {
     res.json(payload);
   } catch (error) {
     console.error("Error generating ReelBot pick:", error.response?.data || error.message);
-    const payload = await buildPickFallbackPayload(req.body || {});
+    // Identification errors must never turn into an unrelated recommendation.
+    const payload = classifyAskIntent({ prompt: req.body?.prompt }) === ASK_INTENTS.MOVIE_IDENTIFICATION
+      ? buildIdentificationNoMatchPayload("I couldn't identify that right now. Please try again with another detail you remember.")
+      : await buildPickFallbackPayload(req.body || {});
     const latencyMs = Date.now() - startedAt;
     res.set("Server-Timing", `reelbot;dur=${latencyMs}`);
     res.set("X-ReelBot-Models", `${MODELS.reco},${MODELS.rationale}`);
@@ -7348,6 +7354,48 @@ const identifyMovieFromMemory = async (prompt = "") => {
     confidence: primary ? confidence : "low",
     reason: String(ranked?.reason || "").trim(),
     search_queries: effectiveQueries,
+  };
+};
+
+const buildIdentificationNoMatchPayload = (userMessage) => ({
+  primary: null,
+  alternates: [],
+  candidate_pool_ids: [],
+  no_pick_reason: "identification_uncertain",
+  user_message: userMessage,
+  intent: ASK_INTENTS.MOVIE_IDENTIFICATION,
+  confidence: "low",
+  cached: false,
+});
+
+const generateIdentificationPickPayload = async (preferences, rawPreferences = {}) => {
+  const identification = await identifyMovieFromMemory(preferences.prompt);
+  const poolIds = new Set((Array.isArray(rawPreferences.candidate_pool_ids) ? rawPreferences.candidate_pool_ids : []).map(Number));
+  const excludedIds = new Set((Array.isArray(rawPreferences.excluded_ids) ? rawPreferences.excluded_ids : []).map(Number));
+  const bounded = Boolean(rawPreferences.bounded_pool) || poolIds.size > 0;
+  const allowed = movie => movie && !excludedIds.has(movie.id) && (!bounded || poolIds.has(movie.id));
+  if (!allowed(identification.primary)) {
+    const allowedAlternatives = identification.alternatives.filter(allowed);
+    const possibilities = !identification.primary && allowedAlternatives.length
+      ? ` Possible matches: ${allowedAlternatives.map(movie => movie.title).join("; ")}.`
+      : "";
+    return buildIdentificationNoMatchPayload(
+      `I couldn't identify that confidently within this request. Give me one more detail you remember, such as an actor, setting or scene.${possibilities}`
+    );
+  }
+  const primary = identification.primary;
+  const alternatives = identification.alternatives.filter(allowed);
+  const reason = `${identification.confidence === "high" ? "That sounds like" : "One possibility is"} ${primary.title}${primary.release_date ? ` (${primary.release_date.slice(0, 4)})` : ""}.${identification.reason ? ` ${identification.reason}` : ""}${alternatives.length ? ` Other possibilities: ${alternatives.map(movie => movie.title).join("; ")}.` : ""}`;
+  return {
+    intent: ASK_INTENTS.MOVIE_IDENTIFICATION,
+    confidence: identification.confidence,
+    primary: normalizePickMovie(primary, preferences, { reason }),
+    alternates: alternatives.map(movie => normalizePickMovie(movie, preferences, { reason: "Another possible match to your remembered movie." })),
+    candidate_pool_ids: [primary, ...alternatives].map(movie => movie.id),
+    resolved_preferences: preferences,
+    summary: reason,
+    rationale: { primary_reason: reason, summaryLine: reason },
+    cached: false,
   };
 };
 

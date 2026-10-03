@@ -21,7 +21,7 @@ const NEXT_PATTERN = /^(?:okay,?\s*)?(?:another|another one|next|next one|one mo
 const REFINEMENT_PATTERN = /^(?:no[, ]+|actually[, ]+|i meant\b|not\b)|\b(?:not that one|lighter|darker|shorter|funnier|less scary|less intense|less violent|newer|more recent|more mainstream|i(?:[’']ve| have) (?:already )?seen (?:that|this|it)|rather than|instead of)\b/i;
 const HOME_PICK_REFINEMENT_PATTERN = /^(?:something|anything)\s+(?:gentler|lighter|darker|shorter|funnier|less intense|less scary|more like this)|^(?:find|give me)\s+something\s+like\s+this|\b(?:i(?:'|’)ve already seen this|another one like this)\b/i;
 const HOME_DISCOVERY_PATTERN = /^(?:what(?:'s| is)?|anything|any|recommend|give me|find me)\b.*\b(?:movie|movies|film|films|out now|in theaters|under\s+\w+|date night)\b/i;
-const MOVIE_IDENTIFICATION_PATTERN = /\b(?:what|which)\s+(?:(?:was|is)\s+)?(?:that|the)\s+(?:movie|film)\b|\b(?:what|which)\s+(?:movie|film)\s+(?:was|is|had|has|where)\b|\b(?:remember|identify|recall)\b.*\b(?:movie|film)\b|\b(?:movie|film)\b.*\b(?:can't|cannot|don't)\s+remember\b/i;
+const MOVIE_IDENTIFICATION_PATTERN = /\b(?:what(?:['’]s)?|which)\s+(?:(?:was|is)\s+)?(?:that|the)\s+(?:movie|film)\b|\b(?:what|which)\s+(?:movie|film)\s+(?:was|is|had|has|where)\b|\b(?:remember|identify|recall)\b.*\b(?:movie|film)\b|\b(?:movie|film)\b.*\b(?:can't|cannot|don't)\s+remember\b/i;
 const INITIAL_RECOMMENDATION_PATTERN = /\b(?:movie|watch|action|comedy|drama|thriller|horror|sci-?fi|funny|spooky|smart but easy|easy watch|date night|mainstream)\b/i;
 
 const isMovieIdentificationFollowUp = (prompt = "", conversation = {}) =>
