@@ -2949,7 +2949,8 @@ const scorePickCandidate = (
   intent = null,
   behavioralMemory = {}
 ) => {
-  const effectiveIntent = intent || parseReelbotIntent(preferences.prompt);\n  let score = (movie.vote_average || 0) * 10;
+  const effectiveIntent = intent || parseReelbotIntent(preferences.prompt);
+  let score = (movie.vote_average || 0) * 10;
   score += Math.min(movie.vote_count || 0, 1800) / 38;
   score += Math.min(movie.popularity || 0, 800) / 48;
   score += Math.min(getMovieSignalScore(movie), 42) / 4;
