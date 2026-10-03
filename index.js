@@ -20,6 +20,7 @@ const { REELBOT_BANNED_PHRASES } = require("./ai/reelbotPrinciples");
 const { deriveMovieSignals } = require("./ai/movieSignals");
 const { getRecommendationFitBreakdown } = require("./ai/recommendationScoring");
 const { getExposurePenaltyMultiplier } = require("./ai/recommendationNovelty");
+const { getEntitySearchPrompt } = require("./ai/entityPrompt");
 const { resolveExpandedRecommendationCandidates } = require("./ai/recommendationRetrieval");
 const {
   buildTimeConstraintDiscoverVariants,
@@ -962,7 +963,7 @@ const pickBestNamedResult = (results = [], query = "", key = "name", minimumScor
 };
 
 const resolveEntityAnchor = async (prompt = "", parsedIntent = null) => {
-  const promptText = String(prompt || "").trim();
+  const promptText = getEntitySearchPrompt(prompt);
   if (!promptText) {
     return null;
   }
