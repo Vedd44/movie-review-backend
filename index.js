@@ -1,4 +1,5 @@
 require("dotenv").config();
+const { createHash } = require("node:crypto");
 const { passesRecommendationContract, recommendationCacheScope, needsVerifiedContentGuide } = require("./ai/recommendationContract");
 const express = require("express");
 const { timingMiddleware, measureStage, finishTiming, markRecovery } = require("./ai/requestTiming");
@@ -2565,7 +2566,7 @@ const normalizeBehavioralMap = (value = {}, maxEntries = 12) =>
   );
 
 const normalizeBehavioralIdSet = (values = []) =>
-  new Set((Array.isArray(values) ? values : []).map((value) => Number.parseInt(value, 10)).filter(Boolean));
+  new Set((values instanceof Set ? Array.from(values) : Array.isArray(values) ? values : []).map((value) => Number.parseInt(value, 10)).filter(Boolean));
 
 const getBehaviorRuntimeBucket = (runtime) => {
   const normalizedRuntime = Number(runtime || 0);
@@ -2704,17 +2705,10 @@ const getSeenPenaltyBonus = (signals = {}, intent = {}) => {
 
 const getBehavioralMemoryCacheKey = (memory = {}) => {
   const normalizedMemory = normalizeBehavioralMemory(memory);
-
-  return [
-    Object.entries(normalizedMemory.preferredGenres).slice(0, 4).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
-    Object.entries(normalizedMemory.avoidedGenres).slice(0, 4).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
-    Object.entries(normalizedMemory.tonePreferences).slice(0, 3).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
-    Object.entries(normalizedMemory.pacePreferences).slice(0, 2).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
-    Object.entries(normalizedMemory.runtimePreference).slice(0, 2).map(([key, value]) => `${key}:${Math.round(value)}`).join("|"),
-    `hidden:${normalizedMemory.hiddenMovieIds.size}`,
-    `seen:${normalizedMemory.seenMovieIds.size}`,
-    `updated:${normalizedMemory.updatedAt || "na"}`,
-  ].join("::");
+  // Include the actual history, not just its size or update timestamp.
+  return createHash("sha256").update(JSON.stringify(normalizedMemory, (key, value) =>
+    value instanceof Set ? Array.from(value).sort((a, b) => a - b) : value
+  )).digest("hex");
 };
 
 const getBehavioralMemoryScore = (movie = {}, memory = {}, intent = {}, signals = null) => {
@@ -4669,7 +4663,10 @@ const generatePickPayload = async (rawPreferences = {}) => {
   if (rawPreferences.person_context) resolvedIntent.person_context = rawPreferences.person_context;
   ensureTimeConstraintFilter(resolvedIntent, preferences.prompt);
   const relative = rawPreferences.constraint_overrides || {};
-  if (!/\bshort film|\bshorts?\b/i.test(preferences.prompt)) resolvedIntent.hard_filters.min_runtime_minutes = resolvedIntent.hard_filters.min_runtime_minutes || 40;
+  if (!/\bshort film|\bshorts?\b/i.test(preferences.prompt) && !resolvedIntent.hard_filters.min_runtime_minutes) {
+    resolvedIntent.hard_filters.min_runtime_minutes = 40;
+    resolvedIntent.implicit_feature_runtime_floor = true;
+  }
   if (Number(relative.maxRuntime) > 0) resolvedIntent.hard_filters.max_runtime_minutes = Math.min(resolvedIntent.hard_filters.max_runtime_minutes || Infinity, Number(relative.maxRuntime));
   if (Number(relative.minYear) > 1880) resolvedIntent.hard_filters.min_release_year = Number(relative.minYear);
   const structuredResolution = preferences.prompt
@@ -7274,7 +7271,7 @@ const movieIdentificationSchema = {
   properties: {
     search_queries: {
       type: "array",
-      minItems: 1,
+      minItems: 0,
       maxItems: 4,
       items: { type: "string" },
     },
@@ -7283,7 +7280,7 @@ const movieIdentificationSchema = {
 
 const extractMovieIdentificationQueries = async (prompt = "") => {
   const parsed = await callStructuredOpenAI({
-    systemPrompt: "Extract 1-4 short movie-title search queries from a user's vague movie memory. Use distinctive plot objects, settings, occupations, character clues, quoted phrases, or likely title fragments. Do not answer the question and do not invent a title.",
+    systemPrompt: "Suggest up to 4 plausible EXISTING movie titles matching the remembered plot. These are hypotheses for TMDB title search, not a final answer. Return exact known titles, never plot keywords or descriptions: TMDB title search does not search plots. Include competing plausible titles when clues are ambiguous or imperfect. If there are no distinctive clues or no plausible known movie, return an empty array. Never invent a title.",
     userPrompt: prompt,
     schema: movieIdentificationSchema,
     schemaName: "movie_identification_queries",
@@ -7296,7 +7293,7 @@ const extractMovieIdentificationQueries = async (prompt = "") => {
 
 const identifyMovieFromMemory = async (prompt = "") => {
   const queries = await extractMovieIdentificationQueries(prompt);
-  const effectiveQueries = queries.length ? queries : [prompt];
+  const effectiveQueries = queries;
   const responses = await Promise.allSettled(
     effectiveQueries.map(query => fetchTmdb("/search/movie", { query, include_adult: "false", page: 1 }))
   );
@@ -7330,22 +7327,25 @@ const identifyMovieFromMemory = async (prompt = "") => {
     overview: movie.overview,
   }));
   const ranked = await callStructuredOpenAI({
-    systemPrompt: "Identify a movie from an imperfect human memory. Choose only from the supplied TMDB candidates. Prefer plot-clue agreement over popularity. If the clues are insufficient, return null primary_id. Never invent a movie.",
+    systemPrompt: "Identify a movie from an imperfect human memory. Choose only supplied TMDB candidate IDs. Prefer agreement with distinctive plot clues over popularity or title similarity. High confidence requires strong distinctive agreement; use medium for a plausible but ambiguous match and low/null primary_id when unsupported. Offer up to 3 plausible alternative IDs when ambiguous, not unrelated fillers. Base the short reason on supplied overviews, explicitly acknowledging conflicting or unverified details. Never invent a movie or assert unsupported plot details.",
     userPrompt: JSON.stringify({ memory: prompt, candidates: compactCandidates }),
     schema,
     schemaName: "movie_identification_result",
     maxTokens: 260,
     type: "ask",
   });
-  const primary = candidates.find(movie => movie.id === Number(ranked?.primary_id)) || null;
-  const alternatives = (ranked?.alternative_ids || [])
+  const confidence = ["high", "medium", "low"].includes(ranked?.confidence) ? ranked.confidence : "low";
+  const proposedPrimary = candidates.find(movie => movie.id === Number(ranked?.primary_id)) || null;
+  const primary = confidence === "low" ? null : proposedPrimary;
+  const alternativeIds = Array.isArray(ranked?.alternative_ids) ? ranked.alternative_ids : [];
+  const alternatives = dedupeMoviesById([...(confidence === "low" && proposedPrimary ? [proposedPrimary.id] : []), ...alternativeIds]
     .map(id => candidates.find(movie => movie.id === Number(id)))
-    .filter(movie => movie && movie.id !== primary?.id)
+    .filter(movie => movie && movie.id !== primary?.id))
     .slice(0, 3);
   return {
     primary,
     alternatives,
-    confidence: ranked?.confidence || "low",
+    confidence: primary ? confidence : "low",
     reason: String(ranked?.reason || "").trim(),
     search_queries: effectiveQueries,
   };
@@ -7370,18 +7370,22 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
     if (intent === ASK_INTENTS.MOVIE_IDENTIFICATION) {
       const identification = await identifyMovieFromMemory(prompt);
       const primary = identification.primary;
-      const answer = primary
-        ? `I think you're remembering ${primary.title}${primary.release_date ? ` (${String(primary.release_date).slice(0, 4)})` : ""}.${identification.reason ? ` ${identification.reason}` : ""}`
+      const titleLabel = movie => `${movie.title}${movie.release_date ? ` (${String(movie.release_date).slice(0, 4)})` : ""}`;
+      const mainAnswer = primary
+        ? `${identification.confidence === "high" ? "That sounds like" : "One possibility is"} ${titleLabel(primary)}.${identification.reason ? ` ${identification.reason}` : ""}`
         : "I couldn't identify that confidently from those clues. Give me one more detail you remember and I'll keep narrowing it down.";
+      const answer = identification.alternatives.length
+        ? `${mainAnswer} Other possibilities: ${identification.alternatives.map(titleLabel).join("; ")}.`
+        : mainAnswer;
       return res.json({
-        kind: "movie_identification",
+        kind: "answer",
         intent,
         answer,
         confidence: identification.confidence || "low",
         movie: primary ? normalizePickMovie(primary, { prompt }) : null,
         alternatives: identification.alternatives.map(movie => normalizePickMovie(movie, { prompt })),
         model: MODELS.ask,
-        conversation_state: { ...incomingConversation, activeIntent: intent, activeRequest: prompt, lastUserMessage: prompt, lastAssistantResponse: answer },
+        conversation_state: { ...incomingConversation, anchorMovie: primary ? { id: primary.id, title: primary.title, release_date: primary.release_date } : null, activeIntent: intent, activeRequest: prompt, lastUserMessage: prompt, lastAssistantResponse: answer },
         latency_ms: Date.now() - startedAt,
       });
     }

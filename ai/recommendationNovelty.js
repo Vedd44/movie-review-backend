@@ -4,7 +4,7 @@ const hasHardConstraints = (intent = {}) => {
   const hard = intent.hard_filters || {};
   return Boolean(
     hard.max_runtime_minutes ||
-    hard.min_runtime_minutes ||
+    (hard.min_runtime_minutes && !(intent.implicit_feature_runtime_floor && hard.min_runtime_minutes === 40)) ||
     hard.min_release_year ||
     hard.max_release_year ||
     hard.time_constraint ||
