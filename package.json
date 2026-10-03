@@ -15,7 +15,7 @@
     "test:reelbot-take": "node scripts/testReelbotTake.js",
     "benchmark:models": "node scripts/benchmarkReelbotModels.js",
     "inspect:sitemap": "node scripts/inspectSitemap.js",
-    "test:recommendations": "node scripts/testRecommendationContract.js"
+    "test:recommendations": "node scripts/testRecommendationContract.js && node scripts/testRecommendationNovelty.js"
   },
   "keywords": [],
   "author": "",
