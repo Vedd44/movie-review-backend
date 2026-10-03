@@ -18,7 +18,7 @@ const { buildAskAnswerPrompts } = require("./ai/promptBuilders/askReelbot");
 const { pickDecisionSchema, getDetailSchema, askAnswerSchema } = require("./ai/aiSchemas");
 const { REELBOT_BANNED_PHRASES } = require("./ai/reelbotPrinciples");
 const { deriveMovieSignals } = require("./ai/movieSignals");
-const { getRecommendationFitBreakdown } = require("./ai/recommendationScoring");
+const { getRecommendationFitBreakdown } = require("./ai/recommendationScoring");\nconst { getExposurePenaltyMultiplier } = require("./ai/recommendationNovelty");
 const { resolveExpandedRecommendationCandidates } = require("./ai/recommendationRetrieval");
 const {
   buildTimeConstraintDiscoverVariants,
@@ -2949,13 +2949,13 @@ const scorePickCandidate = (
   intent = null,
   behavioralMemory = {}
 ) => {
-  let score = (movie.vote_average || 0) * 10;
+  const effectiveIntent = intent || parseReelbotIntent(preferences.prompt);\n  let score = (movie.vote_average || 0) * 10;
   score += Math.min(movie.vote_count || 0, 1800) / 38;
   score += Math.min(movie.popularity || 0, 800) / 48;
   score += Math.min(getMovieSignalScore(movie), 42) / 4;
   score += Math.min(movie.structured_match_score || 0, 100);
   score += getQualityFitBoost(movie);
-  score -= getExposurePenalty(movie);
+  score -= getExposurePenalty(movie) * getExposurePenaltyMultiplier(effectiveIntent);
   score -= getMoodMismatchPenalty(movie, preferences);
   score -= getPromptTonePenalty(movie, preferences);
 
@@ -2991,7 +2991,6 @@ const scorePickCandidate = (
     }
   }
 
-  const effectiveIntent = intent || parseReelbotIntent(preferences.prompt);
 
   if (preferences.prompt) {
     const promptSignals = getPromptSignals(preferences.prompt);
