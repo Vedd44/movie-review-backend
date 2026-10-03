@@ -2304,9 +2304,10 @@ const getPickGenreParam = (preferences) => {
 
   if (preferences.company !== "any") {
     const companyGenres = PICK_COMPANY_CONFIG[preferences.company].genreIds;
-    // Group-watch genres are alternatives, not requirements that must all match.
+    // Company is a ranking signal, not a hard genre requirement. "Good with friends"
+    // should consider the normal candidate pool and let group-watch fit affect ranking.
     if (preferences.company === "friends" && !getGenreFilterIds(preferences.genre).length && preferences.mood === "all") {
-      return companyGenres.join("|");
+      return undefined;
     }
     companyGenres.forEach((genreId) => genreIds.add(genreId));
   }
