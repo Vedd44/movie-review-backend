@@ -2303,7 +2303,14 @@ const getPickGenreParam = (preferences) => {
   }
 
   if (preferences.company !== "any") {
-    PICK_COMPANY_CONFIG[preferences.company].genreIds.forEach((genreId) => genreIds.add(genreId));
+    const companyGenres = PICK_COMPANY_CONFIG[preferences.company].genreIds;
+    // Company is a soft fit signal, not an all-genres-at-once requirement.
+    // Requiring Action + Adventure + Horror + Comedy + Sci-Fi for "friends"
+    // can collapse the discover pool to zero.
+    if (preferences.company === "friends" && !getGenreFilterIds(preferences.genre).length && preferences.mood === "all") {
+      return companyGenres.join("|");
+    }
+    companyGenres.forEach((genreId) => genreIds.add(genreId));
   }
 
   return genreIds.size ? Array.from(genreIds).join(",") : undefined;
