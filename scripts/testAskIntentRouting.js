@@ -41,4 +41,13 @@ assert.equal(
   ASK_INTENTS.REFINE_RECOMMENDATION
 );
 
+assert.equal(
+  classifyAskIntent({ prompt: "What was that movie where a guy wakes up every day with no memory?", context: { page: "home" } }),
+  ASK_INTENTS.MOVIE_IDENTIFICATION
+);
+assert.equal(
+  classifyAskIntent({ prompt: "Which film was that with the hotel and the backwards dream levels?", context: { page: "home" } }),
+  ASK_INTENTS.MOVIE_IDENTIFICATION
+);
+
 console.log("Ask ReelBot intent routing checks passed.");

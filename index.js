@@ -2302,7 +2302,12 @@ const getPickGenreParam = (preferences) => {
   }
 
   if (preferences.company !== "any") {
-    PICK_COMPANY_CONFIG[preferences.company].genreIds.forEach((genreId) => genreIds.add(genreId));
+    const companyGenres = PICK_COMPANY_CONFIG[preferences.company].genreIds;
+    // Group-watch genres are alternatives, not requirements that must all match.
+    if (preferences.company === "friends" && !getGenreFilterIds(preferences.genre).length && preferences.mood === "all") {
+      return companyGenres.join("|");
+    }
+    companyGenres.forEach((genreId) => genreIds.add(genreId));
   }
 
   return genreIds.size ? Array.from(genreIds).join(",") : undefined;
@@ -7259,6 +7264,90 @@ app.post("/reelbot/pick", timingMiddleware, async (req, res) => {
   }
 });
 
+const movieIdentificationSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["search_queries"],
+  properties: {
+    search_queries: {
+      type: "array",
+      minItems: 1,
+      maxItems: 4,
+      items: { type: "string" },
+    },
+  },
+};
+
+const extractMovieIdentificationQueries = async (prompt = "") => {
+  const parsed = await callStructuredOpenAI({
+    systemPrompt: "Extract 1-4 short movie-title search queries from a user's vague movie memory. Use distinctive plot objects, settings, occupations, character clues, quoted phrases, or likely title fragments. Do not answer the question and do not invent a title.",
+    userPrompt: prompt,
+    schema: movieIdentificationSchema,
+    schemaName: "movie_identification_queries",
+    maxTokens: 180,
+    type: "ask",
+  });
+  const queries = Array.isArray(parsed?.search_queries) ? parsed.search_queries : [];
+  return Array.from(new Set(queries.map(value => String(value || "").trim()).filter(Boolean))).slice(0, 4);
+};
+
+const identifyMovieFromMemory = async (prompt = "") => {
+  const queries = await extractMovieIdentificationQueries(prompt);
+  const effectiveQueries = queries.length ? queries : [prompt];
+  const responses = await Promise.allSettled(
+    effectiveQueries.map(query => fetchTmdb("/search/movie", { query, include_adult: "false", page: 1 }))
+  );
+  const candidates = dedupeMoviesById(
+    responses
+      .filter(response => response.status === "fulfilled")
+      .flatMap(response => response.value?.results || [])
+  )
+    .filter(movie => movie?.id && movie.poster_path && movie.overview && !movie.adult)
+    .slice(0, 18);
+
+  if (!candidates.length) {
+    return { primary: null, alternatives: [], search_queries: effectiveQueries };
+  }
+
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["primary_id", "alternative_ids", "confidence", "reason"],
+    properties: {
+      primary_id: { type: ["integer", "null"] },
+      alternative_ids: { type: "array", maxItems: 3, items: { type: "integer" } },
+      confidence: { type: "string", enum: ["high", "medium", "low"] },
+      reason: { type: "string" },
+    },
+  };
+  const compactCandidates = candidates.map(movie => ({
+    id: movie.id,
+    title: movie.title,
+    year: String(movie.release_date || "").slice(0, 4),
+    overview: movie.overview,
+  }));
+  const ranked = await callStructuredOpenAI({
+    systemPrompt: "Identify a movie from an imperfect human memory. Choose only from the supplied TMDB candidates. Prefer plot-clue agreement over popularity. If the clues are insufficient, return null primary_id. Never invent a movie.",
+    userPrompt: JSON.stringify({ memory: prompt, candidates: compactCandidates }),
+    schema,
+    schemaName: "movie_identification_result",
+    maxTokens: 260,
+    type: "ask",
+  });
+  const primary = candidates.find(movie => movie.id === Number(ranked?.primary_id)) || null;
+  const alternatives = (ranked?.alternative_ids || [])
+    .map(id => candidates.find(movie => movie.id === Number(id)))
+    .filter(movie => movie && movie.id !== primary?.id)
+    .slice(0, 3);
+  return {
+    primary,
+    alternatives,
+    confidence: ranked?.confidence || "low",
+    reason: String(ranked?.reason || "").trim(),
+    search_queries: effectiveQueries,
+  };
+};
+
 app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
   if (!hasExplicitUserTrigger(req)) {
     return res.status(400).json({ error: "Ask ReelBot requests must come from an explicit user action." });
@@ -7275,6 +7364,24 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
   const intent = classifyAskIntent({ prompt, context: pageContext, conversation: incomingConversation });
 
   try {
+    if (intent === ASK_INTENTS.MOVIE_IDENTIFICATION) {
+      const identification = await identifyMovieFromMemory(prompt);
+      const primary = identification.primary;
+      const answer = primary
+        ? `I think you're remembering ${primary.title}${primary.release_date ? ` (${String(primary.release_date).slice(0, 4)})` : ""}.${identification.reason ? ` ${identification.reason}` : ""}`
+        : "I couldn't identify that confidently from those clues. Give me one more detail you remember and I'll keep narrowing it down.";
+      return res.json({
+        kind: "movie_identification",
+        intent,
+        answer,
+        confidence: identification.confidence || "low",
+        movie: primary ? normalizePickMovie(primary, { prompt }) : null,
+        alternatives: identification.alternatives.map(movie => normalizePickMovie(movie, { prompt })),
+        model: MODELS.ask,
+        conversation_state: { ...incomingConversation, activeIntent: intent, activeRequest: prompt, lastUserMessage: prompt, lastAssistantResponse: answer },
+        latency_ms: Date.now() - startedAt,
+      });
+    }
     const resolvedAnchor = intent === ASK_INTENTS.CURRENT_MOVIE_QUESTION || intent === ASK_INTENTS.MOVIE_COMPARISON
       ? await resolveAskAnchorMovie(prompt, pageContext, incomingConversation)
       : (incomingConversation.anchorMovie || pageContext.movie || pageContext.currentPick);

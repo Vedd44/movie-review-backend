@@ -41,4 +41,12 @@ assert.strictEqual(getExposurePenaltyMultiplier({
   hard_filters: { required_genre_ids: [35] },
 }), 1);
 
+const fs = require("fs");
+const indexSource = fs.readFileSync(require.resolve("../index.js"), "utf8");
+assert(
+  indexSource.includes('preferences.company === "friends"') && indexSource.includes('companyGenres.join("|")'),
+  '"with friends" discovery must use OR genre semantics rather than requiring every group-watch genre'
+);
+console.log("homepage friends discovery regression passed");
+
 console.log("recommendation novelty tests passed");
