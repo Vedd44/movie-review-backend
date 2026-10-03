@@ -24,6 +24,11 @@ const HOME_DISCOVERY_PATTERN = /^(?:what(?:'s| is)?|anything|any|recommend|give 
 const MOVIE_IDENTIFICATION_PATTERN = /\b(?:what|which)\s+(?:(?:was|is)\s+)?(?:that|the)\s+(?:movie|film)\b|\b(?:what|which)\s+(?:movie|film)\s+(?:was|is|had|has|where)\b|\b(?:remember|identify|recall)\b.*\b(?:movie|film)\b|\b(?:movie|film)\b.*\b(?:can't|cannot|don't)\s+remember\b/i;
 const INITIAL_RECOMMENDATION_PATTERN = /\b(?:movie|watch|action|comedy|drama|thriller|horror|sci-?fi|funny|spooky|smart but easy|easy watch|date night|mainstream)\b/i;
 
+const isMovieIdentificationFollowUp = (prompt = "", conversation = {}) =>
+  normalize(conversation.activeIntent) === "movie_identification"
+  && /^(?:it\b|he\b|she\b|they\b|there\b|i remember\b|actually\b|no\b|the (?:man|woman|guy|movie|film)\b)/i.test(normalize(prompt))
+  && !RECOMMENDATION_PATTERN.test(prompt);
+
 const classifyAskIntent = ({ prompt, context = {}, conversation = {} } = {}) => {
   const normalizedPrompt = normalize(prompt);
   const page = normalize(context.page);
@@ -32,6 +37,7 @@ const classifyAskIntent = ({ prompt, context = {}, conversation = {} } = {}) => 
   const hasRecommendation = /recommendation/.test(activeIntent) || Boolean(conversation.activeRequest);
 
   if (!normalizedPrompt) return ASK_INTENTS.UNKNOWN;
+  if (isMovieIdentificationFollowUp(prompt, conversation)) return ASK_INTENTS.MOVIE_IDENTIFICATION;
   if (MOVIE_IDENTIFICATION_PATTERN.test(normalizedPrompt)) return ASK_INTENTS.MOVIE_IDENTIFICATION;
   if (COMPARISON_PATTERN.test(normalizedPrompt)) return ASK_INTENTS.MOVIE_COMPARISON;
   if (NEXT_PATTERN.test(normalizedPrompt) && hasRecommendation) return ASK_INTENTS.NEXT_RECOMMENDATION;
@@ -65,4 +71,4 @@ const classifyAskIntent = ({ prompt, context = {}, conversation = {} } = {}) => 
   return ASK_INTENTS.UNKNOWN;
 };
 
-module.exports = { ASK_INTENTS, classifyAskIntent };
+module.exports = { ASK_INTENTS, classifyAskIntent, isMovieIdentificationFollowUp };

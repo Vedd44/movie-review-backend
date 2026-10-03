@@ -36,7 +36,7 @@ const {
 } = require("./src/takes/reelbotTake");
 const { createSupabaseTakeStore } = require("./src/takes/supabaseTakeStore");
 const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
-const { ASK_INTENTS, classifyAskIntent } = require("./src/ask/askIntent");
+const { ASK_INTENTS, classifyAskIntent, isMovieIdentificationFollowUp } = require("./src/ask/askIntent");
 const {
   normalizeConversationState,
   updateConversationForPrompt,
@@ -7368,7 +7368,10 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
 
   try {
     if (intent === ASK_INTENTS.MOVIE_IDENTIFICATION) {
-      const identification = await identifyMovieFromMemory(prompt);
+      const identificationPrompt = isMovieIdentificationFollowUp(prompt, incomingConversation)
+        ? `${incomingConversation.activeRequest.slice(0, 450)}\nAdditional clue: ${prompt}`
+        : prompt;
+      const identification = await identifyMovieFromMemory(identificationPrompt);
       const primary = identification.primary;
       const titleLabel = movie => `${movie.title}${movie.release_date ? ` (${String(movie.release_date).slice(0, 4)})` : ""}`;
       const mainAnswer = primary
@@ -7385,7 +7388,7 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
         movie: primary ? normalizePickMovie(primary, { prompt }) : null,
         alternatives: identification.alternatives.map(movie => normalizePickMovie(movie, { prompt })),
         model: MODELS.ask,
-        conversation_state: { ...incomingConversation, anchorMovie: primary ? { id: primary.id, title: primary.title, release_date: primary.release_date } : null, activeIntent: intent, activeRequest: prompt, lastUserMessage: prompt, lastAssistantResponse: answer },
+        conversation_state: { ...incomingConversation, anchorMovie: primary ? { id: primary.id, title: primary.title, release_date: primary.release_date } : null, activeIntent: intent, activeRequest: identificationPrompt, lastUserMessage: prompt, lastAssistantResponse: answer },
         latency_ms: Date.now() - startedAt,
       });
     }
