@@ -1,0 +1,27 @@
+name: ReelBot regression checks
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:intent
+      - run: npm run test:strict-intent
+      - run: npm run test:ask-intent
+      - run: npm run test:ask-followups
+      - run: npm run test:interaction-hardening
+      - run: npm run test:presentation
+      - run: npm run test:discovery-pagination
+      - run: npm run test:reelbot-take
+      - run: npm run test:recommendations
+      - run: node scripts/testRecommendationNovelty.js
