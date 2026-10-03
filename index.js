@@ -2302,7 +2302,12 @@ const getPickGenreParam = (preferences) => {
   }
 
   if (preferences.company !== "any") {
-    PICK_COMPANY_CONFIG[preferences.company].genreIds.forEach((genreId) => genreIds.add(genreId));
+    const companyGenres = PICK_COMPANY_CONFIG[preferences.company].genreIds;
+    // Group-watch genres are alternatives, not requirements that must all match.
+    if (preferences.company === "friends" && !getGenreFilterIds(preferences.genre).length && preferences.mood === "all") {
+      return companyGenres.join("|");
+    }
+    companyGenres.forEach((genreId) => genreIds.add(genreId));
   }
 
   return genreIds.size ? Array.from(genreIds).join(",") : undefined;
