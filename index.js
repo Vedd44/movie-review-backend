@@ -1844,7 +1844,7 @@ const resolvePickPreferences = (preferences = {}) => {
   const source = normalizePickSource(preferences.source);
   const mood = normalizePreferenceKey(preferences.mood, PICK_MOOD_CONFIG, promptSignals.mood || "all");
   const runtime = normalizePreferenceKey(preferences.runtime, PICK_RUNTIME_CONFIG, promptSignals.runtime || "any");
-  const company = normalizePreferenceKey(preferences.company, PICK_COMPANY_CONFIG, promptSignals.company || "any");
+  const company = normalizePreferenceKey(preferences.company === "any" && promptSignals.company ? promptSignals.company : preferences.company, PICK_COMPANY_CONFIG, promptSignals.company || "any");
   const genre = normalizePickGenre(preferences.genre);
   const lastPickTitle = String(preferences.last_pick_title || "").trim();
   const lastPickReason = String(preferences.last_pick_reason || "").trim();
