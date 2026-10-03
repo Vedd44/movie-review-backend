@@ -4132,7 +4132,27 @@ const callStructuredOpenAI = async ({ systemPrompt, userPrompt, schema, schemaNa
   const primaryModel = String(model || getModelForEndpoint(type)).trim() || OPENAI_FALLBACK_MODEL;
 
   try {
-    return await callStructuredOpenAIWithModel({ systemPrompt, userPrompt, schema, schemaName, maxTokens, type, model: primaryModel });
+    const primaryResult = await callStructuredOpenAIWithModel({ systemPrompt, userPrompt, schema, schemaName, maxTokens, type, model: primaryModel });
+    if (primaryResult || !shouldFallbackModel(primaryModel)) {
+      return primaryResult;
+    }
+
+    console.warn({
+      type,
+      model: primaryModel,
+      fallback_model: OPENAI_FALLBACK_MODEL,
+      error: "primary_structured_output_empty_or_incomplete",
+    });
+    markRecovery();
+    return callStructuredOpenAIWithModel({
+      systemPrompt,
+      userPrompt,
+      schema,
+      schemaName,
+      maxTokens,
+      type,
+      model: OPENAI_FALLBACK_MODEL,
+    });
   } catch (error) {
     if (!shouldFallbackModel(primaryModel)) {
       throw error;
@@ -6475,7 +6495,7 @@ const generateGroundedAskAnswer = async ({ prompt, intent, movieId, previousTurn
     userPrompt: prompts.userPrompt,
     schema: askAnswerSchema,
     schemaName: "reelbot_contextual_answer_v1",
-    maxTokens: 260,
+    maxTokens: 420,
     type: "ask",
   }).catch((error) => {
     console.error("Contextual Ask ReelBot answer failed:", error.response?.data || error.message);
