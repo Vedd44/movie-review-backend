@@ -18,7 +18,8 @@ const { buildAskAnswerPrompts } = require("./ai/promptBuilders/askReelbot");
 const { pickDecisionSchema, getDetailSchema, askAnswerSchema } = require("./ai/aiSchemas");
 const { REELBOT_BANNED_PHRASES } = require("./ai/reelbotPrinciples");
 const { deriveMovieSignals } = require("./ai/movieSignals");
-const { getRecommendationFitBreakdown } = require("./ai/recommendationScoring");\nconst { getExposurePenaltyMultiplier } = require("./ai/recommendationNovelty");
+const { getRecommendationFitBreakdown } = require("./ai/recommendationScoring");
+const { getExposurePenaltyMultiplier } = require("./ai/recommendationNovelty");
 const { resolveExpandedRecommendationCandidates } = require("./ai/recommendationRetrieval");
 const {
   buildTimeConstraintDiscoverVariants,
