@@ -34,6 +34,7 @@ const {
   buildTakePrompts,
   createReelbotTakeService,
 } = require("./src/takes/reelbotTake");
+const { createSharedPickStore, installSharedPickRoutes } = require("./src/shares/sharedPicks");
 const { createSupabaseTakeStore } = require("./src/takes/supabaseTakeStore");
 const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
 const { ASK_INTENTS, classifyAskIntent, isMovieIdentificationFollowUp } = require("./src/ask/askIntent");
@@ -6709,6 +6710,14 @@ app.get("/movies/:id/reelbot-take", async (req, res) => {
   }
 });
 
+installSharedPickRoutes(app, {
+  store: createSharedPickStore({baseUrl: SUPABASE_URL, serviceKey: SUPABASE_SERVICE_ROLE_KEY, httpClient: axios}),
+  movieExists: async (id) => {
+    try { const movie = await fetchTmdbCached(`/movie/${id}`); return Number(movie?.id) === id; }
+    catch (error) { if (error.response?.status === 404) return false; throw error; }
+  },
+});
+
 app.get("/movies/:id", async (req, res) => {
   const movieId = req.params.id;
   if (!/^\d+$/.test(movieId) || Number(movieId) < 1) return res.status(404).json({ error: "Movie not found" });
@@ -7653,3 +7662,4 @@ app.get("/movies/:id/ai-summary", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
 });
+
