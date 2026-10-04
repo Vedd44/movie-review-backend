@@ -1,0 +1,10 @@
+const assert=require('node:assert/strict');const express=require('express');const axios=require('axios');
+let server;const listen=express.application.listen;express.application.listen=function(){server=listen.call(this,0);return server;};
+const calls=[];const movie={id:123,title:'Test Movie',release_date:'2000-01-01',overview:'A real overview.',runtime:95,genres:[{id:18,name:'Drama'}],credits:{cast:[{id:456,name:'Test Actor'}],crew:[{id:789,name:'Test Director',job:'Director'}]},release_dates:{results:[]}};
+axios.get=async(url,options={})=>{calls.push({url,params:Object.fromEntries(new URL(url).searchParams)});if(url.includes('/search/movie'))return {data:{results:[movie]}};if(url.includes('/search/person'))return {data:{results:[]}};if(url.includes('/movie/123'))return {data:movie};throw new Error('Unexpected upstream request');};
+require('../index');
+(async()=>{try{const base=`http://127.0.0.1:${server.address().port}`;
+for(const path of ['/movies/123?view=metadata','/movies/resolve/test-movie-2000?view=metadata']){const response=await fetch(base+path);assert.equal(response.status,200);const body=await response.json();assert.equal(body.canonical_slug,'test-movie-2000');assert.equal(body.description,'A real overview.');assert.equal(body.top_cast_credits[0].canonical_path,'/person/456');assert.ok(!('watch_providers' in body));assert.ok(!('similar' in body));}
+assert.equal(calls.filter(c=>c.url.includes('/movie/123')).length,1);assert.equal(calls.find(c=>c.url.includes('/movie/123')).params.append_to_response,'credits,release_dates');assert.ok(!calls.some(c=>c.url.includes('/search/person')||c.url.includes('streaming')));
+const cached=await fetch(base+'/movies/123?view=metadata');assert.equal(cached.headers.get('x-reelbot-catalog-cache'),'HIT');const full=await fetch(base+'/movies/123');assert.equal(full.status,200);assert.ok('watch_providers' in await full.json());assert.ok(calls.some(c=>c.params?.append_to_response?.includes('reviews')));
+console.log('Catalog metadata integration passed: slim previews, full detail, cached responses.');}finally{server.close();}})().catch(error=>{console.error(error);process.exitCode=1;});

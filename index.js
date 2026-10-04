@@ -7,6 +7,8 @@ const { decisionReasons } = require("./ai/decisionPresentation");
 const { contentFallback, filterGroundedFollowUps } = require("./ai/askEvidence");
 const axios = require("axios");
 const cors = require("cors");
+const compression = require("compression");
+const { createCatalogProtection } = require("./src/http/catalogProtection");
 const { parseReelbotIntent, isIntentSnapshotValid, detectTimeConstraint } = require("./ai/intentParser");
 const { applyTimeConstraintFilterToPool, TIME_CONSTRAINT_MIN_STRICT_CANDIDATES } = require("./ai/timeConstraints");
 const { hasChildFamilyGuardrails, passesAudienceGuardrails, getAudienceContextFitScore } = require("./ai/audienceSignals");
@@ -383,6 +385,9 @@ console.log(`TMDB API key present: ${TMDB_API_KEY ? "yes" : "no"}`);
 console.log(`Streaming Availability API key present: ${STREAMING_AVAILABILITY_API_KEY ? "yes" : "no"}`);
 
 app.use(cors());
+// Compression skips streaming responses so recommendation progress remains immediate.
+app.use(compression({ filter: (req, res) => !String(res.getHeader("Content-Type") || "").includes("text/event-stream") && compression.filter(req, res) }));
+app.use(createCatalogProtection());
 app.use(express.json());
 
 const fetchSupabaseUser = async (accessToken = "") => {
@@ -6603,6 +6608,25 @@ app.get("/movies/watch-providers", async (req, res) => {
   }
 });
 
+// Public HTML needs facts and cast, not the full interactive discovery payload.
+const fetchMovieMetadataPayload = async (movieId) => {
+  const movie = await fetchTmdbCached(`/movie/${movieId}`, {
+    append_to_response: "credits,release_dates",
+  }, CACHE_TTLS.movie_details);
+  const normalized = normalizeMovieDetails(movie);
+  const fields = ["id", "title", "canonical_slug", "release_date", "release_year", "runtime",
+    "description", "genre_names", "rating", "certification", "director", "director_credit",
+    "top_cast", "top_cast_credits", "poster_path", "backdrop_path"];
+  const result = Object.fromEntries(fields.map(key => [key, normalized[key]]));
+  // Numeric aliases resolve through the existing canonical person redirect,
+  // preserving same-name disambiguation without extra search calls per cast member.
+  [result.director_credit, ...(result.top_cast_credits || [])].filter(Boolean).forEach(person => {
+    person.canonical_path = `/person/${person.id}`;
+    delete person.canonical_slug;
+  });
+  return result;
+};
+
 const fetchMovieDetailPayload = async (movieId, { includeStreamingAvailability = true } = {}) => {
   const movie = await fetchTmdbCached(`/movie/${movieId}`, {
     append_to_response: "credits,reviews,similar,recommendations,videos,watch/providers,release_dates,keywords",
@@ -6687,7 +6711,7 @@ app.get("/movies/resolve/:slug", async (req, res) => {
     }
     if (!match?.id) return res.status(404).json({ error: "Movie not found" });
     res.set("Cache-Control", "public, s-maxage=21600, stale-while-revalidate=3600");
-    return res.json(await fetchMovieDetailPayload(match.id));
+    return res.json(await (req.query.view === "metadata" ? fetchMovieMetadataPayload(match.id) : fetchMovieDetailPayload(match.id)));
   } catch (error) {
     console.error("❌ Error resolving movie slug:", error.response?.data || error.message);
     return res.status(500).json({ error: "Failed to resolve movie" });
@@ -6724,7 +6748,7 @@ app.get("/movies/:id", async (req, res) => {
 
   try {
     console.log(`Fetching details for movie ID: ${movieId}`);
-    res.json(await fetchMovieDetailPayload(movieId));
+    res.json(await (req.query.view === "metadata" ? fetchMovieMetadataPayload(movieId) : fetchMovieDetailPayload(movieId)));
   } catch (error) {
     console.error("❌ Error fetching movie details:", error.response?.data || error.message);
     const status = error.response?.status === 404 ? 404 : 503;

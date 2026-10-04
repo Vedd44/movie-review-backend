@@ -16,7 +16,8 @@
     "benchmark:models": "node scripts/benchmarkReelbotModels.js",
     "inspect:sitemap": "node scripts/inspectSitemap.js",
     "test:recommendations": "node scripts/testRecommendationContract.js && node scripts/testRecommendationNovelty.js && node scripts/testWatchCompanyRouting.js && node scripts/testIntelligenceRegressions.js && node scripts/testMovieIdentification.js && npm run test:product-regressions",
-    "test:product-regressions": "node scripts/testProductRegressionCases.js"
+    "test:product-regressions": "node scripts/testProductRegressionCases.js",
+    "test:catalog-protection": "node --test src/http/catalogProtection.test.js && node scripts/testCatalogMetadata.js"
   },
   "keywords": [],
   "author": "",
@@ -24,6 +25,7 @@
   "description": "",
   "dependencies": {
     "axios": "^1.7.9",
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2"
