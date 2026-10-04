@@ -1,0 +1,20 @@
+// Real ReelBot product observations. Extends existing contracts without new ranking work.
+const assert=require('node:assert/strict');
+const {parseReelbotIntent}=require('../ai/intentParser');
+const {passesRecommendationContract,recommendationCacheScope}=require('../ai/recommendationContract');
+const {classifyAskIntent,ASK_INTENTS}=require('../src/ask/askIntent');
+const {updateConversationForPrompt,getConversationExcludedIds}=require('../src/ask/conversationState');
+for(const prompt of ["What's that movie where the guy relives the day over and over again?","What was that movie where a guy wakes up every day with no memory?"])assert.equal(classifyAskIntent({prompt,context:{page:'general'}}),ASK_INTENTS.MOVIE_IDENTIFICATION,prompt);
+const broad="I don't know what I want. Just give me something really good that I might not immediately think of.";
+assert.notEqual(classifyAskIntent({prompt:broad,context:{page:'general'}}),ASK_INTENTS.MOVIE_IDENTIFICATION);
+const constrained=parseReelbotIntent('Something clever for my wife and me, under 100 minutes, no horror.');
+const mystery={id:445571,title:'A real catalog candidate',runtime:98,genre_ids:[35,9648],release_date:'2018-02-14'};
+assert.equal(passesRecommendationContract(mystery,constrained,{final:true}),true);
+assert.equal(passesRecommendationContract({...mystery,runtime:120},constrained,{final:true}),false);
+assert.equal(passesRecommendationContract({...mystery,genre_ids:[27,9648]},constrained,{final:true}),false);
+let state=updateConversationForPrompt({anchorMovie:{id:120,runtime:130,release_date:'2025-01-01'},recommendationHistory:[{id:120,status:'recommended'}],activeRequest:'A little action and newer'},'shorter',ASK_INTENTS.REFINE_RECOMMENDATION,{page:'general'});
+assert.equal(state.activeConstraints.maxRuntime,129);
+state=updateConversationForPrompt(state,"I've seen that",ASK_INTENTS.REFINE_RECOMMENDATION,{page:'general'});
+assert.ok(getConversationExcludedIds(state).includes(120));
+assert.notEqual(recommendationCacheScope({bounded_pool:true,candidate_pool_ids:[1,2]},{}),recommendationCacheScope({bounded_pool:true,candidate_pool_ids:[3,4]},{}));
+console.log('Real product observations: identification routing, generic requests, couples constraints, follow-up exclusions and bounded cache isolation passed.');
