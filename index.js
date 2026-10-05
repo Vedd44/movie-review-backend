@@ -2717,6 +2717,16 @@ const getBehavioralMemoryCacheKey = (memory = {}) => {
   )).digest("hex");
 };
 
+// Tonight's explicit mood takes precedence over historical tone and pace bonuses.
+const isBehavioralLaneRelevant = (lane, kind, intent = {}) => {
+  const quiet = intent.pacing_energy?.energy === "low" || intent.emotional_tolerance?.comforting
+    || intent.emotional_tolerance?.low_stress;
+  if (quiet && (kind === "pace" ? lane === "fast" : ["dark", "heavy"].includes(lane))) return false;
+  if (kind === "pace" && intent.pacing_energy?.pacing === "fast_moving" && lane === "slow") return false;
+  if (kind === "pace" && intent.pacing_energy?.pacing === "slow_burn" && lane === "fast") return false;
+  return true;
+};
+
 const getBehavioralMemoryScore = (movie = {}, memory = {}, intent = {}, signals = null) => {
   const normalizedMemory = normalizeBehavioralMemory(memory);
   const movieId = Number(movie?.id || 0);
@@ -2765,7 +2775,7 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}, intent = {}, signals 
     const explicitTonePreference = userProfile.preferredTraits.tone.includes(lane);
     const explicitToneAvoid = userProfile.avoidTraits.tone.includes(lane);
 
-    if (toneWeight) {
+    if (toneWeight && isBehavioralLaneRelevant(lane, "tone", intent)) {
       score += toneWeight * 1.25 * explorationFactor;
       reasons.push(`tone+${lane}`);
     }
@@ -2775,7 +2785,7 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}, intent = {}, signals 
       reasons.push(`swap-tone-${lane}`);
     }
 
-    if (explicitTonePreference) {
+    if (explicitTonePreference && isBehavioralLaneRelevant(lane, "tone", intent)) {
       score += 4.9;
       reasons.push(`profile-tone+${lane}`);
     }
@@ -2792,7 +2802,7 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}, intent = {}, signals 
     const explicitPacePreference = userProfile.preferredTraits.pace.includes(lane);
     const explicitPaceAvoid = userProfile.avoidTraits.pace.includes(lane);
 
-    if (paceWeight) {
+    if (paceWeight && isBehavioralLaneRelevant(lane, "pace", intent)) {
       score += paceWeight * 1.05 * explorationFactor;
       reasons.push(`pace+${lane}`);
     }
@@ -2802,7 +2812,7 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}, intent = {}, signals 
       reasons.push(`swap-pace-${lane}`);
     }
 
-    if (explicitPacePreference) {
+    if (explicitPacePreference && isBehavioralLaneRelevant(lane, "pace", intent)) {
       score += 3.9;
       reasons.push(`profile-pace+${lane}`);
     }
@@ -2855,7 +2865,7 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}, intent = {}, signals 
     reasons.push("recent-genre");
   }
 
-  if (normalizedMemory.recentPatterns.tones.some((lane) => toneLanes.includes(lane))) {
+  if (normalizedMemory.recentPatterns.tones.some((lane) => toneLanes.includes(lane) && isBehavioralLaneRelevant(lane, "tone", intent))) {
     score += 2.1;
     reasons.push("recent-tone");
   }
@@ -2915,7 +2925,7 @@ const BEHAVIOR_RUNTIME_REASON_LABELS = {
   long: "longer sit-down",
 };
 
-const buildBehavioralPreferenceReason = (movie = {}, memory = {}) => {
+const buildBehavioralPreferenceReason = (movie = {}, memory = {}, intent = {}) => {
   const normalizedMemory = normalizeBehavioralMemory(memory);
   const userProfile = normalizedMemory.userProfile;
   const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
@@ -2928,12 +2938,12 @@ const buildBehavioralPreferenceReason = (movie = {}, memory = {}) => {
     return `This stays close to the kinds of ${TMDB_MOVIE_GENRE_LOOKUP[likedGenreId].toLowerCase()} picks you've been saving.`;
   }
 
-  const preferredTone = userProfile.preferredTraits.tone.find((lane) => toneLanes.includes(lane));
+  const preferredTone = userProfile.preferredTraits.tone.find((lane) => toneLanes.includes(lane) && isBehavioralLaneRelevant(lane, "tone", intent));
   if (preferredTone) {
     return `It leans toward the ${BEHAVIOR_TONE_REASON_LABELS[preferredTone] || preferredTone} lane you've been responding to best.`;
   }
 
-  const preferredPace = userProfile.preferredTraits.pace.find((lane) => paceLanes.includes(lane));
+  const preferredPace = userProfile.preferredTraits.pace.find((lane) => paceLanes.includes(lane) && isBehavioralLaneRelevant(lane, "pace", intent));
   if (preferredPace) {
     return `It keeps the ${BEHAVIOR_PACE_REASON_LABELS[preferredPace] || preferredPace} feel you've been liking lately.`;
   }
@@ -5083,7 +5093,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
       whyRecommended: presentation.why_this_works || [],
       summaryLine: presentation.summary_line,
       primary_reason: presentation.primary_reason,
-      personalization_hint: buildBehavioralPreferenceReason(primaryPick, behavioralMemory) || null,
+      personalization_hint: buildBehavioralPreferenceReason(primaryPick, behavioralMemory, resolvedIntent) || null,
     },
     primary: normalizePickMovie(primaryPick, preferences, {
       reason: presentation.primary_reason,

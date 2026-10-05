@@ -346,9 +346,9 @@ const getPenaltyAdjustments = (movie = {}, signals = {}, intent = {}) => {
     penalties.push("too_polarizing_for_consensus");
   }
 
-  if ((softPreferences.includes("consensus_friendly") || softPreferences.includes("broadly_accessible") || softPreferences.includes("low_regret")) && !intent.audience_age) {
+  if ((softPreferences.includes("consensus_friendly") || softPreferences.includes("broadly_accessible") || softPreferences.includes("low_regret")) && (!intent.audience_age || intent.audience_age === "adults")) {
     const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
-    if (genreIds.includes(16) || genreIds.includes(10751)) {
+    if ((genreIds.includes(10751) || genreIds.includes(16)) && !(intent.preferred_genre_ids || []).includes(16) && !intent.anchors?.title) {
       total -= 28;
       penalties.push("too_kids_coded_for_general_consensus");
     }
@@ -363,9 +363,9 @@ const getPenaltyAdjustments = (movie = {}, signals = {}, intent = {}) => {
     penalties.push("not_cozy_enough");
   }
 
-  if ((softPreferences.includes("comforting") || softPreferences.includes("warm") || softPreferences.includes("low_conflict")) && !intent.audience_age) {
+  if ((softPreferences.includes("comforting") || softPreferences.includes("warm") || softPreferences.includes("low_conflict")) && (!intent.audience_age || intent.audience_age === "adults")) {
     const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
-    if ((genreIds.includes(16) || genreIds.includes(10751)) && !signals.curated_title_signals?.cozy_adult) {
+    if ((genreIds.includes(10751) || genreIds.includes(16)) && !(intent.preferred_genre_ids || []).includes(16) && !intent.anchors?.title && !signals.curated_title_signals?.cozy_adult) {
       total -= 24;
       penalties.push("too_child_coded_for_adult_cozy");
     }

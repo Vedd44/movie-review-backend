@@ -243,7 +243,7 @@ const inferSoftPreferences = (prompt = "", audienceAge = null) => {
   if (/romantic|romance|longing|emotionally expansive/i.test(normalizedPrompt)) {
     softPreferences.push("romantic_prestige");
   }
-  if (/cozy|cosy|quiet night|comfort watch|comfort-watch|soothing|warm|humane|gentle/i.test(normalizedPrompt)) {
+  if (/cozy|cosy|quiet night|comfort watch|comfort-watch|soothing|warm|humane|gentle|feel[- ]good/i.test(normalizedPrompt)) {
     softPreferences.push("comforting", "warm", "low_conflict");
   }
 
@@ -262,8 +262,8 @@ const buildQueryExpansion = ({ prompt = "", audienceAge = null, subjectEntities 
   const audienceRule = AUDIENCE_AGE_RULES.find((rule) => rule.bucket === audienceAge) || null;
   const subjectRules = getSubjectExpansionRules(subjectEntities);
   const normalizedSoftPreferences = Array.isArray(softPreferences) ? softPreferences : [];
-  const wantsAdultConsensus = normalizedSoftPreferences.some((signal) => ["low_regret", "consensus_friendly", "rewatchable", "broadly_accessible"].includes(signal)) && !audienceAge;
-  const wantsAdultCozy = normalizedSoftPreferences.some((signal) => ["comforting", "warm", "low_conflict", "calm"].includes(signal)) && !audienceAge;
+  const wantsAdultConsensus = normalizedSoftPreferences.some((signal) => ["low_regret", "consensus_friendly", "rewatchable", "broadly_accessible"].includes(signal)) && (!audienceAge || audienceAge === "adults");
+  const wantsAdultCozy = normalizedSoftPreferences.some((signal) => ["comforting", "warm", "low_conflict", "calm"].includes(signal)) && (!audienceAge || audienceAge === "adults");
   const canonicalEntityTitles = subjectEntities.map((entity) => CANONICAL_ENTITY_ENTRY_TITLES[entity]).filter(Boolean);
 
   return {

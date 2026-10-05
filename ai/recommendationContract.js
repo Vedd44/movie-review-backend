@@ -30,6 +30,12 @@ const passesRecommendationContract = (movie = {}, intent = {}, { final = false }
     if (!year || (minYear && year < minYear) || (maxYear && year > maxYear)) return false;
   }
   const genres = movie.genre_ids || movie.genres?.map(genre => genre.id) || [];
+  // An adult audience is a request constraint, not a maturity rating. Animation
+  // remains eligible; only generic child/family picks are excluded unless asked for.
+  const adultAudience = intent.audience_age === 'adults';
+  const familyRequested = (intent.preferred_genre_ids || []).some(id => id === 16 || id === 10751)
+    || Boolean(intent.anchors?.title);
+  if (adultAudience && !familyRequested && genres.includes(10751)) return false;
   if ((hard.exclude_genre_ids || []).some(id => genres.includes(id))) return false;
   const required = hard.required_genre_ids || [];
   if (required.length && !(hard.genre_match === 'any'

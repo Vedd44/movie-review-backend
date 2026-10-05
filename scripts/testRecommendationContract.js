@@ -28,3 +28,18 @@ assert.equal(updateConversationForPrompt(state,'something newer',ASK_INTENTS.REF
 assert.equal(updateConversationForPrompt(state,"I've seen that",ASK_INTENTS.REFINE_RECOMMENDATION).recommendationHistory[0].status,'rejected');
 assert.equal(classifyAskIntent({prompt:'Where should I start?',context:{page:'person'}}),ASK_INTENTS.CURRENT_SET_RECOMMENDATION);
 console.log('Recommendation contracts, cache isolation, negation, age, decade and follow-up regressions passed.');
+
+const adultComfort = parseReelbotIntent('Sunday night feel good movie for adults');
+assert.equal(adultComfort.audience_age, 'adults');
+assert.ok(adultComfort.soft_preferences.preference_signals.includes('comforting'));
+assert.ok(adultComfort.query_expansion.title_hints.includes('Julie & Julia'));
+const toyStory = {...base,title:'Toy Story 5',genre_ids:[16,10751,35,12]};
+for (const final of [false,true]) assert.equal(passesRecommendationContract(toyStory,adultComfort,{final}),false);
+assert.equal(passesRecommendationContract({...base,title:'Chef',genre_ids:[35,18]},adultComfort),true);
+assert.equal(passesRecommendationContract({...base,title:'Adult animation',genre_ids:[16,35]},adultComfort),true);
+for (const prompt of ['A feel good family movie','An animated feel good movie for adults','Something like Toy Story for adults']) assert.equal(passesRecommendationContract(toyStory,parseReelbotIntent(prompt)),true,prompt);
+console.log('Adult comfort retrieval and audience constraints preserve family and animation requests.');
+
+const {getRecommendationFitBreakdown} = require('../ai/recommendationScoring');
+const animationFit = getRecommendationFitBreakdown(toyStory,parseReelbotIntent('An animated feel good movie for adults'));
+assert.ok(!animationFit.penalties.includes('too_child_coded_for_adult_cozy'));

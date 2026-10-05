@@ -40,3 +40,14 @@ assert.equal(isBroadDiscoveryRequest({...generic,hard_filters:{min_runtime_minut
 for(const prompt of ['Find me a movie with Keanu Reeves','Recommend a movie about space','A movie with friends','What movie should I watch with friends?']) assert.notEqual(classifyAskIntent({prompt,context:{page:'home'}}),ASK_INTENTS.MOVIE_IDENTIFICATION,prompt);
 for(const prompt of ['What was that movie where a guy wakes up every day with no memory?','Which film was that with the hotel and the backwards dream levels?','I remember a movie about a sound engineer','Identify the movie where a man relives a day']) assert.equal(classifyAskIntent({prompt,context:{page:'movie_detail'}}),ASK_INTENTS.MOVIE_IDENTIFICATION,prompt);
 console.log('History scoring/idempotence/cache isolation, bounded taste weights, broad-discovery penalty and intent boundary checks passed.');
+
+const quietIntent = parseReelbotIntent('Sunday night feel good movie for adults');
+const fastMovie = {...movie,genre_ids:[28,12]};
+const fastMemory = {pacePreferences:{fast:4},userProfile:{preferredTraits:{pace:['fast']}}};
+assert.equal(context.score(fastMovie,fastMemory,quietIntent).score,context.score(fastMovie,{},quietIntent).score);
+assert.ok(context.score(fastMovie,fastMemory,parseReelbotIntent('a fast moving action movie')).score > context.score(fastMovie,{},quietIntent).score);
+vm.runInContext(source.slice(source.indexOf('const BEHAVIOR_TONE_REASON_LABELS'),source.indexOf('const scorePickCandidate'))+'\nthis.reason=buildBehavioralPreferenceReason;', context);
+context.TMDB_MOVIE_GENRE_LOOKUP = {};
+assert.equal(context.reason(fastMovie,fastMemory,quietIntent),'');
+assert.match(context.reason(fastMovie,fastMemory,parseReelbotIntent('an action movie')),/faster-moving/);
+console.log('Current mood overrides incompatible historical bonuses and taste notes.');
