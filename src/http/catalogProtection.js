@@ -1,15 +1,18 @@
 // Bounds novel catalog reads across all callers, including distributed crawlers.
 // Cached pages and simultaneous reads of the same page do not spend this budget.
-function createCatalogProtection({ now = Date.now, maxEntries = 1000, ttl = 6 * 3600000,
-  metadataPerHour = 600, detailPerHour = 1200, burst = 60, maxPending = 20, metadataReserved = 4 } = {}) {
+// Public metadata has its own capacity for a full ~4,000-page sitemap crawl;
+// interactive detail reads retain the smaller budget and concurrency protection.
+function createCatalogProtection({ now = Date.now, maxEntries = 12000, ttl = 6 * 3600000,
+  metadataPerHour = 6000, detailPerHour = 1200, burst = 60, metadataBurst = 6000, maxPending = 20, metadataReserved = 4 } = {}) {
   const cache = new Map();
   const pending = new Map();
   const buckets = new Map();
   function reserve(kind) {
     const time = now();
     const rate = (kind === 'metadata' ? metadataPerHour : detailPerHour) / 3600000;
-    const bucket = buckets.get(kind) || { tokens: burst, updated: time };
-    bucket.tokens = Math.min(burst, bucket.tokens + Math.max(0, time - bucket.updated) * rate);
+    const capacity = kind === 'metadata' ? metadataBurst : burst;
+    const bucket = buckets.get(kind) || { tokens: capacity, updated: time };
+    bucket.tokens = Math.min(capacity, bucket.tokens + Math.max(0, time - bucket.updated) * rate);
     bucket.updated = time;
     buckets.set(kind, bucket);
     const detailPending = [...pending.keys()].filter(key => key.startsWith('detail:')).length;
@@ -49,6 +52,14 @@ function createCatalogProtection({ now = Date.now, maxEntries = 1000, ttl = 6 * 
       if ([200,404].includes(res.statusCode)) {
         result = { status: res.statusCode, body, expires: now() + (res.statusCode === 404 ? 300000 : ttl) };
         cache.set(key, result);
+        // Populate both sides of the canonical redirect in one lookup. Crawlers
+        // must not spend another token or search request following that redirect.
+        if (kind === 'metadata' && res.statusCode === 200 && body?.id && body?.canonical_slug) {
+          const aliases = req.path.startsWith('/movies/')
+            ? [`/movies/${body.id}`, `/movies/resolve/${body.canonical_slug}`]
+            : [`/person/${body.id}`, `/people/resolve/${body.canonical_slug}`];
+          for (const alias of aliases) cache.set(`metadata:${alias}`, result);
+        }
         while (cache.size > maxEntries) cache.delete(cache.keys().next().value);
         res.set('Cache-Control', res.statusCode === 200
           ? 'public, max-age=0, s-maxage=21600, stale-while-revalidate=3600'

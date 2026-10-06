@@ -27,3 +27,20 @@ test('detail concurrency leaves metadata headroom, including person page metadat
  assert.equal((await fetch(base+'/people/resolve/christopher-nolan?view=metadata')).status,200);
  unblock();assert.equal((await one).status,200);assert.equal((await two).status,200);
 });
+
+test('a full sitemap crawl fits the public metadata budget while detail remains bounded',async t=>{
+ const request=await fixture(t,{now:()=>0},(req,res)=>res.json({id:Number(req.params.id),canonical_slug:`movie-${req.params.id}`}));
+ for(let id=1;id<=4000;id++) assert.equal((await request(`/movies/${id}?view=metadata`)).status,200,`metadata ${id}`);
+ for(let id=1;id<=60;id++) assert.equal((await request(`/movies/${id}`)).status,200);
+ assert.equal((await request('/movies/61')).status,429);
+ assert.equal((await request('/movies/1?view=metadata')).headers.get('x-reelbot-catalog-cache'),'HIT');
+});
+test('numeric person redirects warm their canonical destination without another lookup',async t=>{
+ const app=express();let calls=0;app.use(createCatalogProtection({metadataBurst:1,now:()=>0}));
+ app.get('/person/:id',(req,res)=>{calls++;res.json({id:Number(req.params.id),canonical_slug:'lana-condor'});});
+ app.get('/people/resolve/:slug',(req,res)=>{calls++;res.json({id:1452046,canonical_slug:req.params.slug});});
+ const server=app.listen(0);t.after(()=>server.close());const base=`http://127.0.0.1:${server.address().port}`;
+ assert.equal((await fetch(base+'/person/1452046?view=metadata')).status,200);
+ const destination=await fetch(base+'/people/resolve/lana-condor?view=metadata');assert.equal(destination.status,200);assert.equal(destination.headers.get('x-reelbot-catalog-cache'),'HIT');assert.equal(calls,1);
+ assert.equal((await fetch(base+'/person/2?view=metadata')).status,429);
+});
