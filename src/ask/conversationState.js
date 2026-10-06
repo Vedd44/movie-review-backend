@@ -90,8 +90,8 @@ const buildContextualRecommendationPrompt = (prompt = "", state = {}, intent = "
   ].filter(Boolean).join(". ");
 };
 
-const getConversationExcludedIds = (state = {}) => (state.recommendationHistory || [])
-  .filter((entry) => ["recommended", "rejected", "skipped"].includes(entry.status))
+const getConversationExcludedIds = (state = {}, { allowRewatch = false } = {}) => (state.recommendationHistory || [])
+  .filter((entry) => (allowRewatch ? ["rejected", "skipped"] : ["recommended", "rejected", "skipped"]).includes(entry.status))
   .map((entry) => Number(entry.id))
   .filter(Boolean);
 

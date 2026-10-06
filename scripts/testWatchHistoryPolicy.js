@@ -11,4 +11,5 @@ assert.deepEqual(getWatchedMovieAdjustment(1, {seenMovieIds:[1], watchedAt:dates
 assert.deepEqual(getWatchedMovieAdjustment(2, {seenMovieIds:[2], watchedAt:dates}, "drama", now), {excluded:false, score:-4});
 assert.deepEqual(getWatchedMovieAdjustment(5, {seenMovieIds:[5]}, "drama", now), {excluded:false, score:-4});
 assert.deepEqual(getWatchedMovieAdjustment(6, {}, "drama", now), {excluded:false, score:0});
+assert.deepEqual(getWatchedMovieAdjustment(5, {seenMovieIds:[5]}, "something I haven’t seen", now), {excluded:true, score:-1000});
 console.log("Watch history policy tests passed");

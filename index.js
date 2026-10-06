@@ -1,7 +1,7 @@
 require("dotenv").config();
 const { createHash } = require("node:crypto");
 const { passesRecommendationContract, recommendationCacheScope, needsVerifiedContentGuide } = require("./ai/recommendationContract");
-const { normalizeWatchedAt, getWatchCooldownIds, getWatchedMovieAdjustment, isExplicitRewatchRequest } = require("./ai/watchHistoryPolicy");
+const { normalizeWatchedAt, getWatchCooldownIds, getWatchedMovieAdjustment, isExplicitRewatchRequest, isExplicitUnseenRequest } = require("./ai/watchHistoryPolicy");
 const express = require("express");
 const { timingMiddleware, measureStage, finishTiming, markRecovery } = require("./ai/requestTiming");
 const { decisionReasons } = require("./ai/decisionPresentation");
@@ -4677,6 +4677,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
       if (behavioralMemory.seenMovieIds.has(movieId)) excludedIds.add(movieId);
     });
   }
+  if (isExplicitUnseenRequest(preferences.prompt)) behavioralMemory.seenMovieIds.forEach(id => excludedIds.add(id));
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
@@ -6539,7 +6540,7 @@ const resolveAskAnchorMovie = async (prompt, pageContext, conversation) => {
 };
 
 app.get("/", (req, res) => {
-  res.set("X-Reelbot-Watch-Policy", "cooldown-90d-v1");
+  res.set("X-Reelbot-Watch-Policy", "cooldown-90d-v2");
   res.send("Movie Review Backend is Running!");
 });
 
@@ -7532,11 +7533,12 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
           ? contextualPrompt.replace(/\b(?:this|it|that)\b/gi, anchorTitle)
           : `${contextualPrompt} Similar to ${anchorTitle}.`)
       : contextualPrompt;
+    const wantsRewatch = isExplicitRewatchRequest(prompt);
     const excludedIds = Array.from(new Set([
       ...pageContext.excludedMovieIds,
       ...pageContext.rejectedMovieIds,
-      ...getConversationExcludedIds(conversation),
-      ...(intent === ASK_INTENTS.MOVIE_RECOMMENDATION && movieId ? [movieId] : []),
+      ...getConversationExcludedIds(conversation, { allowRewatch: wantsRewatch }),
+      ...(intent === ASK_INTENTS.MOVIE_RECOMMENDATION && movieId && !wantsRewatch ? [movieId] : []),
     ]));
     const recommendation = await generatePickPayload({
       prompt: recommendationPrompt,

@@ -18,3 +18,7 @@ state=updateConversationForPrompt(state,"I've seen that",ASK_INTENTS.REFINE_RECO
 assert.ok(getConversationExcludedIds(state).includes(120));
 assert.notEqual(recommendationCacheScope({bounded_pool:true,candidate_pool_ids:[1,2]},{}),recommendationCacheScope({bounded_pool:true,candidate_pool_ids:[3,4]},{}));
 console.log('Real product observations: identification routing, generic requests, couples constraints, follow-up exclusions and bounded cache isolation passed.');
+
+const rewatchHistory = {recommendationHistory:[{id:1,status:"recommended"},{id:2,status:"rejected"},{id:3,status:"skipped"}]};
+assert.deepEqual(getConversationExcludedIds(rewatchHistory, {allowRewatch:true}), [2,3]);
+assert.deepEqual(getConversationExcludedIds(rewatchHistory), [1,2,3]);
