@@ -40,33 +40,13 @@ const buildRubricBlock = (intent = {}) => {
 };
 
 const buildUserPreferenceBlock = (preferences = {}) => {
-  const profile = preferences.behavioral_memory?.userProfile || {};
-  const likedGenres = Array.isArray(profile.likedGenres) ? profile.likedGenres.join(", ") : "";
-  const dislikedGenres = Array.isArray(profile.dislikedGenres) ? profile.dislikedGenres.join(", ") : "";
-  const preferredPace = Array.isArray(profile.preferredTraits?.pace) ? profile.preferredTraits.pace.join(", ") : "";
-  const preferredTone = Array.isArray(profile.preferredTraits?.tone) ? profile.preferredTraits.tone.join(", ") : "";
-  const preferredRuntime = Array.isArray(profile.preferredTraits?.runtime) ? profile.preferredTraits.runtime.join(", ") : "";
-  const avoidPace = Array.isArray(profile.avoidTraits?.pace) ? profile.avoidTraits.pace.join(", ") : "";
-  const avoidTone = Array.isArray(profile.avoidTraits?.tone) ? profile.avoidTraits.tone.join(", ") : "";
-  const avoidRuntime = Array.isArray(profile.avoidTraits?.runtime) ? profile.avoidTraits.runtime.join(", ") : "";
-  const recentTitles = Array.isArray(profile.recentlyViewed) ? profile.recentlyViewed.map((entry) => entry?.title).filter(Boolean).slice(0, 4).join(", ") : "";
-  const hardAvoidIds = profile.hardAvoidMovieIds instanceof Set
-    ? Array.from(profile.hardAvoidMovieIds).join(", ")
-    : Array.isArray(profile.hardAvoidMovieIds)
-      ? profile.hardAvoidMovieIds.join(", ")
-      : "";
-
-  if (!likedGenres && !dislikedGenres && !preferredPace && !preferredTone && !preferredRuntime && !recentTitles && !hardAvoidIds) {
-    return "No meaningful user preference signals yet.";
-  }
-
+  const memory = preferences.behavioral_memory || {};
   return [
-    `Tends to enjoy genres: ${likedGenres || "none yet"}`,
-    `Avoid genres: ${dislikedGenres || "none yet"}`,
-    `Preferred pace/tone/runtime: ${[preferredPace, preferredTone, preferredRuntime].filter(Boolean).join(" | ") || "none yet"}`,
-    `Avoid pace/tone/runtime: ${[avoidPace, avoidTone, avoidRuntime].filter(Boolean).join(" | ") || "none yet"}`,
-    `Recently interacted with: ${recentTitles || "none yet"}`,
-    `Do not recommend hidden titles: ${hardAvoidIds || "none"}`,
+    "The current request comes first. Historical activity is not a taste identity.",
+    "Clicks, provider visits and Seen mean exploration/history, not enjoyment. Saved means interest, not liked.",
+    "Repeated saves may gently break ties between equally suitable candidates, never override the request.",
+    "Do not describe usual tastes, a departure from their taste, or claim they like a genre/tone based on activity.",
+    `Hidden titles must remain excluded: ${stableStringify(memory.hiddenMovieIds || [])}`,
   ].join("\n");
 };
 
@@ -79,6 +59,7 @@ const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
       getFullReelbotFrameworkText(),
       "Role rules:",
       "- Do not write user-facing copy.",
+      "- The current request outranks historical interest; exploring a movie never declares a lasting taste.",
       "- Rank only from the provided candidate ids.",
       "- Never infer or reference movies outside the provided candidate pool.",
       "- Treat audience, tone, safety, and explicit exclusions as hard filters before ranking.",
@@ -109,7 +90,7 @@ const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
       "8. For family-safe or sick-day contexts, prioritize emotional safety and clarity over prestige, darkness, or edge.",
       "9. For place/country prompts, privilege actual relevance in setting, language, perspective, or story rather than weak keyword overlap.",
       "10. For awards prompts, stay inside awards-relevant options only.",
-      "11. Personalize with restraint: reinforce saved/recent preference signals, strongly avoid hidden titles, and deprioritize already-seen or very recent repeats unless the prompt clearly asks for them.",
+      "11. The current request outranks historical interest. Never infer enjoyment from saved, viewed or seen titles. Honor hidden exclusions and already-seen repeat handling.",
       `12. Give the backups distinct, evidence-based roles such as lighter_option, darker_option, shorter_option, more_mainstream, more_emotional, more_intense, more_recent, more_classic, wildcard, more_action_forward, more_demanding, or similar_tone. For swaps, preserve the request but do not mechanically force safer/stretch/wildcard roles.`,
       "13. Avoid famous default classics unless they are still clearly the best fit after prompt fidelity.",
       "14. Prefer fewer meaningful distinctions over cosmetic role changes: use runtime, tone, intensity, accessibility, era, emotional weight, or mainstream familiarity only when candidate data supports it.",
@@ -140,6 +121,7 @@ const buildPickWriterPrompts = ({ preferences, intent, primary, backups }) => {
       "- Treat derived_signals as fallible estimates. Never promise no scary scenes, no violence, or guaranteed age suitability without verified content guidance. Runtime does not establish pacing.",
       "- Sound like ReelBot understands the user's moment, not like an evaluation system.",
       "- The primary rationale should read like a knowledgeable friend: one sentence on the specific fit, then one useful tradeoff or distinction.",
+      "- Do not infer or narrate usual taste from clicks, saves or Seen. Explain the movie against the current request, without historical taste labels.",
       "- Never merely restate the request. Name concrete tone, pacing, story setup, intensity, runtime, or audience differences supported by the provided fields.",
       "- Avoid 'strong fit', 'great pick', 'matches the mood', 'based on your preferences', 'same feel', and other copy that could describe almost any movie.",
       "- Reference the previous pick when available, avoid repeating its sentence structure, and steer clear of banned phrases such as \"clear identity\" or \"doesn't feel generic.\"",

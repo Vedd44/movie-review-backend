@@ -9,23 +9,25 @@ const { classifyAskIntent, ASK_INTENTS } = require('../src/ask/askIntent');
 const source = fs.readFileSync(require.resolve('../index.js'), 'utf8');
 const { normalizeWatchedAt, getWatchedMovieAdjustment } = require('../ai/watchHistoryPolicy');
 const context = vm.createContext({normalizeWatchedAt, getWatchedMovieAdjustment, process, console, Set, createHash, deriveMovieSignals, matchesAnyGenre:(ids,wanted)=>ids.some(id=>wanted.includes(id))});
-vm.runInContext(source.slice(source.indexOf('const BEHAVIOR_LANE_GENRE_MAP'),source.indexOf('const BEHAVIOR_TONE_REASON_LABELS')) + '\nthis.norm=normalizeBehavioralMemory;this.score=getBehavioralMemoryScore;this.key=getBehavioralMemoryCacheKey;',context);
+vm.runInContext(source.slice(source.indexOf('const BEHAVIOR_LANE_GENRE_MAP'),source.indexOf('const scorePickCandidate')) + '\nthis.norm=normalizeBehavioralMemory;this.score=getBehavioralMemoryScore;this.key=getBehavioralMemoryCacheKey;',context);
 const movie = {id:550,title:'Example',runtime:110,genre_ids:[18],overview:'A drama.',vote_average:8,vote_count:10000};
 const memory = {savedMovieIds:[550],seenMovieIds:[551],hiddenMovieIds:[552],recentMovieIds:[553],userProfile:{hardAvoidMovieIds:[554]}};
 const normalized = context.norm(memory);
 const renormalized = context.norm(normalized);
 for (const field of ['savedMovieIds','seenMovieIds','hiddenMovieIds','recentMovieIds']) assert.deepEqual([...renormalized[field]],[...normalized[field]],field);
-assert.deepEqual([...renormalized.userProfile.hardAvoidMovieIds],[554]);
+assert.deepEqual([...renormalized.userProfile.hardAvoidMovieIds],[552,554]);
 for (const field of ['savedMovieIds','seenMovieIds','hiddenMovieIds','recentMovieIds']) {
  assert.notEqual(context.key({[field]:[1]}),context.key({[field]:[2]}),`${field}: no cross-history cache collision`);
  assert.equal(context.key({[field]:[1,2]}),context.key({[field]:[2,1]}),`${field}: order independent`);
 }
-assert.notEqual(context.key({userProfile:{likedGenres:[35]}}),context.key({userProfile:{likedGenres:[27]}}));
-assert.notEqual(context.key({preferredGenres:{35:0.1}}),context.key({preferredGenres:{35:0.2}}));
+assert.equal(context.key({userProfile:{likedGenres:[35]}}),context.key({userProfile:{likedGenres:[27]}}));
+assert.notEqual(context.key({signalPolicyVersion:2,preferredGenres:{35:0.1}}),context.key({signalPolicyVersion:2,preferredGenres:{35:0.2}}));
 const intent=parseReelbotIntent('a drama');
 const plain=context.score(movie,{},intent).score;
 const saved=context.score(movie,context.norm({savedMovieIds:[550]}),intent);
-assert.equal(saved.score-plain,5.5);assert.ok(saved.reasons.includes('saved-positive'));
+assert.equal(saved.score,plain); // Saved is interest, never an automatic enjoyment bonus.
+assert.equal(context.score(movie,{signalPolicyVersion:2,preferredGenres:{18:1000}},intent).score,1.2);
+assert.equal(context.score(movie,{preferredGenres:{18:1000},tonePreferences:{heavy:50}},intent).score,plain);
 const recent=context.score(movie,context.norm({recentMovieIds:[550]}),intent);
 assert.equal(recent.score-plain,-9);assert.ok(recent.reasons.includes('recently-viewed'));
 assert.ok(context.score(movie,context.norm({seenMovieIds:[550]}),intent).reasons.includes('seen-deprioritized'));
@@ -51,9 +53,10 @@ const quietIntent = parseReelbotIntent('Sunday night feel good movie for adults'
 const fastMovie = {...movie,genre_ids:[28,12]};
 const fastMemory = {pacePreferences:{fast:4},userProfile:{preferredTraits:{pace:['fast']}}};
 assert.equal(context.score(fastMovie,fastMemory,quietIntent).score,context.score(fastMovie,{},quietIntent).score);
-assert.ok(context.score(fastMovie,fastMemory,parseReelbotIntent('a fast moving action movie')).score > context.score(fastMovie,{},quietIntent).score);
-vm.runInContext(source.slice(source.indexOf('const BEHAVIOR_TONE_REASON_LABELS'),source.indexOf('const scorePickCandidate'))+'\nthis.reason=buildBehavioralPreferenceReason;', context);
-context.TMDB_MOVIE_GENRE_LOOKUP = {};
-assert.equal(context.reason(fastMovie,fastMemory,quietIntent),'');
-assert.match(context.reason(fastMovie,fastMemory,parseReelbotIntent('an action movie')),/faster-moving/);
-console.log('Current mood overrides incompatible historical bonuses and taste notes.');
+assert.equal(context.score(fastMovie,fastMemory,parseReelbotIntent('a fast moving action movie')).score,0);
+const {buildPickRankerPrompts, buildPickDecisionPrompts}=require('../ai/promptBuilders/homepagePick');
+const prompts=buildPickRankerPrompts({preferences:{behavioral_memory:context.norm(fastMemory)},intent:quietIntent,candidates:[fastMovie]});
+assert.match(prompts.userPrompt,/current request comes first/i);
+assert.doesNotMatch(prompts.userPrompt,/Tends to enjoy/);
+assert.ok(!source.includes("lane you've been responding to best"));
+console.log('Exploration never declares taste; repeated saved interest remains bounded, and the current request leads.');

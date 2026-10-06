@@ -2640,22 +2640,14 @@ const normalizeBehaviorUserProfile = (profile = {}) => ({
 });
 
 const normalizeBehavioralMemory = (memory = {}) => ({
-  preferredGenres: normalizeBehavioralMap(memory.preferredGenres, 12),
-  avoidedGenres: normalizeBehavioralMap(memory.avoidedGenres, 12),
-  tonePreferences: normalizeBehavioralMap(memory.tonePreferences, 8),
-  pacePreferences: normalizeBehavioralMap(memory.pacePreferences, 4),
-  runtimePreference: normalizeBehavioralMap(memory.runtimePreference, 3),
-  swapPatterns: {
-    genres: normalizeBehavioralMap(memory.swapPatterns?.genres, 8),
-    tones: normalizeBehavioralMap(memory.swapPatterns?.tones, 6),
-    pace: normalizeBehavioralMap(memory.swapPatterns?.pace, 3),
-    runtime: normalizeBehavioralMap(memory.swapPatterns?.runtime, 3),
-  },
-  recentPatterns: {
-    genres: Array.isArray(memory.recentPatterns?.genres) ? memory.recentPatterns.genres.map((value) => Number.parseInt(value, 10)).filter(Boolean).slice(0, 4) : [],
-    tones: Array.isArray(memory.recentPatterns?.tones) ? memory.recentPatterns.tones.map((value) => String(value)).filter(Boolean).slice(0, 4) : [],
-    runtime: typeof memory.recentPatterns?.runtime === "string" ? memory.recentPatterns.runtime : "",
-  },
+  signalPolicyVersion: Number(memory.signalPolicyVersion || 0),
+  preferredGenres: Number(memory.signalPolicyVersion) === 2 ? normalizeBehavioralMap(memory.preferredGenres, 12) : {},
+  avoidedGenres: {},
+  tonePreferences: {},
+  pacePreferences: {},
+  runtimePreference: {},
+  swapPatterns: {genres: {}, tones: {}, pace: {}, runtime: {}},
+  recentPatterns: {genres: [], tones: [], runtime: ""},
   interactionStats: memory.interactionStats && typeof memory.interactionStats === "object" ? memory.interactionStats : {},
   hiddenMovieIds: normalizeBehavioralIdSet(memory.hiddenMovieIds),
   seenMovieIds: normalizeBehavioralIdSet(memory.seenMovieIds),
@@ -2663,7 +2655,7 @@ const normalizeBehavioralMemory = (memory = {}) => ({
   rewatchPrompt: typeof memory.rewatchPrompt === "string" ? memory.rewatchPrompt : "",
   savedMovieIds: normalizeBehavioralIdSet(memory.savedMovieIds),
   recentMovieIds: normalizeBehavioralIdSet(memory.recentMovieIds),
-  userProfile: normalizeBehaviorUserProfile(memory.userProfile),
+  userProfile: normalizeBehaviorUserProfile({recentlyViewed: memory.userProfile?.recentlyViewed, hardAvoidMovieIds: [...normalizeBehavioralIdSet(memory.hiddenMovieIds), ...normalizeBehavioralIdSet(memory.userProfile?.hardAvoidMovieIds)]}),
   updatedAt: typeof memory.updatedAt === "string" ? memory.updatedAt : "",
 });
 
@@ -2689,11 +2681,6 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}, intent = {}, signals 
   const normalizedMemory = normalizeBehavioralMemory(memory);
   const movieId = Number(movie?.id || 0);
   const userProfile = normalizedMemory.userProfile;
-  const paceLanes = getBehaviorPaceLanes(movie);
-  const toneLanes = getBehaviorToneLanes(movie);
-  const runtimeBucket = getBehaviorRuntimeBucket(movie.runtime);
-  const swapCount = Number(normalizedMemory.interactionStats?.swaps || 0);
-  const explorationFactor = swapCount >= 3 ? 0.82 : 1;
 
   if (normalizedMemory.hiddenMovieIds.has(movieId) || userProfile.hardAvoidMovieIds.has(movieId)) {
     return {
@@ -2703,139 +2690,12 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}, intent = {}, signals 
   }
 
   const reasons = [];
-  let score = 0;
-
-  (movie.genre_ids || []).forEach((genreId) => {
-    const preferredWeight = Number(normalizedMemory.preferredGenres[String(genreId)] || 0);
-    const avoidedWeight = Number(normalizedMemory.avoidedGenres[String(genreId)] || 0);
-    const swapWeight = Number(normalizedMemory.swapPatterns.genres[String(genreId)] || 0);
-
-    if (preferredWeight) {
-      score += preferredWeight * 1.12 * explorationFactor;
-      reasons.push(`genre+${genreId}`);
-    }
-
-    if (avoidedWeight) {
-      score -= avoidedWeight * 1.18 * explorationFactor;
-      reasons.push(`genre-${genreId}`);
-    }
-
-    if (swapWeight) {
-      score -= swapWeight * 0.85;
-      reasons.push(`swap-genre-${genreId}`);
-    }
-  });
-
-  toneLanes.forEach((lane) => {
-    const toneWeight = Number(normalizedMemory.tonePreferences[lane] || 0);
-    const swapWeight = Number(normalizedMemory.swapPatterns.tones[lane] || 0);
-    const explicitTonePreference = userProfile.preferredTraits.tone.includes(lane);
-    const explicitToneAvoid = userProfile.avoidTraits.tone.includes(lane);
-
-    if (toneWeight && isBehavioralLaneRelevant(lane, "tone", intent)) {
-      score += toneWeight * 1.25 * explorationFactor;
-      reasons.push(`tone+${lane}`);
-    }
-
-    if (swapWeight) {
-      score -= swapWeight * 0.8;
-      reasons.push(`swap-tone-${lane}`);
-    }
-
-    if (explicitTonePreference && isBehavioralLaneRelevant(lane, "tone", intent)) {
-      score += 4.9;
-      reasons.push(`profile-tone+${lane}`);
-    }
-
-    if (explicitToneAvoid) {
-      score -= 6;
-      reasons.push(`profile-tone-${lane}`);
-    }
-  });
-
-  paceLanes.forEach((lane) => {
-    const paceWeight = Number(normalizedMemory.pacePreferences[lane] || 0);
-    const swapWeight = Number(normalizedMemory.swapPatterns.pace[lane] || 0);
-    const explicitPacePreference = userProfile.preferredTraits.pace.includes(lane);
-    const explicitPaceAvoid = userProfile.avoidTraits.pace.includes(lane);
-
-    if (paceWeight && isBehavioralLaneRelevant(lane, "pace", intent)) {
-      score += paceWeight * 1.05 * explorationFactor;
-      reasons.push(`pace+${lane}`);
-    }
-
-    if (swapWeight) {
-      score -= swapWeight * 0.65;
-      reasons.push(`swap-pace-${lane}`);
-    }
-
-    if (explicitPacePreference && isBehavioralLaneRelevant(lane, "pace", intent)) {
-      score += 3.9;
-      reasons.push(`profile-pace+${lane}`);
-    }
-
-    if (explicitPaceAvoid) {
-      score -= 5;
-      reasons.push(`profile-pace-${lane}`);
-    }
-  });
-
-  if (runtimeBucket) {
-    const runtimeWeight = Number(normalizedMemory.runtimePreference[runtimeBucket] || 0);
-    const runtimeSwapWeight = Number(normalizedMemory.swapPatterns.runtime[runtimeBucket] || 0);
-    const explicitRuntimePreference = userProfile.preferredTraits.runtime.includes(runtimeBucket);
-    const explicitRuntimeAvoid = userProfile.avoidTraits.runtime.includes(runtimeBucket);
-
-    if (runtimeWeight) {
-      score += runtimeWeight * 0.85 * explorationFactor;
-      reasons.push(`runtime+${runtimeBucket}`);
-    }
-
-    if (runtimeSwapWeight) {
-      score -= runtimeSwapWeight * 0.65;
-      reasons.push(`swap-runtime-${runtimeBucket}`);
-    }
-
-    if (explicitRuntimePreference) {
-      score += 3.1;
-      reasons.push(`profile-runtime+${runtimeBucket}`);
-    }
-
-    if (explicitRuntimeAvoid) {
-      score -= 4.1;
-      reasons.push(`profile-runtime-${runtimeBucket}`);
-    }
-  }
-
-  if (userProfile.likedGenres.some((genreId) => (movie.genre_ids || []).includes(genreId))) {
-    score += 5.4;
-    reasons.push("profile-liked-genre");
-  }
-
-  if (userProfile.dislikedGenres.some((genreId) => (movie.genre_ids || []).includes(genreId))) {
-    score -= 7.4;
-    reasons.push("profile-disliked-genre");
-  }
-
-  if (normalizedMemory.recentPatterns.genres.some((genreId) => (movie.genre_ids || []).includes(genreId))) {
-    score += 1.8;
-    reasons.push("recent-genre");
-  }
-
-  if (normalizedMemory.recentPatterns.tones.some((lane) => toneLanes.includes(lane) && isBehavioralLaneRelevant(lane, "tone", intent))) {
-    score += 2.1;
-    reasons.push("recent-tone");
-  }
-
-  if (normalizedMemory.recentPatterns.runtime && normalizedMemory.recentPatterns.runtime === runtimeBucket) {
-    score += 1.2;
-    reasons.push("recent-runtime");
-  }
-
-  if (normalizedMemory.savedMovieIds.has(movieId)) {
-    score += 5.5;
-    reasons.push("saved-positive");
-  }
+  // Historical interest is a small tie-breaker, never a competing taste brief.
+  // Old clients sent inferred likes from clicks/Seen: ignore those weights.
+  let score = normalizedMemory.signalPolicyVersion === 2
+    ? Math.min(3, (movie.genre_ids || []).reduce((total, id) => total + Math.min(1.2, Number(normalizedMemory.preferredGenres[id] || 0)), 0))
+    : 0;
+  if (score) reasons.push("repeated-saved-interest");
 
   if (normalizedMemory.seenMovieIds.has(movieId)) {
     const adjustment = getWatchedMovieAdjustment(movieId, normalizedMemory, normalizedMemory.rewatchPrompt);
@@ -2853,64 +2713,6 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}, intent = {}, signals 
     score: Math.max(-28, Math.min(28, Number(score.toFixed(2)))),
     reasons,
   };
-};
-
-const BEHAVIOR_TONE_REASON_LABELS = {
-  light: "lighter",
-  heavy: "heavier",
-  dark: "darker",
-  funny: "funnier",
-  emotional: "more emotional",
-  easy_watch: "easy-watch",
-  smart_twisty: "smart, twisty",
-};
-
-const BEHAVIOR_PACE_REASON_LABELS = {
-  fast: "faster-moving",
-  slow: "slower-burn",
-  easy: "easygoing",
-  steady: "steady",
-};
-
-const BEHAVIOR_RUNTIME_REASON_LABELS = {
-  short: "shorter",
-  medium: "manageable",
-  long: "longer sit-down",
-};
-
-const buildBehavioralPreferenceReason = (movie = {}, memory = {}, intent = {}) => {
-  const normalizedMemory = normalizeBehavioralMemory(memory);
-  const userProfile = normalizedMemory.userProfile;
-  const genreIds = Array.isArray(movie.genre_ids) ? movie.genre_ids : [];
-  const toneLanes = getBehaviorToneLanes(movie);
-  const paceLanes = getBehaviorPaceLanes(movie);
-  const runtimeBucket = getBehaviorRuntimeBucket(movie.runtime);
-
-  const likedGenreId = userProfile.likedGenres.find((genreId) => genreIds.includes(genreId));
-  if (likedGenreId && TMDB_MOVIE_GENRE_LOOKUP[likedGenreId]) {
-    return `This stays close to the kinds of ${TMDB_MOVIE_GENRE_LOOKUP[likedGenreId].toLowerCase()} picks you've been saving.`;
-  }
-
-  const preferredTone = userProfile.preferredTraits.tone.find((lane) => toneLanes.includes(lane) && isBehavioralLaneRelevant(lane, "tone", intent));
-  if (preferredTone) {
-    return `It leans toward the ${BEHAVIOR_TONE_REASON_LABELS[preferredTone] || preferredTone} lane you've been responding to best.`;
-  }
-
-  const preferredPace = userProfile.preferredTraits.pace.find((lane) => paceLanes.includes(lane) && isBehavioralLaneRelevant(lane, "pace", intent));
-  if (preferredPace) {
-    return `It keeps the ${BEHAVIOR_PACE_REASON_LABELS[preferredPace] || preferredPace} feel you've been liking lately.`;
-  }
-
-  if (runtimeBucket && userProfile.preferredTraits.runtime.includes(runtimeBucket)) {
-    return `The ${BEHAVIOR_RUNTIME_REASON_LABELS[runtimeBucket] || runtimeBucket} runtime also tracks with the nights you've been choosing lately.`;
-  }
-
-  const recentGenreId = normalizedMemory.recentPatterns.genres.find((genreId) => genreIds.includes(Number(genreId)));
-  if (recentGenreId) {
-    return "It stays near the lane you've been circling lately without just repeating the same title.";
-  }
-
-  return "";
 };
 
 const scorePickCandidate = (
@@ -4251,14 +4053,9 @@ const getRuntimeCommitmentCopy = (runtime) => {
 };
 
 const buildFallbackWhyThisWorks = (movie, preferences, intent = {}, behavioralMemory = {}) => {
-  const personalizationLine = buildBehavioralPreferenceReason(movie, behavioralMemory);
   const bullets = [
     buildPickReason(movie, preferences),
   ];
-
-  if (personalizationLine) {
-    bullets.unshift(personalizationLine);
-  }
 
   if (intent.guardrails?.child_family_safe) {
     bullets.unshift("It stays gentler and lower-stress, which matters more here than edge or intensity.");
@@ -4681,7 +4478,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
-  const cacheKey = `pick:v5:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const cacheKey = `pick:v6:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);
@@ -5058,7 +4855,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
       whyRecommended: presentation.why_this_works || [],
       summaryLine: presentation.summary_line,
       primary_reason: presentation.primary_reason,
-      personalization_hint: buildBehavioralPreferenceReason(primaryPick, behavioralMemory, resolvedIntent) || null,
+      personalization_hint: null,
     },
     primary: normalizePickMovie(primaryPick, preferences, {
       reason: presentation.primary_reason,
