@@ -1,7 +1,7 @@
 // Bounds novel catalog reads across all callers, including distributed crawlers.
 // Cached pages and simultaneous reads of the same page do not spend this budget.
 function createCatalogProtection({ now = Date.now, maxEntries = 1000, ttl = 6 * 3600000,
-  metadataPerHour = 600, detailPerHour = 1200, burst = 60 } = {}) {
+  metadataPerHour = 600, detailPerHour = 1200, burst = 60, maxPending = 20, metadataReserved = 4 } = {}) {
   const cache = new Map();
   const pending = new Map();
   const buckets = new Map();
@@ -12,7 +12,8 @@ function createCatalogProtection({ now = Date.now, maxEntries = 1000, ttl = 6 * 
     bucket.tokens = Math.min(burst, bucket.tokens + Math.max(0, time - bucket.updated) * rate);
     bucket.updated = time;
     buckets.set(kind, bucket);
-    if (bucket.tokens < 1 || pending.size >= 20) return Math.max(1, Math.ceil((1 - bucket.tokens) / rate / 1000));
+    const detailPending = [...pending.keys()].filter(key => key.startsWith('detail:')).length;
+    if (bucket.tokens < 1 || pending.size >= maxPending || (kind === 'detail' && detailPending >= maxPending - metadataReserved)) return Math.max(1, Math.ceil((1 - bucket.tokens) / rate / 1000));
     bucket.tokens -= 1;
     return 0;
   }
@@ -26,7 +27,7 @@ function createCatalogProtection({ now = Date.now, maxEntries = 1000, ttl = 6 * 
   return async function catalogProtection(req, res, next) {
     if (!['GET', 'HEAD'].includes(req.method)) return next();
     if (!/^\/(?:movies\/(?:resolve\/[^/]+|\d+)|people\/resolve\/[^/]+|person\/\d+)$/.test(req.path)) return next();
-    const kind = req.path.startsWith('/movies/') && req.query.view === 'metadata' ? 'metadata' : 'detail';
+    const kind = req.query.view === 'metadata' ? 'metadata' : 'detail';
     const key = `${kind}:${req.path}`;
     const value = cache.get(key);
     if (value && value.expires > now()) return send(res, value);

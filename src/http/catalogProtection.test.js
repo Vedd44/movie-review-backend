@@ -12,3 +12,18 @@ let calls=0;const request=await fixture(t,{},async(req,res)=>{calls++;await new 
 const pair=await Promise.all([request('/movies/1'),request('/movies/1')]);assert.ok(pair.every(r=>r.status===200));assert.equal(calls,1);await request('/movies/404');await request('/movies/404');assert.equal(calls,2);await request('/movies/500');await request('/movies/500');assert.equal(calls,4);
 });
 test('cache is bounded and expires',async t=>{let time=0,calls=0;const request=await fixture(t,{now:()=>time,maxEntries:1,ttl:100},(req,res)=>{calls++;res.json({id:req.params.id});});await request('/movies/1');await request('/movies/2');await request('/movies/1');assert.equal(calls,3);time=101;await request('/movies/1');assert.equal(calls,4);});
+
+test('detail concurrency leaves metadata headroom, including person page metadata',async t=>{
+ const app=express();app.use(createCatalogProtection({maxPending:3,metadataReserved:1}));
+ let unblock;const block=new Promise(resolve=>{unblock=resolve;});
+ app.get('/movies/:id',async(req,res)=>{if(!req.query.view)await block;res.json({id:req.params.id});});
+ app.get('/people/resolve/:slug',(req,res)=>res.json({name:req.params.slug}));
+ const server=app.listen(0);t.after(()=>{unblock();server.close();});
+ const base=`http://127.0.0.1:${server.address().port}`;
+ const one=fetch(base+'/movies/1');const two=fetch(base+'/movies/2');
+ await new Promise(resolve=>setTimeout(resolve,30));
+ assert.equal((await fetch(base+'/movies/3')).status,429);
+ assert.equal((await fetch(base+'/movies/4?view=metadata')).status,200);
+ assert.equal((await fetch(base+'/people/resolve/christopher-nolan?view=metadata')).status,200);
+ unblock();assert.equal((await one).status,200);assert.equal((await two).status,200);
+});
