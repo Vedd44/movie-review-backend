@@ -1,6 +1,6 @@
 const test=require('node:test');const assert=require('node:assert/strict');const express=require('express');
 const {createCatalogProtection}=require('./catalogProtection');
-async function fixture(t,options,handler){const app=express();app.use(createCatalogProtection(options));app.get('/movies/:id',handler);app.get('/movies/:id/reelbot-take',(req,res)=>res.json({take:true}));const server=app.listen(0);t.after(()=>server.close());return path=>fetch(`http://127.0.0.1:${server.address().port}${path}`);}
+async function fixture(t,options,handler){const app=express();app.use(createCatalogProtection({aliases:{},...options}));app.get('/movies/:id',handler);app.get('/movies/:id/reelbot-take',(req,res)=>res.json({take:true}));const server=app.listen(0);t.after(()=>server.close());return path=>fetch(`http://127.0.0.1:${server.address().port}${path}`);}
 test('cached reads survive throttling; separate metadata budget and refill',async t=>{
 let time=0,calls=0;const request=await fixture(t,{now:()=>time,burst:1,detailPerHour:3600,metadataPerHour:3600},(req,res)=>{calls++;res.json({id:req.params.id});});
 assert.equal((await request('/movies/1')).status,200);const denied=await request('/movies/2');assert.equal(denied.status,429);assert.equal(denied.headers.get('retry-after'),'1');assert.match(denied.headers.get('cache-control'),/no-store/);
@@ -14,7 +14,7 @@ const pair=await Promise.all([request('/movies/1'),request('/movies/1')]);assert
 test('cache is bounded and expires',async t=>{let time=0,calls=0;const request=await fixture(t,{now:()=>time,maxEntries:1,ttl:100},(req,res)=>{calls++;res.json({id:req.params.id});});await request('/movies/1');await request('/movies/2');await request('/movies/1');assert.equal(calls,3);time=101;await request('/movies/1');assert.equal(calls,4);});
 
 test('detail concurrency leaves metadata headroom, including person page metadata',async t=>{
- const app=express();app.use(createCatalogProtection({maxPending:3,metadataReserved:1}));
+ const app=express();app.use(createCatalogProtection({maxPending:3,metadataReserved:1,aliases:{}}));
  let unblock;const block=new Promise(resolve=>{unblock=resolve;});
  app.get('/movies/:id',async(req,res)=>{if(!req.query.view)await block;res.json({id:req.params.id});});
  app.get('/people/resolve/:slug',(req,res)=>res.json({name:req.params.slug}));
@@ -37,10 +37,19 @@ test('a full sitemap crawl fits the public metadata budget while detail remains 
 });
 test('numeric person redirects warm their canonical destination without another lookup',async t=>{
  const app=express();let calls=0;app.use(createCatalogProtection({metadataBurst:1,now:()=>0}));
- app.get('/person/:id',(req,res)=>{calls++;res.json({id:Number(req.params.id),canonical_slug:'lana-condor'});});
+ app.get('/person/:id',(req,res)=>{calls++;res.json({id:Number(req.params.id),canonical_slug:'fixture-person'});});
  app.get('/people/resolve/:slug',(req,res)=>{calls++;res.json({id:1452046,canonical_slug:req.params.slug});});
  const server=app.listen(0);t.after(()=>server.close());const base=`http://127.0.0.1:${server.address().port}`;
  assert.equal((await fetch(base+'/person/1452046?view=metadata')).status,200);
- const destination=await fetch(base+'/people/resolve/lana-condor?view=metadata');assert.equal(destination.status,200);assert.equal(destination.headers.get('x-reelbot-catalog-cache'),'HIT');assert.equal(calls,1);
+ const destination=await fetch(base+'/people/resolve/fixture-person?view=metadata');assert.equal(destination.status,200);assert.equal(destination.headers.get('x-reelbot-catalog-cache'),'HIT');assert.equal(calls,1);
  assert.equal((await fetch(base+'/person/2?view=metadata')).status,429);
+});
+
+test('verified catalog aliases resolve through IDs, preserve views, and coalesce with numeric reads',async t=>{
+ const app=express();let calls=0;app.use(createCatalogProtection({metadataBurst:1,now:()=>0}));
+ app.get('/movies/:id',(req,res)=>{calls++;res.json({id:Number(req.params.id),canonical_slug:'dial-code-santa-claus-1990',view:req.query.view});});
+ app.get('/movies/resolve/:slug',(req,res)=>res.status(404).json({error:'Search cannot resolve this title'}));
+ const server=app.listen(0);t.after(()=>server.close());const base=`http://127.0.0.1:${server.address().port}`;
+ const first=await fetch(base+'/movies/resolve/dial-code-santa-claus-1990?view=metadata');assert.equal(first.status,200);assert.deepEqual(await first.json(),{id:46959,canonical_slug:'dial-code-santa-claus-1990',view:'metadata'});
+ assert.equal((await fetch(base+'/movies/46959?view=metadata')).status,200);assert.equal(calls,1);
 });
