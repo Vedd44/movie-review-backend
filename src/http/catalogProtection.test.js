@@ -52,4 +52,14 @@ test('verified catalog aliases resolve through IDs, preserve views, and coalesce
  const server=app.listen(0);t.after(()=>server.close());const base=`http://127.0.0.1:${server.address().port}`;
  const first=await fetch(base+'/movies/resolve/dial-code-santa-claus-1990?view=metadata');assert.equal(first.status,200);assert.deepEqual(await first.json(),{id:46959,canonical_slug:'dial-code-santa-claus-1990',view:'metadata'});
  assert.equal((await fetch(base+'/movies/46959?view=metadata')).status,200);assert.equal(calls,1);
+ assert.equal((await fetch(base+'/movies/resolve/dial-code-santa-claus-2025?view=metadata')).status,200);assert.equal(calls,1);
+});
+
+test('year aliases never merge distinct remakes with the same title',async t=>{
+ const app=express();app.use(createCatalogProtection({aliases:{'/movies/resolve/remake-1980':'/movies/10','/movies/resolve/remake-2000':'/movies/20'}}));
+ app.get('/movies/:id',(req,res)=>res.json({id:Number(req.params.id)}));
+ app.get('/movies/resolve/:slug',(req,res)=>res.status(404).json({error:'Unresolved title'}));
+ const server=app.listen(0);t.after(()=>server.close());const base=`http://127.0.0.1:${server.address().port}`;
+ assert.equal((await fetch(base+'/movies/resolve/remake-2025?view=metadata')).status,404);
+ assert.equal((await (await fetch(base+'/movies/resolve/remake-1980?view=metadata')).json()).id,10);
 });

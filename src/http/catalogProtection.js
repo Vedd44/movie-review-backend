@@ -5,6 +5,13 @@ const catalogAliases = require('../catalogAliases.json');
 // interactive detail reads retain the smaller budget and concurrency protection.
 function createCatalogProtection({ now = Date.now, maxEntries = 12000, ttl = 6 * 3600000,
   metadataPerHour = 6000, detailPerHour = 1200, burst = 60, metadataBurst = 6000, maxPending = 20, metadataReserved = 4, aliases = catalogAliases } = {}) {
+  const movieTitleAliases = new Map();
+  for (const [path, target] of Object.entries(aliases)) {
+    if (!path.startsWith('/movies/resolve/')) continue;
+    const titlePath = path.replace(/-\d{4}$/, '');
+    if (!movieTitleAliases.has(titlePath)) movieTitleAliases.set(titlePath, target);
+    else if (movieTitleAliases.get(titlePath) !== target) movieTitleAliases.set(titlePath, null);
+  }
   const cache = new Map();
   const pending = new Map();
   const buckets = new Map();
@@ -34,7 +41,7 @@ function createCatalogProtection({ now = Date.now, maxEntries = 12000, ttl = 6 *
     // Our editorial catalogue already has verified immutable IDs. Route those
     // slugs directly, including punctuation and alternate English titles that
     // upstream title search does not reliably find. Keep query parameters.
-    const knownPath = aliases[req.path];
+    const knownPath = aliases[req.path] || movieTitleAliases.get(req.path.replace(/-\d{4}$/, ''));
     if (knownPath) req.url = knownPath + req.url.slice(req.path.length);
     const kind = req.query.view === 'metadata' ? 'metadata' : 'detail';
     const key = `${kind}:${req.path}`;
