@@ -1,6 +1,7 @@
 require("dotenv").config();
 const { createHash } = require("node:crypto");
 const { passesRecommendationContract, recommendationCacheScope, needsVerifiedContentGuide } = require("./ai/recommendationContract");
+const { normalizeWatchedAt, getWatchCooldownIds, getWatchedMovieAdjustment, isExplicitRewatchRequest } = require("./ai/watchHistoryPolicy");
 const express = require("express");
 const { timingMiddleware, measureStage, finishTiming, markRecovery } = require("./ai/requestTiming");
 const { decisionReasons } = require("./ai/decisionPresentation");
@@ -2658,56 +2659,13 @@ const normalizeBehavioralMemory = (memory = {}) => ({
   interactionStats: memory.interactionStats && typeof memory.interactionStats === "object" ? memory.interactionStats : {},
   hiddenMovieIds: normalizeBehavioralIdSet(memory.hiddenMovieIds),
   seenMovieIds: normalizeBehavioralIdSet(memory.seenMovieIds),
+  watchedAt: normalizeWatchedAt(memory.watchedAt),
+  rewatchPrompt: typeof memory.rewatchPrompt === "string" ? memory.rewatchPrompt : "",
   savedMovieIds: normalizeBehavioralIdSet(memory.savedMovieIds),
   recentMovieIds: normalizeBehavioralIdSet(memory.recentMovieIds),
   userProfile: normalizeBehaviorUserProfile(memory.userProfile),
   updatedAt: typeof memory.updatedAt === "string" ? memory.updatedAt : "",
 });
-
-const getSoftPreferenceSignals = (intent = {}) => {
-  if (Array.isArray(intent.soft_preferences)) {
-    return intent.soft_preferences;
-  }
-
-  if (Array.isArray(intent.soft_preferences?.preference_signals)) {
-    return intent.soft_preferences.preference_signals;
-  }
-
-  return [];
-};
-
-const getSeenPenaltyBonus = (signals = {}, intent = {}) => {
-  const softSignals = new Set(getSoftPreferenceSignals(intent));
-  const watchContext = new Set(Array.isArray(intent.watch_context) ? intent.watch_context : []);
-  let bonus = 0;
-
-  if (softSignals.has("rewatchable")) bonus += 3;
-  if (softSignals.has("low_regret")) bonus += 3;
-  if (softSignals.has("consensus_friendly") || softSignals.has("broadly_accessible")) bonus += 2;
-
-  if (watchContext.has("comfort_watch")) bonus += 3;
-  if (watchContext.has("sick_day")) bonus += 2;
-  if (watchContext.has("group_watch") || watchContext.has("family")) bonus += 1;
-
-  const rewatchability = Number(signals.rewatchability || 0);
-  if (rewatchability >= 0.62) {
-    bonus += 3;
-  } else if (rewatchability >= 0.52) {
-    bonus += 2;
-  } else if (rewatchability >= 0.45) {
-    bonus += 1;
-  }
-
-  if (Number(signals.consensus_friendliness || 0) >= 0.6) {
-    bonus += 2;
-  }
-
-  if (Number(signals.cozy_score || 0) >= 0.6) {
-    bonus += 1;
-  }
-
-  return Math.min(10, bonus);
-};
 
 const getBehavioralMemoryCacheKey = (memory = {}) => {
   const normalizedMemory = normalizeBehavioralMemory(memory);
@@ -2736,7 +2694,6 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}, intent = {}, signals 
   const runtimeBucket = getBehaviorRuntimeBucket(movie.runtime);
   const swapCount = Number(normalizedMemory.interactionStats?.swaps || 0);
   const explorationFactor = swapCount >= 3 ? 0.82 : 1;
-  const derivedSignals = signals || deriveMovieSignals(movie);
 
   if (normalizedMemory.hiddenMovieIds.has(movieId) || userProfile.hardAvoidMovieIds.has(movieId)) {
     return {
@@ -2881,17 +2838,13 @@ const getBehavioralMemoryScore = (movie = {}, memory = {}, intent = {}, signals 
   }
 
   if (normalizedMemory.seenMovieIds.has(movieId)) {
-    const seenBonus = getSeenPenaltyBonus(derivedSignals, intent);
-    const basePenalty = -4;
-    const softenedPenalty = Math.max(-6, Math.min(2, basePenalty + Math.min(seenBonus, 6)));
-    score += softenedPenalty;
-    reasons.push("seen-deprioritized");
-    if (seenBonus >= 3) {
-      reasons.push("seen-friendly");
-    }
+    const adjustment = getWatchedMovieAdjustment(movieId, normalizedMemory, normalizedMemory.rewatchPrompt);
+    if (adjustment.excluded) return { score: -1000, reasons: ["recently-watched"] };
+    score += adjustment.score;
+    reasons.push(adjustment.score < 0 ? "seen-deprioritized" : "rewatch-requested");
   }
 
-  if (normalizedMemory.recentMovieIds.has(movieId) || userProfile.recentlyViewed.some((entry) => entry.id === movieId)) {
+  if (!normalizedMemory.seenMovieIds.has(movieId) && (normalizedMemory.recentMovieIds.has(movieId) || userProfile.recentlyViewed.some((entry) => entry.id === movieId))) {
     score -= 9;
     reasons.push("recently-viewed");
   }
@@ -4674,7 +4627,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
       user_message: "I can suggest gentler movies, but I can’t verify that every scene meets that restriction. Try a broader request, then check a detailed parents’ guide before choosing.", cached: false };
   }
   const includeDebug = shouldIncludePickDebug(rawPreferences);
-  const behavioralMemory = normalizeBehavioralMemory(rawPreferences.behavioral_memory);
+  const behavioralMemory = normalizeBehavioralMemory({ ...rawPreferences.behavioral_memory, rewatchPrompt: preferences.prompt });
   const isMovieSeen = (movie) => Boolean(movie?.id && behavioralMemory.seenMovieIds.has(movie.id));
   const refinement = normalizePickRefinement(rawPreferences.refinement);
   const allowTimeConstraintFallback = rawPreferences.time_constraint_fallback_mode === "relaxed";
@@ -4719,10 +4672,15 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const queryType = resolvedIntent.query_type || getIntentQueryType(resolvedIntent);
   const excludedIds = normalizeExcludedIds(rawPreferences.excluded_ids);
   behavioralMemory.hiddenMovieIds.forEach((movieId) => excludedIds.add(movieId));
+  if (!isExplicitRewatchRequest(preferences.prompt)) {
+    getWatchCooldownIds(behavioralMemory.watchedAt).forEach((movieId) => {
+      if (behavioralMemory.seenMovieIds.has(movieId)) excludedIds.add(movieId);
+    });
+  }
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
-  const cacheKey = `pick:v4:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const cacheKey = `pick:v5:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);
@@ -4753,6 +4711,12 @@ const generatePickPayload = async (rawPreferences = {}) => {
     : shouldUseStructuredResolution
       ? structuredResolution.movies
       : await getPickCandidatePool(preferences, resolvedIntent, promptBoosts));
+  // Rewatch requests must retrieve watched candidates as well as removing
+  // their cooldown; otherwise older favorites may never reach the ranker.
+  if (isExplicitRewatchRequest(preferences.prompt) && !hasProvidedCandidatePool && behavioralMemory.seenMovieIds.size) {
+    const watchedCandidates = await fetchMoviesByIds(Array.from(behavioralMemory.seenMovieIds).slice(0, 24));
+    candidatePool = dedupeMoviesById([...candidatePool, ...watchedCandidates]);
+  }
   let fallbackPool = !candidatePool.length && !hasProvidedCandidatePool && !usesHardEntityPool && (preferences.mood !== "all" || preferences.runtime !== "any")
     ? await getPickCandidatePool({ ...preferences, mood: "all", runtime: "any" }, resolvedIntent, promptBoosts)
     : candidatePool;
@@ -6575,6 +6539,7 @@ const resolveAskAnchorMovie = async (prompt, pageContext, conversation) => {
 };
 
 app.get("/", (req, res) => {
+  res.set("X-Reelbot-Watch-Policy", "cooldown-90d-v1");
   res.send("Movie Review Backend is Running!");
 });
 
@@ -7537,11 +7502,11 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
     const isNowPlaying = pageContext.page === "now_playing";
     const myMoviesPrompt = String(prompt || "").toLowerCase();
     const asksForWatchedSavedMovie = pageContext.page === "my_movies"
-      && /\b(?:have|i['’]?ve|already)\s+(?:seen|watched)\b|\b(?:seen|watched)\s+(?:before|already)\b/.test(myMoviesPrompt)
+      && (isExplicitRewatchRequest(myMoviesPrompt) || /\b(?:have|i['’]?ve|already)\s+(?:seen|watched)\b|\b(?:seen|watched)\s+(?:before|already)\b/.test(myMoviesPrompt))
       && !/\b(?:not|haven['’]?t|have not|unseen|not watched|not seen)\b/.test(myMoviesPrompt);
-    const unwatchedSavedIds = pageContext.savedMovieIds.filter((id) => !pageContext.watchedMovieIds.includes(id));
+    const savedIds = pageContext.savedMovieIds;
     let constrainedIds = pageContext.page === "my_movies"
-      ? (asksForWatchedSavedMovie ? pageContext.watchedMovieIds : unwatchedSavedIds)
+      ? (asksForWatchedSavedMovie ? pageContext.watchedMovieIds : savedIds)
       : (pageContext.page === "browse" || pageContext.page === "now_playing" || pageContext.page === "collection")
         ? pageContext.visibleMovieIds
         : [];
@@ -7569,7 +7534,6 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
       : contextualPrompt;
     const excludedIds = Array.from(new Set([
       ...pageContext.excludedMovieIds,
-      ...(asksForWatchedSavedMovie ? [] : pageContext.watchedMovieIds),
       ...pageContext.rejectedMovieIds,
       ...getConversationExcludedIds(conversation),
       ...(intent === ASK_INTENTS.MOVIE_RECOMMENDATION && movieId ? [movieId] : []),

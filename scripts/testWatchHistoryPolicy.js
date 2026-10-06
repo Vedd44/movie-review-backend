@@ -1,0 +1,14 @@
+const assert = require("node:assert/strict");
+const { isExplicitRewatchRequest, getWatchCooldownIds, getWatchedMovieAdjustment } = require("../ai/watchHistoryPolicy");
+const now = Date.parse("2026-10-06T12:00:00Z");
+const day = 86400000;
+const dates = {1: new Date(now - 89 * day).toISOString(), 2: new Date(now - 90 * day).toISOString(), 3: "bad", 4: new Date(now + day).toISOString()};
+for (const prompt of ["I want to rewatch Blade Runner 2049", "Watch a favorite again", "Something I've seen before", "re-watch a film"]) assert.equal(isExplicitRewatchRequest(prompt), true, prompt);
+for (const prompt of ["I've seen Blade Runner, find something like it", "A rewatchable comfort movie", "No rewatches", "Don't rewatch that", "Something I haven't seen before", "Something unseen"]) assert.equal(isExplicitRewatchRequest(prompt), false, prompt);
+assert.deepEqual(getWatchCooldownIds(dates, now), [1]);
+assert.deepEqual(getWatchedMovieAdjustment(1, {seenMovieIds:[1], watchedAt:dates}, "drama", now), {excluded:true, score:-4});
+assert.deepEqual(getWatchedMovieAdjustment(1, {seenMovieIds:[1], watchedAt:dates}, "rewatch", now), {excluded:false, score:0});
+assert.deepEqual(getWatchedMovieAdjustment(2, {seenMovieIds:[2], watchedAt:dates}, "drama", now), {excluded:false, score:-4});
+assert.deepEqual(getWatchedMovieAdjustment(5, {seenMovieIds:[5]}, "drama", now), {excluded:false, score:-4});
+assert.deepEqual(getWatchedMovieAdjustment(6, {}, "drama", now), {excluded:false, score:0});
+console.log("Watch history policy tests passed");
