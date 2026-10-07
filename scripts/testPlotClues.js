@@ -26,5 +26,7 @@ assert.equal(isExplicitModelAbstention({primary:null,backups:[]}),true);assert.e
 const {pickDecisionSchema}=require('../ai/aiSchemas');assert.ok(pickDecisionSchema.properties.primary.type.includes('null'));checks++;
 assert.equal(protectEndingSpoilers('Tony Stark dies in the finale. An epic superhero conclusion.','movie where the hero dies in the end').includes('Tony Stark'),false);checks++;
 assert.equal(protectEndingSpoilers('Maximus dies in the arena. A historical action drama.','movie where the hero dies in the end').includes('Maximus'),false);checks++;
+assert.equal(protectEndingSpoilers('Robert Downey Jr plays Tony Stark and the ending fits. A superhero finale.','movie where the hero dies in the end').includes('Tony Stark'),false);checks++;
+assert.equal(protectEndingSpoilers('Tony Stark makes the ultimate sacrifice. A superhero finale.','movie where the hero dies in the end').includes('Tony Stark'),false);checks++;
 assert.equal(protectEndingSpoilers('Tony Stark dies.','Who dies? Spoilers please.'),'Tony Stark dies.');checks++;
 console.log(`${checks} descriptive clue, routing, typo, occasion, venue, title and abstention checks passed.`);

@@ -67,7 +67,7 @@ vm.runInContext(source.slice(source.indexOf('const movieIdentificationSchema'),s
  candidates=originalCandidates;
  // A dated hypothesis must not borrow its plot from a different film with the same name.
  queries=['Memento (2000)'];ranking={primary_id:77,alternative_ids:[1824],confidence:'high',reason:'Its memory-loss mystery fits.',alternative_reasons:[]};calls=[];searches=[];
- result=await context.identify('Movie where a man uses tattoos to remember');assert.equal(result.primary.id,77);assert.equal(result.alternatives.length,0);assert.equal(searches[0].query,'Memento');assert.equal(searches[0].primary_release_year,'2000');
+ result=await context.identify('Movie where a man uses tattoos to remember');assert.equal(result.primary.id,77);assert.equal(result.alternatives.length,0);assert.equal(searches[0].query,'Memento');assert.equal(searches[0].primary_release_year,undefined,'search both premiere and theatrical years before local validation');
  queries=['Memento'];
  // Run the real /pick handler: identification errors bypass recommendation fallback.
  let fallbackCalls=0;

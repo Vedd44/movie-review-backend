@@ -4521,7 +4521,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   if (resolvedIntent.plot_constraints.length && !hasProvidedCandidatePool && !usesHardEntityPool) {
     const plotQueries = await extractMovieIdentificationQueries(preferences.prompt).catch(()=>[]);
     const plotMovies = await fetchMovieTitleHypotheses(plotQueries,resolvedIntent.plot_constraints);
-    candidatePool = dedupeMoviesById([...plotMovies,...candidatePool]);
+    candidatePool = dedupeMoviesById([...plotMovies.map(movie=>({...movie,source_type:"semantic_prompt_search"})),...candidatePool]);
   }
   // Rewatch requests must retrieve watched candidates as well as removing
   // their cooldown; otherwise older favorites may never reach the ranker.
@@ -7144,9 +7144,9 @@ const fetchMovieTitleHypotheses = async (effectiveQueries, constraints=[]) => {
       const dated = query.match(/^(.*?)\s+\((\d{4})\)$/);
       const title = dated ? dated[1] : query;
       const year = dated ? dated[2] : null;
-      const response = await fetchTmdb("/search/movie", { query:title, ...(year ? {primary_release_year:year} : {}), include_adult:"false", page:1 });
-      // Same-title remakes and unrelated namesakes must not inherit a known plot.
-      return {...response,results:(response?.results || []).filter(movie=>!year || String(movie.release_date || '').slice(0,4)===year)};
+      const response = await fetchTmdb("/search/movie", { query:title, include_adult:"false", page:1 });
+      // Allow a premiere/theatrical year difference, while excluding distant namesakes.
+      return {...response,results:(response?.results || []).filter(movie=>!year || Math.abs(Number(String(movie.release_date || '').slice(0,4))-Number(year))<=1)};
     })
   );
   return dedupeMoviesById(
