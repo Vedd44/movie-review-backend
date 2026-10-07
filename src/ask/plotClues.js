@@ -58,7 +58,7 @@ function protectEndingSpoilers(reason='',prompt='') {
  if(!endingCategory || requestedDetails) return text;
  const sentences=text.match(/[^.!?]+(?:[.!?]+|$)/g) || [];
  const safe=sentences.filter(sentence=>!/\b(?:dies?|died|death|killed|fatal|tragic end|executed|sacrific(?:e|es|ed)|plays|portrays|fate)\b/i.test(sentence));
- return safe.length===sentences.length ? text : ['This fits the ending-based story you asked for.',...safe.map(sentence=>sentence.trim())].join(' ');
+ return safe.length===sentences.length ? text : ['This has the kind of ending you’re looking for. I’ll leave the details for you to discover.',...safe.map(sentence=>sentence.trim())].join(' ');
 }
 const isExplicitModelAbstention = ranking => Boolean(ranking && Object.prototype.hasOwnProperty.call(ranking,'primary') && ranking.primary === null);
 module.exports={selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention};

@@ -84,7 +84,7 @@ const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
       "3. Reject candidates that miss explicit year/decade, audience, tone, safety, or exclusion constraints before you rank anything else.",
       "4. Reward audience fit, context fit, tone fit, pacing fit, emotional fit, accessibility fit, prompt fidelity, and non-obviousness.",
       "5. Prefer clear fit tradeoffs over prestige language or famous defaults.",
-      "6. If the best available option is only a partial fit, keep it inside the lane and let the backups cover adjacent safe or interesting angles.",
+      "6. Soft preferences may allow an adjacent fit, but a core plot clue may not: a film that fails the essential premise is not a recommendation. Do not explain away a core mismatch in public copy.",
       "6a. Scores and fit labels never override a core plot contradiction. Choose a supplied candidate only when the actual evidence supports the core request; otherwise abstain.",
       "7. When the prompt contains situational context such as kids, parents, low-stress, background watch, immersive, awards, or country/location intent, let that context outrank vague semantic similarity.",
       "8. For family-safe or sick-day contexts, prioritize emotional safety and clarity over prestige, darkness, or edge.",
