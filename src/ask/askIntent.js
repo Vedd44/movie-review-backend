@@ -1,3 +1,4 @@
+const {normalizeCluePrompt}=require('./plotClues');
 const ASK_INTENTS = Object.freeze({
   CURRENT_MOVIE_QUESTION: "CURRENT_MOVIE_QUESTION",
   MOVIE_RECOMMENDATION: "MOVIE_RECOMMENDATION",
@@ -30,7 +31,7 @@ const isMovieIdentificationFollowUp = (prompt = "", conversation = {}) =>
   && !RECOMMENDATION_PATTERN.test(prompt);
 
 const classifyAskIntent = ({ prompt, context = {}, conversation = {} } = {}) => {
-  const normalizedPrompt = normalize(prompt);
+  const normalizedPrompt = normalize(normalizeCluePrompt(prompt));
   const page = normalize(context.page);
   const activeIntent = normalize(conversation.activeIntent);
   const hasAnchor = Boolean(context.movie?.id || context.movieId || conversation.anchorMovie?.id);
@@ -38,6 +39,9 @@ const classifyAskIntent = ({ prompt, context = {}, conversation = {} } = {}) => 
 
   if (!normalizedPrompt) return ASK_INTENTS.UNKNOWN;
   if (isMovieIdentificationFollowUp(prompt, conversation)) return ASK_INTENTS.MOVIE_IDENTIFICATION;
+  const descriptiveMemory = /^(?:a |the )?(?:movie|film)\s+(?:where|in which)\s+(?!can i|should i|do i|to watch)(?:.+)/i.test(normalizedPrompt)
+    || /^(?:a |the )?(?:movie|film)\s+(?:with|about)\s+(?:a |an |the )?(?:man|woman|guy|girl|boy|person|group)\b.*\b(?:works?|working|wakes?|relives?|repeats?|finds?|gets?|goes?|trapped|remembers?|loses?)\b/i.test(normalizedPrompt);
+  if (descriptiveMemory && !RECOMMENDATION_PATTERN.test(normalizedPrompt)) return ASK_INTENTS.MOVIE_IDENTIFICATION;
   if (MOVIE_IDENTIFICATION_PATTERN.test(normalizedPrompt)) return ASK_INTENTS.MOVIE_IDENTIFICATION;
   if (COMPARISON_PATTERN.test(normalizedPrompt)) return ASK_INTENTS.MOVIE_COMPARISON;
   if (NEXT_PATTERN.test(normalizedPrompt) && hasRecommendation) return ASK_INTENTS.NEXT_RECOMMENDATION;

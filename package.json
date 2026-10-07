@@ -16,7 +16,7 @@
     "benchmark:models": "node scripts/benchmarkReelbotModels.js",
     "inspect:sitemap": "node scripts/inspectSitemap.js",
     "test:watch-history": "node scripts/testWatchHistoryPolicy.js",
-    "test:recommendations": "node scripts/testWatchHistoryPolicy.js && node scripts/testRecommendationContract.js && node scripts/testRecommendationNovelty.js && node scripts/testWatchCompanyRouting.js && node scripts/testIntelligenceRegressions.js && node scripts/testMovieIdentification.js && npm run test:product-regressions",
+    "test:recommendations": "node scripts/testWatchHistoryPolicy.js && node scripts/testRecommendationContract.js && node scripts/testRecommendationNovelty.js && node scripts/testWatchCompanyRouting.js && node scripts/testIntelligenceRegressions.js && node scripts/testPlotClues.js && node scripts/testMovieIdentification.js && npm run test:product-regressions",
     "test:product-regressions": "node scripts/testProductRegressionCases.js",
     "test:catalog-protection": "node --test src/http/catalogProtection.test.js && node scripts/testCatalogMetadata.js"
   },

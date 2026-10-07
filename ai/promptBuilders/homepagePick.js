@@ -85,7 +85,7 @@ const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
       "4. Reward audience fit, context fit, tone fit, pacing fit, emotional fit, accessibility fit, prompt fidelity, and non-obviousness.",
       "5. Prefer clear fit tradeoffs over prestige language or famous defaults.",
       "6. If the best available option is only a partial fit, keep it inside the lane and let the backups cover adjacent safe or interesting angles.",
-      "6a. Do not return a de facto no-pick if one or more candidates already have strong_fit or decent_fit evidence.",
+      "6a. Scores and fit labels never override a core plot contradiction. Choose a supplied candidate only when the actual evidence supports the core request; otherwise abstain.",
       "7. When the prompt contains situational context such as kids, parents, low-stress, background watch, immersive, awards, or country/location intent, let that context outrank vague semantic similarity.",
       "8. For family-safe or sick-day contexts, prioritize emotional safety and clarity over prestige, darkness, or edge.",
       "9. For place/country prompts, privilege actual relevance in setting, language, perspective, or story rather than weak keyword overlap.",
@@ -160,7 +160,8 @@ module.exports = {
     return {
       systemPrompt: prompts.systemPrompt.replace("- Do not write user-facing copy.", [
         "- Explain each selected movie in its reason field. Selection and explanation are one decision.",
-        "- Primary reason: 30–45 words, one specific fit and one useful tradeoff. Backup reasons: 15–25 words naming a real difference.",
+        "- If no candidate satisfies the core request, return primary:null and backups:[]; never force the least-wrong winner. An explanation admitting that the setting, subject or central action is absent is a reason to reject it, not justify it. Minor tone tradeoffs are acceptable; core plot contradictions are not. Preserve every distinctive context clue together. Interpret ordinary spelling mistakes conservatively, and do not rewrite names or movie titles.",
+        "- Primary reason: 30–45 words explaining the specific fit. Add a tradeoff only when useful; never mechanically append a miss or negative comparison. Backup reasons: 15–25 words naming a supported difference while still fulfilling the core request. Never write audit phrases such as the key miss, substantial compromise, not the requested setting, or rather than anything requested: reject those candidates instead.",
         "- Ground every claim in the supplied overview, credits, genre, runtime and evidence. Do not invent scenes, awards or content-guide details.",
         "- Derived signals are estimates: qualify tone or intensity inferences. Runtime is not evidence of pacing. Never promise no scary scenes or guaranteed age suitability.",
         "- No generic praise, internal scoring language, metadata references, or repetition of the request. Write like a thoughtful film guide.",

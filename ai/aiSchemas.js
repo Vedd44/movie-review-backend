@@ -90,6 +90,9 @@ for (const item of [pickDecisionSchema.properties.primary, pickDecisionSchema.pr
   item.required.push("reason");
 }
 
+// An empty candidate fit is a valid decision, never a forced winner.
+pickDecisionSchema.properties.primary.type = ["object", "null"];
+
 const DETAIL_SCHEMAS = {
   quick_take: {
     type: "object",

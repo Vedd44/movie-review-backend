@@ -44,6 +44,7 @@ const { installWatchmodeRoutes } = require("./src/watchmode/routes");
 const { createSupabaseTakeStore } = require("./src/takes/supabaseTakeStore");
 const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
 const { ASK_INTENTS, classifyAskIntent, isMovieIdentificationFollowUp } = require("./src/ask/askIntent");
+const {normalizeCluePrompt,extractPlotConstraints,passesPlotConstraints,isExplicitModelAbstention}=require("./src/ask/plotClues");
 const {
   normalizeConversationState,
   updateConversationForPrompt,
@@ -1233,6 +1234,7 @@ const hydrateResolvedIntent = async (preferences = {}, rawPreferences = {}) => {
 
 const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}, options = {}) => {
   if (!passesRecommendationContract(movie, intent, options)) return false;
+  if (options.final && !passesPlotConstraints(movie, intent.plot_constraints || [])) return false;
   if (promptBoosts?.anchorMovieIds?.has(movie?.id)) return false;
   const queryType = intent?.query_type || getIntentQueryType(intent);
   if (!movie?.id) {
@@ -4432,6 +4434,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const refinement = normalizePickRefinement(rawPreferences.refinement);
   const allowTimeConstraintFallback = rawPreferences.time_constraint_fallback_mode === "relaxed";
   let resolvedIntent = await measureStage("intent", () => hydrateResolvedIntent(preferences, rawPreferences));
+  resolvedIntent.plot_constraints = extractPlotConstraints(preferences.prompt);
   if (rawPreferences.person_context) resolvedIntent.person_context = rawPreferences.person_context;
   ensureTimeConstraintFilter(resolvedIntent, preferences.prompt);
   const relative = rawPreferences.constraint_overrides || {};
@@ -4481,7 +4484,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
-  const cacheKey = `pick:v6:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const cacheKey = `pick:v7:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);
@@ -4662,7 +4665,8 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const rankedPrimaryCandidate = movieLookup.get(aiRanking?.primary?.id);
   const preferredPrimaryEntry = rankingSourceEntries.find((entry) => entry.movie?.id === rankedPrimaryCandidate?.id) || rankingSourceEntries[0] || rescueRankingEntries[0] || null;
   const canonicalPrimaryEntry = pickCanonicalPrimaryEntry(rankingSourceEntries, preferredPrimaryEntry, resolvedIntent) || preferredPrimaryEntry;
-  const primaryPick = canonicalPrimaryEntry?.movie || fallbackPrimary || rescuePrimary;
+  const proposedPrimaryPick = canonicalPrimaryEntry?.movie || fallbackPrimary || rescuePrimary;
+  const primaryPick = isExplicitModelAbstention(aiRanking) || (proposedPrimaryPick && !isMovieValidForIntent(proposedPrimaryPick, resolvedIntent, promptBoosts, { final: true })) ? null : proposedPrimaryPick;
   const primaryRankingEntry = rankingSourceEntries.find((entry) => entry.movie.id === primaryPick?.id)
     || rescueRankingEntries.find((entry) => entry.movie.id === primaryPick?.id)
     || null;
@@ -4743,6 +4747,8 @@ const generatePickPayload = async (rawPreferences = {}) => {
     const noPickPayload = {
       label: "Pick for Me",
       summary: buildPickNoMatchSummary(preferences),
+      no_pick_reason: "no_suitable_candidate",
+      user_message: "I couldn’t find a movie that fits the key details closely enough. Add another clue or tell me which detail you’d be happy to broaden.",
       assistant_note: usesHardEntityPool
         ? "ReelBot stayed inside the anchored candidate set and could not find a strong enough valid result."
         : "ReelBot could not find a strong-enough fit from the current candidate pool.",
@@ -7108,7 +7114,7 @@ const movieIdentificationSchema = {
 
 const extractMovieIdentificationQueries = async (prompt = "") => {
   const parsed = await callStructuredOpenAI({
-    systemPrompt: "Suggest up to 4 plausible EXISTING movie titles matching the remembered plot. These are hypotheses for TMDB title search, not a final answer. Return exact known titles, never plot keywords or descriptions: TMDB title search does not search plots. Include competing plausible titles when clues are ambiguous or imperfect. If there are no distinctive clues or no plausible known movie, return an empty array. Never invent a title.",
+    systemPrompt: "Suggest up to 4 plausible EXISTING movie titles matching the remembered plot. These are hypotheses for TMDB title search, not a final answer. Return exact known titles, never plot keywords or descriptions: TMDB title search does not search plots. Preserve all core plot clues together, including workplace, roles, time of day and unusual events. Tolerate ordinary typos and imperfect recollection, but never silently replace a restaurant with a showroom or a night shift with an unrelated job. Include competing plausible titles when clues are ambiguous or imperfect. If there are no distinctive clues or no plausible known movie, return an empty array. Never invent a title.",
     userPrompt: prompt,
     schema: movieIdentificationSchema,
     schemaName: "movie_identification_queries",
@@ -7120,7 +7126,9 @@ const extractMovieIdentificationQueries = async (prompt = "") => {
 };
 
 const identifyMovieFromMemory = async (prompt = "") => {
-  const queries = await extractMovieIdentificationQueries(prompt);
+  const normalizedPrompt = normalizeCluePrompt(prompt);
+  const constraints = extractPlotConstraints(normalizedPrompt);
+  const queries = await extractMovieIdentificationQueries(normalizedPrompt);
   const effectiveQueries = queries;
   const responses = await Promise.allSettled(
     effectiveQueries.map(query => fetchTmdb("/search/movie", { query, include_adult: "false", page: 1 }))
@@ -7131,6 +7139,7 @@ const identifyMovieFromMemory = async (prompt = "") => {
       .flatMap(response => response.value?.results || [])
   )
     .filter(movie => movie?.id && movie.poster_path && movie.overview && !movie.adult)
+    .filter(movie => passesPlotConstraints(movie, constraints))
     .slice(0, 18);
 
   if (!candidates.length) {
@@ -7155,8 +7164,8 @@ const identifyMovieFromMemory = async (prompt = "") => {
     overview: movie.overview,
   }));
   const ranked = await callStructuredOpenAI({
-    systemPrompt: "Identify a movie from an imperfect human memory. Choose only supplied TMDB candidate IDs. Prefer agreement with distinctive plot clues over popularity or title similarity. High confidence requires strong distinctive agreement; use medium for a plausible but ambiguous match and low/null primary_id when unsupported. Offer up to 3 plausible alternative IDs when ambiguous, not unrelated fillers. Base the short reason on supplied overviews, explicitly acknowledging conflicting or unverified details. Never invent a movie or assert unsupported plot details.",
-    userPrompt: JSON.stringify({ memory: prompt, candidates: compactCandidates }),
+    systemPrompt: "Identify a movie from an imperfect human memory. Choose only supplied TMDB candidate IDs. Prefer agreement with distinctive plot clues over popularity or title similarity. High confidence requires strong distinctive agreement; use medium for a plausible but ambiguous match and low/null primary_id when unsupported. Offer up to 3 plausible alternative IDs when ambiguous, not unrelated fillers. Base the short reason on supplied overviews, explicitly acknowledging unverified incidental details. All core clues must fit together: setting, who is involved, actions, time and unusual events. A candidate that contradicts a core clue is not a possible match. If no supplied candidate fits the core clues, use null primary_id and no alternatives. Never choose the least-wrong candidate. Never invent a movie or assert unsupported plot details.",
+    userPrompt: JSON.stringify({ memory: normalizedPrompt, original_memory: prompt, required_clues: constraints.map(clue=>clue.label), candidates: compactCandidates }),
     schema,
     schemaName: "movie_identification_result",
     maxTokens: 260,

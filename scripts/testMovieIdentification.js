@@ -3,10 +3,11 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const {ASK_INTENTS,classifyAskIntent,isMovieIdentificationFollowUp}=require('../src/ask/askIntent');
 const source=fs.readFileSync(require.resolve('../index.js'),'utf8');
-const candidates=[{id:77,title:'Memento',release_date:'2000-10-11',overview:'A man unable to form new memories relies on photographs and tattoos.',poster_path:'/a.jpg'},{id:1824,title:'50 First Dates',release_date:'2004-02-13',overview:'A woman loses her memory each day.',poster_path:'/b.jpg'}];
+let candidates=[{id:77,title:'Memento',release_date:'2000-10-11',overview:'A man unable to form new memories relies on photographs and tattoos.',poster_path:'/a.jpg'},{id:1824,title:'50 First Dates',release_date:'2004-02-13',overview:'A woman loses her memory each day.',poster_path:'/b.jpg'}];
 let queries=['Memento','50 First Dates'],ranking={primary_id:77,alternative_ids:[1824],confidence:'medium',reason:'The photographs match, but waking each day is not an exact match.'},calls=[],searches=[];
 const handlers={};
 const context=vm.createContext({console,Date,Set,ASK_INTENTS,classifyAskIntent,isMovieIdentificationFollowUp,
+ ...require('../src/ask/plotClues'),
  app:{post:(path,middleware,handler)=>handlers[path]=handler},timingMiddleware:()=>{},
  hasExplicitUserTrigger:()=>true,normalizeAskPageContext:x=>x,normalizeConversationState:x=>x,
  normalizePickMovie:(x,p,o)=>({...x,...o}),MODELS:{ask:'test'},
@@ -52,6 +53,18 @@ vm.runInContext(source.slice(source.indexOf('const movieIdentificationSchema'),s
  ranking={primary_id:77,alternative_ids:[1824],confidence:'low',reason:'Not enough clues'};
  pick=await context.identificationPick({prompt:'What was that movie?'});
  assert.equal(pick.primary,null);assert.equal(pick.no_pick_reason,'identification_uncertain');assert.equal(pick.alternates.length,0);assert.match(pick.user_message,/one more detail/);
+ // Exact reported failure: unrelated primary AND alternatives cannot reach the ranker.
+ const originalCandidates=candidates;
+ const cluePrompt='Movie where a person or group of people are working late night at a food place and strange things happen';
+ candidates=[{id:501,title:'Backrooms',overview:'A strange doorway opens in a furniture showroom.',poster_path:'/a.jpg'},{id:502,title:'Colony',overview:'Employees encounter strange events overnight in a biotech facility.',poster_path:'/b.jpg'},{id:503,title:'Facing El Chapo',overview:'Police work a final night shift confronting a cartel.',poster_path:'/c.jpg'},{id:504,title:'Last Straw',overview:'A waitress working the overnight shift at a rural diner faces a terrifying attack.',poster_path:'/d.jpg'}];
+ queries=['Last Straw'];ranking={primary_id:504,alternative_ids:[501,502,503],confidence:'medium',reason:'A waitress faces danger during an overnight diner shift.'};calls=[];searches=[];
+ pick=await context.identificationPick({prompt:cluePrompt});
+ assert.equal(pick.primary.id,504);assert.equal(pick.alternates.length,0);
+ const rankedInput=JSON.parse(calls[1].userPrompt);assert.deepEqual(rankedInput.candidates.map(m=>m.id),[504]);
+ assert.ok(rankedInput.required_clues.includes('night work'));
+ candidates=candidates.slice(0,3);calls=[];
+ pick=await context.identificationPick({prompt:cluePrompt});assert.equal(pick.primary,null);assert.equal(pick.alternates.length,0);assert.equal(calls.length,1,'empty valid pool stops without a forced winner or extra call');
+ candidates=originalCandidates;
  // Run the real /pick handler: identification errors bypass recommendation fallback.
  let fallbackCalls=0;
  Object.assign(context,{resolvePickPreferences:x=>x,needsVerifiedContentGuide:()=>false,
