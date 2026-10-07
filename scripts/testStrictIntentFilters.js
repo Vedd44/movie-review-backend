@@ -37,4 +37,10 @@ assert(passesStrictIntentFilter(expandedThemeMovie, intent, { allowExpandedTheme
 assert(!passesStrictIntentFilter(unsafeMovie, intent), "unsafe intense movie should fail toddler guardrails");
 assert(getMovieThemeMatchScore(safeEasterMovie, intent.strict_filters) > 0, "strict theme score should be positive for Easter match");
 
+const sceneIntent=parseReelbotIntent('Recommend a movie where a man cannot form memories and investigates a murder');
+const clueMovie={id:77,title:'Memento',overview:'A man tracks down his wife’s killer despite a damaged short-term memory.',genre_ids:[9648,53],plot_discovered:true};
+assert(passesStrictIntentFilter(clueMovie,sceneIntent),'semantic plot candidates survive missing literal inferred-theme keywords');
+assert(!passesStrictIntentFilter({...clueMovie,plot_discovered:false},sceneIntent),'ordinary feed candidates retain the theme prefilter');
+assert(!passesStrictIntentFilter({...unsafeMovie,plot_discovered:true},{...intent,raw_prompt:'A movie where children celebrate Easter'}),'semantic discovery never bypasses child safety');
+assert(!passesStrictIntentFilter({...clueMovie,plot_discovered:true},{...sceneIntent,raw_prompt:'A good mystery movie'}),'ordinary genre requests retain literal theme checks');
 console.log("Strict intent filter checks passed.");

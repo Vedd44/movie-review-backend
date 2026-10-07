@@ -1,3 +1,4 @@
+const { hasDescriptivePlotRequest } = require("../src/ask/plotClues");
 const { getCuratedTitleSignals } = require("./curatedRecommendationSignals");
 
 const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim();
@@ -158,7 +159,11 @@ const passesStrictIntentFilter = (movie = {}, intent = {}, options = {}) => {
     }
   }
 
-  if (strictFilters.require_theme_match) {
+  // Inferred theme keywords are only a retrieval shortcut. A clue-discovered
+  // film may express the same premise without those literal words; let the
+  // semantic ranker judge it after all audience and safety checks still run.
+  const semanticPlotCandidate = movie.plot_discovered === true && hasDescriptivePlotRequest(intent.raw_prompt);
+  if (strictFilters.require_theme_match && !semanticPlotCandidate) {
     if (!getMovieThemeMatchScore(movie, strictFilters, options)) {
       return false;
     }
