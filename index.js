@@ -44,7 +44,7 @@ const { installWatchmodeRoutes } = require("./src/watchmode/routes");
 const { createSupabaseTakeStore } = require("./src/takes/supabaseTakeStore");
 const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
 const { ASK_INTENTS, classifyAskIntent, isMovieIdentificationFollowUp } = require("./src/ask/askIntent");
-const {normalizeCluePrompt,extractPlotConstraints,passesPlotConstraints,isExplicitModelAbstention}=require("./src/ask/plotClues");
+const {normalizeCluePrompt,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,isExplicitModelAbstention}=require("./src/ask/plotClues");
 const {
   normalizeConversationState,
   updateConversationForPrompt,
@@ -7114,7 +7114,7 @@ const movieIdentificationSchema = {
 
 const extractMovieIdentificationQueries = async (prompt = "") => {
   const parsed = await callStructuredOpenAI({
-    systemPrompt: "Suggest up to 4 plausible EXISTING movie titles matching the remembered plot. These are hypotheses for TMDB title search, not a final answer. Return exact known titles, never plot keywords or descriptions: TMDB title search does not search plots. Preserve all core plot clues together, including workplace, roles, time of day and unusual events. Tolerate ordinary typos and imperfect recollection, but never silently replace a restaurant with a showroom or a night shift with an unrelated job. Search your film knowledge across decades, including less famous genre films; do not default to current popular releases. Include competing plausible titles when clues are ambiguous or imperfect. If there are no distinctive clues or no plausible known movie, return an empty array. Never invent a title.",
+    systemPrompt: "Suggest up to 4 plausible EXISTING movie titles matching the remembered plot. These are hypotheses for TMDB title search, not a final answer. Return exact known titles, never plot keywords or descriptions: TMDB title search does not search plots. Preserve all core plot clues together, including workplace, roles, time of day and unusual events. Tolerate ordinary typos and imperfect recollection, but never silently replace a restaurant with a showroom or a night shift with an unrelated job. Search your film knowledge across decades, including less famous genre films; do not default to current popular releases. Include competing plausible titles when clues are ambiguous or imperfect. A description can seek a category of films rather than one uniquely remembered title: generate strong examples even when the clue is broad, such as a hero dying at the end. Strange things happening at a workplace implies unusual, unsettling or eerie events, not just everyday workplace conflict. If there are no plot clues at all or no plausible known movie, return an empty array. Never invent a title.",
     userPrompt: prompt,
     schema: movieIdentificationSchema,
     schemaName: "movie_identification_queries",
@@ -7140,7 +7140,7 @@ const identifyMovieFromMemory = async (prompt = "") => {
       .flatMap(response => response.value?.results || [])
   )
     .filter(movie => movie?.id && movie.poster_path && movie.overview && !movie.adult)
-    .filter(movie => passesPlotConstraints(movie, constraints))
+    .filter(movie => !contradictsPlotConstraints(movie, constraints))
     .slice(0, 18);
 
   if (!candidates.length) {
@@ -7165,7 +7165,7 @@ const identifyMovieFromMemory = async (prompt = "") => {
     overview: movie.overview,
   }));
   const ranked = await callStructuredOpenAI({
-    systemPrompt: "Identify a movie from an imperfect human memory. Choose only supplied TMDB candidate IDs. Prefer agreement with distinctive plot clues over popularity or title similarity. High confidence requires strong distinctive agreement; use medium for a plausible but ambiguous match and low/null primary_id when unsupported. Offer up to 3 plausible alternative IDs when ambiguous, not unrelated fillers. Use supplied overviews and stable, established knowledge of these real films. Short promotional overviews often omit endings or incidental details: omission is not a contradiction, and well-known plot facts do not become unknown merely because they are absent from an overview. Never invent facts about a film you do not know. For descriptive discovery (not an explicit remembered-film question), select a strong fit and useful alternatives; the request does not need to identify one unique film. Write a natural, specific film-guide explanation, never an audit: no plausible match, key miss, metadata, overview does not confirm, or detail remains unverified. Do not repeat the title or narrate your reasoning process. If the user seeks an ending-based category, confirm that it fits without naming who dies, how, the twist or any additional ending detail. Only reveal such specifics when explicitly requested. All core clues must fit together: setting, who is involved, actions, time and unusual events. A candidate that contradicts a core clue is not a possible match. If no supplied candidate fits the core clues, use null primary_id and no alternatives. Never choose the least-wrong candidate. Never invent a movie or assert unsupported plot details.",
+    systemPrompt: "Identify a movie from an imperfect human memory. Choose only supplied TMDB candidate IDs. Prefer agreement with distinctive plot clues over popularity or title similarity. High confidence requires strong distinctive agreement; use medium for a plausible but ambiguous match and low/null primary_id when unsupported. Offer up to 3 plausible alternative IDs when ambiguous, not unrelated fillers. Use supplied overviews and stable, established knowledge of these real films. Short promotional overviews often omit endings or incidental details: omission is not a contradiction, and well-known plot facts do not become unknown merely because they are absent from an overview. Never invent facts about a film you do not know. For descriptive discovery (not an explicit remembered-film question), select a strong fit and useful alternatives; the request does not need to identify one unique film. Write a natural, specific film-guide explanation, never an audit: no plausible match, key miss, metadata, overview does not confirm, or detail remains unverified. Do not repeat the title or narrate your reasoning process. If the user seeks an ending-based category, confirm that it fits without naming who dies, how, the twist or any additional ending detail. Only reveal such specifics when explicitly requested. All core clues must fit together: setting, who is involved, actions, time and unusual events. Strange workplace happenings means an unusual, unsettling or eerie plot, not ordinary job stress, workplace politics or everyday social conflict. Use film knowledge when a brief synopsis omits a clue, but never treat generic words such as unexpected events as evidence of an eerie story. A candidate that contradicts a core clue is not a possible match. If no supplied candidate fits the core clues, use null primary_id and no alternatives. Never choose the least-wrong candidate. Never invent a movie or assert unsupported plot details.",
     userPrompt: JSON.stringify({ mode: explicitMemory ? "identify_remembered_film" : "discover_films_matching_description", memory: normalizedPrompt, original_memory: prompt, required_clues: constraints.map(clue=>clue.label), candidates: compactCandidates }),
     schema,
     schemaName: "movie_identification_result",
@@ -7202,6 +7202,7 @@ const buildIdentificationNoMatchPayload = (userMessage) => ({
 
 const generateIdentificationPickPayload = async (preferences, rawPreferences = {}) => {
   const identification = await identifyMovieFromMemory(preferences.prompt);
+  const identificationDebug = rawPreferences.include_debug === true ? {debug_trace:{search_queries:identification.search_queries,confidence:identification.confidence,reason:identification.reason}} : {};
   const poolIds = new Set((Array.isArray(rawPreferences.candidate_pool_ids) ? rawPreferences.candidate_pool_ids : []).map(Number));
   const excludedIds = new Set((Array.isArray(rawPreferences.excluded_ids) ? rawPreferences.excluded_ids : []).map(Number));
   const bounded = Boolean(rawPreferences.bounded_pool) || poolIds.size > 0;
@@ -7211,9 +7212,9 @@ const generateIdentificationPickPayload = async (preferences, rawPreferences = {
     const possibilities = !identification.primary && allowedAlternatives.length
       ? ` Possible matches: ${allowedAlternatives.map(movie => movie.title).join("; ")}.`
       : "";
-    return buildIdentificationNoMatchPayload(
-      `I couldn't identify that confidently within this request. Give me one more detail you remember, such as an actor, setting or scene.${possibilities}`
-    );
+    return {...buildIdentificationNoMatchPayload(
+      `I need another clue to narrow this down. Do you remember an actor, a scene, or roughly when it came out?${possibilities}`
+    ),...identificationDebug};
   }
   const primary = identification.primary;
   const alternatives = identification.alternatives.filter(allowed);
@@ -7222,6 +7223,7 @@ const generateIdentificationPickPayload = async (preferences, rawPreferences = {
   return {
     intent: ASK_INTENTS.MOVIE_IDENTIFICATION,
     confidence: identification.confidence,
+    ...identificationDebug,
     primary: normalizePickMovie(primary, preferences, { reason }),
     alternates: alternatives.map(movie => normalizePickMovie(movie, preferences, { reason: "Another possible match to your remembered movie." })),
     candidate_pool_ids: [primary, ...alternatives].map(movie => movie.id),

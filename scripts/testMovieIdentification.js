@@ -52,7 +52,7 @@ vm.runInContext(source.slice(source.indexOf('const movieIdentificationSchema'),s
  assert.equal(pick.primary,null);assert.equal(pick.alternates.length,0,'frontend must not promote an alternative when primary is uncertain');
  ranking={primary_id:77,alternative_ids:[1824],confidence:'low',reason:'Not enough clues'};
  pick=await context.identificationPick({prompt:'What was that movie?'});
- assert.equal(pick.primary,null);assert.equal(pick.no_pick_reason,'identification_uncertain');assert.equal(pick.alternates.length,0);assert.match(pick.user_message,/one more detail/);
+ assert.equal(pick.primary,null);assert.equal(pick.no_pick_reason,'identification_uncertain');assert.equal(pick.alternates.length,0);assert.match(pick.user_message,/another clue/);
  // Exact reported failure: unrelated primary AND alternatives cannot reach the ranker.
  const originalCandidates=candidates;
  const cluePrompt='Movie where a person or group of people are working late night at a food place and strange things happen';

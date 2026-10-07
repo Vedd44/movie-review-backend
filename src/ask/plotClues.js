@@ -30,5 +30,13 @@ function passesPlotConstraints(movie={},constraints=[]) {
  const evidence=[movie.overview,movie.tagline,...(Array.isArray(movie.keyword_names)?movie.keyword_names:[])].filter(Boolean).join(' ');
  return constraints.every(clue=>clue.evidence.test(evidence));
 }
+// Missing words in a short synopsis are not proof that a remembered scene is absent.
+// Reject explicit competing settings here; the semantic ranker checks all other clues.
+function contradictsPlotConstraints(movie={},constraints=[]) {
+ const text=[movie.overview,movie.tagline,...(Array.isArray(movie.keyword_names)?movie.keyword_names:[])].filter(Boolean).join(' ');
+ const food=constraints.find(clue=>clue.label==='food workplace');
+ if(food && !food.evidence.test(text) && /\b(?:furniture showroom|biotech facility|police (?:station|officers)|cartel|tablet|hospital|prison|spaceship)\b/i.test(text)) return true;
+ return false;
+}
 const isExplicitModelAbstention = ranking => Boolean(ranking && Object.prototype.hasOwnProperty.call(ranking,'primary') && ranking.primary === null);
-module.exports={normalizeCluePrompt,extractPlotConstraints,passesPlotConstraints,isExplicitModelAbstention};
+module.exports={normalizeCluePrompt,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,isExplicitModelAbstention};
