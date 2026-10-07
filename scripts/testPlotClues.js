@@ -1,5 +1,5 @@
 const assert=require('node:assert/strict');
-const {normalizeCluePrompt,extractPlotConstraints,passesPlotConstraints,isExplicitModelAbstention}=require('../src/ask/plotClues');
+const {normalizeCluePrompt,extractPlotConstraints,passesPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require('../src/ask/plotClues');
 const {classifyAskIntent,ASK_INTENTS}=require('../src/ask/askIntent');
 let checks=0;
 const scene='Movie where a person or group of people are working late night at a food place and strange things happen';
@@ -24,4 +24,7 @@ for(const [prompt,good,bad] of [['A movie where a nurse works at night in a hosp
 for(const title of ['Interstellar','Ronin','Heat','Memento','The Menu','Willy’s Wonderland','Last Straw','Poultrygeist: Night of the Chicken Dead']){assert.equal(normalizeCluePrompt(title),title);checks++;}
 assert.equal(isExplicitModelAbstention({primary:null,backups:[]}),true);assert.equal(isExplicitModelAbstention(null),false);assert.equal(isExplicitModelAbstention({primary:{id:1}}),false);checks+=3;
 const {pickDecisionSchema}=require('../ai/aiSchemas');assert.ok(pickDecisionSchema.properties.primary.type.includes('null'));checks++;
+assert.equal(protectEndingSpoilers('Tony Stark dies in the finale. An epic superhero conclusion.','movie where the hero dies in the end').includes('Tony Stark'),false);checks++;
+assert.equal(protectEndingSpoilers('Maximus dies in the arena. A historical action drama.','movie where the hero dies in the end').includes('Maximus'),false);checks++;
+assert.equal(protectEndingSpoilers('Tony Stark dies.','Who dies? Spoilers please.'),'Tony Stark dies.');checks++;
 console.log(`${checks} descriptive clue, routing, typo, occasion, venue, title and abstention checks passed.`);
