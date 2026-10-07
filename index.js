@@ -4926,10 +4926,10 @@ const pickTrailer = (videos = []) => {
   };
 };
 
-const normalizeProviderList = (providers = [], accessType) =>
+const normalizeProviderList = (providers = [], accessType, limit = 6) =>
   Array.isArray(providers)
     ? Array.from(new Map(providers.map((provider) => [provider.provider_id, provider])).values())
-        .slice(0, 6)
+        .slice(0, limit)
         .map((provider) => ({
           id: provider.provider_id,
           name: provider.provider_name,
@@ -4938,7 +4938,7 @@ const normalizeProviderList = (providers = [], accessType) =>
         }))
     : [];
 
-const normalizeWatchProviders = (watchProviderPayload) => {
+const normalizeWatchProviders = (watchProviderPayload, { limit = 6 } = {}) => {
   const results = watchProviderPayload?.results || {};
   const region = results.US ? "US" : Object.keys(results)[0];
 
@@ -4951,9 +4951,10 @@ const normalizeWatchProviders = (watchProviderPayload) => {
   return {
     region,
     link: regionData.link || "",
-    subscription: normalizeProviderList(regionData.flatrate, "subscription"),
-    rent: normalizeProviderList(regionData.rent, "rent"),
-    buy: normalizeProviderList(regionData.buy, "buy"),
+    subscription: normalizeProviderList(regionData.flatrate, "subscription", limit),
+    rent: normalizeProviderList(regionData.rent, "rent", limit),
+    buy: normalizeProviderList(regionData.buy, "buy", limit),
+    free: normalizeProviderList([...(regionData.free || []), ...(regionData.ads || [])], "free", limit),
   };
 };
 
@@ -5147,9 +5148,9 @@ const buildProviderBadges = (availability) => {
     }));
 };
 
-const normalizeMovieDetails = (movie) => {
+const normalizeMovieDetails = (movie, { providerLimit = 6 } = {}) => {
   const reviewHighlights = getReviewHighlights(movie.reviews?.results);
-  const watchProviders = normalizeWatchProviders(movie["watch/providers"]);
+  const watchProviders = normalizeWatchProviders(movie["watch/providers"], {limit:providerLimit});
   const genreIds = Array.isArray(movie.genres) ? movie.genres.map((genre) => genre.id) : [];
   const genreNames = Array.isArray(movie.genres) ? movie.genres.map((genre) => genre.name) : [];
   const keywordNames = Array.isArray(movie.keywords?.keywords) ? movie.keywords.keywords.map((keyword) => keyword?.name).filter(Boolean) : [];
@@ -6423,7 +6424,7 @@ const fetchMovieDetailPayload = async (movieId, { includeStreamingAvailability =
   rememberMovieForSitemap(movie);
   (movie.similar?.results || []).slice(0, 6).forEach((item) => rememberMovieForSitemap(item));
   (movie.recommendations?.results || []).slice(0, 6).forEach((item) => rememberMovieForSitemap(item));
-  const normalizedMovie = normalizeMovieDetails(movie);
+  const normalizedMovie = normalizeMovieDetails(movie, {providerLimit:Infinity});
   if (includeStreamingAvailability) {
     const streamingAvailability = await fetchStreamingAvailability(movie.id, "us");
     normalizedMovie.watch_providers = enrichWatchProvidersWithDirectLinks(
