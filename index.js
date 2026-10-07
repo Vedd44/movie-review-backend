@@ -38,6 +38,9 @@ const {
   createReelbotTakeService,
 } = require("./src/takes/reelbotTake");
 const { createSharedPickStore, installSharedPickRoutes } = require("./src/shares/sharedPicks");
+const { createWatchmodeStore } = require("./src/watchmode/store");
+const { createWatchmodeService } = require("./src/watchmode/service");
+const { installWatchmodeRoutes } = require("./src/watchmode/routes");
 const { createSupabaseTakeStore } = require("./src/takes/supabaseTakeStore");
 const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
 const { ASK_INTENTS, classifyAskIntent, isMovieIdentificationFollowUp } = require("./src/ask/askIntent");
@@ -6341,6 +6344,17 @@ app.get("/", (req, res) => {
   res.send("Movie Review Backend is Running!");
 });
 
+const watchmodeStore = createWatchmodeStore({baseUrl:SUPABASE_URL,serviceKey:SUPABASE_SERVICE_ROLE_KEY,httpClient:axios});
+const watchmodeService = createWatchmodeService({apiKey:process.env.WATCHMODE_API_KEY?.trim(),httpClient:axios,store:watchmodeStore});
+console.log(`Watchmode trial: ${watchmodeService.enabled ? "enabled (US, 7-day cache, 100 daily / 2000 monthly credits)" : "disabled (key or private storage missing)"}`);
+installWatchmodeRoutes(app, {service:watchmodeService,movieExists:async id => Boolean((await fetchTmdbCached(`/movie/${id}`, {}, CACHE_TTLS.movie_details))?.id)});
+// Cleanup is independent of page views, and never calls the paid API.
+if (watchmodeService.enabled) {
+  const prune = () => watchmodeStore.prune().catch(() => console.warn("Watchmode cache cleanup unavailable"));
+  void prune();
+  setInterval(prune, 24 * 3600000).unref();
+}
+
 app.get("/movies/watch-providers", async (req, res) => {
   const ids = String(req.query.ids || "")
     .split(",")
@@ -6400,7 +6414,8 @@ const fetchMovieMetadataPayload = async (movieId) => {
   return result;
 };
 
-const fetchMovieDetailPayload = async (movieId, { includeStreamingAvailability = true } = {}) => {
+// Streaming links now load only through the visible Where to Watch section.
+const fetchMovieDetailPayload = async (movieId, { includeStreamingAvailability = false } = {}) => {
   const movie = await fetchTmdbCached(`/movie/${movieId}`, {
     append_to_response: "credits,reviews,similar,recommendations,videos,watch/providers,release_dates,keywords",
   }, CACHE_TTLS.movie_details);
