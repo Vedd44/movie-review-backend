@@ -36,4 +36,9 @@ assert.equal(protectEndingSpoilers('Maximus dies in the arena. A historical acti
 assert.equal(protectEndingSpoilers('Robert Downey Jr plays Tony Stark and the ending fits. A superhero finale.','movie where the hero dies in the end').includes('Tony Stark'),false);checks++;
 assert.equal(protectEndingSpoilers('Tony Stark makes the ultimate sacrifice. A superhero finale.','movie where the hero dies in the end').includes('Tony Stark'),false);checks++;
 assert.equal(protectEndingSpoilers('Tony Stark dies.','Who dies? Spoilers please.'),'Tony Stark dies.');checks++;
+
+
+for(const reason of ['Thelma and Louise end with their deaths.','Robert Downey Jr. plays Tony Stark, who dies in the finale. An emotional superhero epic.']){const safe=protectEndingSpoilers(reason,'movie where the hero dies in the end');assert.doesNotMatch(safe,/Thelma|Tony Stark|Downey|deaths/);checks++;}
+const principles=require('../ai/reelbotPrinciples').getFullReelbotFrameworkText();assert.ok(!principles.includes('say where it misses'));assert.ok(!principles.includes('name the strength and the miss'));
+checks+=2;
 console.log(`${checks} descriptive clue, routing, typo, occasion, venue, title and abstention checks passed.`);
