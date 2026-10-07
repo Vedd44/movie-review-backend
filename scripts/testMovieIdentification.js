@@ -18,7 +18,7 @@ const context=vm.createContext({console,Date,Set,ASK_INTENTS,classifyAskIntent,i
 vm.runInContext(source.slice(source.indexOf('const movieIdentificationSchema'),source.indexOf('app.get("/movies/:id/reelbot"'))+'\nthis.identify=identifyMovieFromMemory;this.identificationPick=generateIdentificationPickPayload;',context);
 (async()=>{
  let result=await context.identify('What was that movie where a guy wakes up every day with no memory?');
- assert.equal(calls.length,2,'retain the existing two model stages');assert.equal(calls[0].webSearch,false,'ordinary remembered titles need no web lookup');assert.equal(searches.length,2);assert.ok(searches.every(x=>x.path==='/search/movie'),'no detail calls');
+ assert.equal(calls.length,2,'retain the existing two model stages');assert.ok(calls[1].systemPrompt.startsWith('Identify a movie'),'explicit memories retain identification confidence');assert.equal(calls[0].webSearch,false,'ordinary remembered titles need no web lookup');assert.equal(searches.length,2);assert.ok(searches.every(x=>x.path==='/search/movie'),'no detail calls');
  assert.equal(result.primary.id,77);assert.equal(result.alternatives[0].id,1824);
  assert.equal(calls[0].schema.properties.search_queries.maxItems,4);assert.ok(calls[0].systemPrompt.includes('never plot keywords'));
  ranking={primary_id:77,alternative_ids:[77,1824,1824,999],confidence:'low',reason:'uncertain'};
@@ -59,7 +59,7 @@ vm.runInContext(source.slice(source.indexOf('const movieIdentificationSchema'),s
  candidates=[{id:501,title:'Backrooms',overview:'A strange doorway opens in a furniture showroom.',poster_path:'/a.jpg'},{id:502,title:'Colony',overview:'Employees encounter strange events overnight in a biotech facility.',poster_path:'/b.jpg'},{id:503,title:'Facing El Chapo',overview:'Police work a final night shift confronting a cartel.',poster_path:'/c.jpg'},{id:504,title:'Last Straw',overview:'A waitress working the overnight shift at a rural diner faces a terrifying attack.',poster_path:'/d.jpg'}];
  queries=['Last Straw'];ranking={primary_id:504,alternative_ids:[501,502,503],confidence:'medium',reason:'A waitress faces danger during an overnight diner shift.'};calls=[];searches=[];
  pick=await context.identificationPick({prompt:cluePrompt});
- assert.equal(pick.primary.id,504);assert.equal(pick.alternates.length,0);
+ assert.equal(pick.primary.id,504);assert.equal(pick.alternates.length,0);assert.ok(calls[1].systemPrompt.startsWith('Recommend movies matching a description or category'),'descriptive discovery does not require a uniquely remembered title');
  const rankedInput=JSON.parse(calls[1].userPrompt);assert.deepEqual(rankedInput.candidates.map(m=>m.id),[504]);
  assert.ok(rankedInput.required_clues.includes('night work'));assert.equal(calls[0].webSearch,true,'concrete scene requests can use one bounded search');
  candidates=candidates.slice(0,3);calls=[];
