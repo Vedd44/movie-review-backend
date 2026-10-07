@@ -7114,11 +7114,11 @@ const movieIdentificationSchema = {
 
 const extractMovieIdentificationQueries = async (prompt = "") => {
   const parsed = await callStructuredOpenAI({
-    systemPrompt: "Suggest up to 4 plausible EXISTING movie titles matching the remembered plot. These are hypotheses for TMDB title search, not a final answer. Return exact known titles, never plot keywords or descriptions: TMDB title search does not search plots. Preserve all core plot clues together, including workplace, roles, time of day and unusual events. Tolerate ordinary typos and imperfect recollection, but never silently replace a restaurant with a showroom or a night shift with an unrelated job. Include competing plausible titles when clues are ambiguous or imperfect. If there are no distinctive clues or no plausible known movie, return an empty array. Never invent a title.",
+    systemPrompt: "Suggest up to 4 plausible EXISTING movie titles matching the remembered plot. These are hypotheses for TMDB title search, not a final answer. Return exact known titles, never plot keywords or descriptions: TMDB title search does not search plots. Preserve all core plot clues together, including workplace, roles, time of day and unusual events. Tolerate ordinary typos and imperfect recollection, but never silently replace a restaurant with a showroom or a night shift with an unrelated job. Search your film knowledge across decades, including less famous genre films; do not default to current popular releases. Include competing plausible titles when clues are ambiguous or imperfect. If there are no distinctive clues or no plausible known movie, return an empty array. Never invent a title.",
     userPrompt: prompt,
     schema: movieIdentificationSchema,
     schemaName: "movie_identification_queries",
-    maxTokens: 180,
+    maxTokens: 1200,
     type: "ask",
   });
   const queries = Array.isArray(parsed?.search_queries) ? parsed.search_queries : [];
@@ -7127,6 +7127,7 @@ const extractMovieIdentificationQueries = async (prompt = "") => {
 
 const identifyMovieFromMemory = async (prompt = "") => {
   const normalizedPrompt = normalizeCluePrompt(prompt);
+  const explicitMemory = /\b(?:remember|recall|identify|what(?:[’\']s| is| was)? (?:that|the) (?:movie|film)|which (?:movie|film))\b/i.test(normalizedPrompt);
   const constraints = extractPlotConstraints(normalizedPrompt);
   const queries = await extractMovieIdentificationQueries(normalizedPrompt);
   const effectiveQueries = queries;
@@ -7164,11 +7165,11 @@ const identifyMovieFromMemory = async (prompt = "") => {
     overview: movie.overview,
   }));
   const ranked = await callStructuredOpenAI({
-    systemPrompt: "Identify a movie from an imperfect human memory. Choose only supplied TMDB candidate IDs. Prefer agreement with distinctive plot clues over popularity or title similarity. High confidence requires strong distinctive agreement; use medium for a plausible but ambiguous match and low/null primary_id when unsupported. Offer up to 3 plausible alternative IDs when ambiguous, not unrelated fillers. Base the short reason on supplied overviews, explicitly acknowledging unverified incidental details. All core clues must fit together: setting, who is involved, actions, time and unusual events. A candidate that contradicts a core clue is not a possible match. If no supplied candidate fits the core clues, use null primary_id and no alternatives. Never choose the least-wrong candidate. Never invent a movie or assert unsupported plot details.",
-    userPrompt: JSON.stringify({ memory: normalizedPrompt, original_memory: prompt, required_clues: constraints.map(clue=>clue.label), candidates: compactCandidates }),
+    systemPrompt: "Identify a movie from an imperfect human memory. Choose only supplied TMDB candidate IDs. Prefer agreement with distinctive plot clues over popularity or title similarity. High confidence requires strong distinctive agreement; use medium for a plausible but ambiguous match and low/null primary_id when unsupported. Offer up to 3 plausible alternative IDs when ambiguous, not unrelated fillers. Use supplied overviews and stable, established knowledge of these real films. Short promotional overviews often omit endings or incidental details: omission is not a contradiction, and well-known plot facts do not become unknown merely because they are absent from an overview. Never invent facts about a film you do not know. For descriptive discovery (not an explicit remembered-film question), select a strong fit and useful alternatives; the request does not need to identify one unique film. Write a natural, specific film-guide explanation, never an audit: no plausible match, key miss, metadata, overview does not confirm, or detail remains unverified. Do not repeat the title or narrate your reasoning process. If the user seeks an ending-based category, confirm that it fits without naming who dies, how, the twist or any additional ending detail. Only reveal such specifics when explicitly requested. All core clues must fit together: setting, who is involved, actions, time and unusual events. A candidate that contradicts a core clue is not a possible match. If no supplied candidate fits the core clues, use null primary_id and no alternatives. Never choose the least-wrong candidate. Never invent a movie or assert unsupported plot details.",
+    userPrompt: JSON.stringify({ mode: explicitMemory ? "identify_remembered_film" : "discover_films_matching_description", memory: normalizedPrompt, original_memory: prompt, required_clues: constraints.map(clue=>clue.label), candidates: compactCandidates }),
     schema,
     schemaName: "movie_identification_result",
-    maxTokens: 260,
+    maxTokens: 1400,
     type: "ask",
   });
   const confidence = ["high", "medium", "low"].includes(ranked?.confidence) ? ranked.confidence : "low";
@@ -7216,7 +7217,8 @@ const generateIdentificationPickPayload = async (preferences, rawPreferences = {
   }
   const primary = identification.primary;
   const alternatives = identification.alternatives.filter(allowed);
-  const reason = `${identification.confidence === "high" ? "That sounds like" : "One possibility is"} ${primary.title}${primary.release_date ? ` (${primary.release_date.slice(0, 4)})` : ""}.${identification.reason ? ` ${identification.reason}` : ""}${alternatives.length ? ` Other possibilities: ${alternatives.map(movie => movie.title).join("; ")}.` : ""}`;
+  const explicitMemory = /\b(?:remember|recall|identify|what(?:[’\']s| is| was)? (?:that|the) (?:movie|film)|which (?:movie|film))\b/i.test(normalizeCluePrompt(preferences.prompt));
+  const reason = !explicitMemory && identification.reason ? identification.reason : `${identification.confidence === "high" ? "That sounds like" : "One possibility is"} ${primary.title}${primary.release_date ? ` (${primary.release_date.slice(0, 4)})` : ""}.${identification.reason ? ` ${identification.reason}` : ""}${alternatives.length ? ` Other possibilities: ${alternatives.map(movie => movie.title).join("; ")}.` : ""}`;
   return {
     intent: ASK_INTENTS.MOVIE_IDENTIFICATION,
     confidence: identification.confidence,
