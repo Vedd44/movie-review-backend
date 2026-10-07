@@ -1,5 +1,5 @@
 const assert=require('node:assert/strict');
-const {normalizeCluePrompt,extractPlotConstraints,passesPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require('../src/ask/plotClues');
+const {selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require('../src/ask/plotClues');
 const {classifyAskIntent,ASK_INTENTS}=require('../src/ask/askIntent');
 let checks=0;
 const scene='Movie where a person or group of people are working late night at a food place and strange things happen';
@@ -23,6 +23,13 @@ for(const [prompt,good,bad] of [['A movie where a nurse works at night in a hosp
 }
 for(const title of ['Interstellar','Ronin','Heat','Memento','The Menu','Willy’s Wonderland','Last Straw','Poultrygeist: Night of the Chicken Dead']){assert.equal(normalizeCluePrompt(title),title);checks++;}
 assert.equal(isExplicitModelAbstention({primary:null,backups:[]}),true);assert.equal(isExplicitModelAbstention(null),false);assert.equal(isExplicitModelAbstention({primary:{id:1}}),false);checks+=3;
+for(const prompt of ['Recommend a movie where an accountant discovers his boss is laundering money','A film set on a submarine','Find movies about a woman who discovers messages from the future','Movies with a crew stranded after a storm']){assert.equal(hasDescriptivePlotRequest(prompt),true,prompt);checks++;}
+for(const prompt of ['Something funny after work','A good movie for friends','An easy watch on a train','Movies like Heat','A movie about comedy']){assert.equal(hasDescriptivePlotRequest(prompt),false,prompt);checks++;}
+const popular=Array.from({length:50},(_,i)=>({id:i+1}));
+const discovered=[{id:701},{id:702},{id:1}];
+const metadata=selectMetadataCandidates(popular,popular.slice(36),discovered);
+assert.deepEqual(metadata.slice(0,3).map(m=>m.id),[701,702,1],'clue-discovered films must survive competing popular semantic candidates');
+assert.ok(metadata.length<=48,'metadata work stays bounded');assert.equal(new Set(metadata.map(m=>m.id)).size,metadata.length);checks+=3;
 const {pickDecisionSchema}=require('../ai/aiSchemas');assert.ok(pickDecisionSchema.properties.primary.type.includes('null'));checks++;
 assert.equal(protectEndingSpoilers('Tony Stark dies in the finale. An epic superhero conclusion.','movie where the hero dies in the end').includes('Tony Stark'),false);checks++;
 assert.equal(protectEndingSpoilers('Maximus dies in the arena. A historical action drama.','movie where the hero dies in the end').includes('Maximus'),false);checks++;

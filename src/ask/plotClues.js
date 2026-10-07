@@ -2,6 +2,10 @@
 // movie titles, numbers or arbitrary vocabulary, and keep the original prompt.
 const SPELLING = Object.freeze({movue:'movie',mvoie:'movie',moive:'movie',flim:'film',wher:'where',remeber:'remember',rememeber:'remember',reccomend:'recommend',recomend:'recommend',restaraunt:'restaurant',resturant:'restaurant',restraunt:'restaurant',restuarant:'restaurant',workign:'working',peopel:'people',nigth:'night',strnage:'strange',happnes:'happens',hapen:'happen',happning:'happening'});
 const normalizeCluePrompt = value => String(value || '').replace(/\b[a-z]+\b/gi, word => SPELLING[word.toLowerCase()] || word).replace(/\s+/g,' ').trim();
+function hasDescriptivePlotRequest(prompt='') {
+ const text=normalizeCluePrompt(prompt);
+ return /\b(?:movie|film)s?\s+(?:where|in which|set (?:in|on|at)|about\s+(?:(?:a|an|the)\s+)?(?:man|woman|person|people|group|crew|family|couple|detective|cop|soldier|child|boy|girl|worker|waitress|chef)\b|with\s+(?:(?:a|an|the)\s+)?(?:man|woman|person|group|crew|family|couple)\b)/i.test(text);
+}
 const SCENE_VENUES = [
  ['food workplace', /\b(?:at|in|inside|working (?:at|in))\s+(?:a |an |the )?(?:restaurant|diner|cafe|caf[eé]|pizzeria|pizza (?:place|parlor)|fast[- ]food (?:place|restaurant|joint)|food (?:place|joint))\b/i, /\b(?:restaurant|diner|caf[eé]|pizzeria|pizza (?:place|parlor)|fast[- ]food|burger (?:joint|restaurant))\b/i],
  ['hospital', /\b(?:at|in|inside)\s+(?:a |an |the )?hospital\b/i, /\bhospital|medical (?:center|centre)|hospital ward\b/i],
@@ -10,6 +14,15 @@ const SCENE_VENUES = [
  ['airplane', /\b(?:on|aboard|inside)\s+(?:a |an |the )?(?:plane|airplane|aircraft)\b/i, /\bplane|airplane|aircraft|flight|airliner\b/i],
  ['spacecraft', /\b(?:on|aboard|inside)\s+(?:a |an |the )?(?:spaceship|spacecraft|space station)\b/i, /\bspaceship|spacecraft|space station|starship|astronaut|space voyage\b/i],
 ];
+// Reserve metadata space for clue-discovered films before popularity-ranked feeds.
+// The bound keeps the existing metadata work budget predictable.
+function selectMetadataCandidates(preliminary=[],semantic=[],discovered=[]) {
+ const seen=new Set();
+ return [...discovered,...preliminary.slice(0,36),...semantic.slice(0,12)].filter(movie=>{
+  if(!movie?.id || seen.has(movie.id)) return false;
+  seen.add(movie.id);return true;
+ }).slice(0,48);
+}
 function extractPlotConstraints(prompt='') {
  const text=normalizeCluePrompt(prompt);
  // A venue requested as part of a story, not a viewing occasion or a negation.
@@ -48,4 +61,4 @@ function protectEndingSpoilers(reason='',prompt='') {
  return safe.length===sentences.length ? text : ['This fits the ending-based story you asked for.',...safe.map(sentence=>sentence.trim())].join(' ');
 }
 const isExplicitModelAbstention = ranking => Boolean(ranking && Object.prototype.hasOwnProperty.call(ranking,'primary') && ranking.primary === null);
-module.exports={normalizeCluePrompt,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention};
+module.exports={selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention};
