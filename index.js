@@ -2340,7 +2340,9 @@ const isLowSignalMovie = (movie) => {
     return true;
   }
 
-  return !hasEnoughMovieSignal(movie);
+  // Semantic hypotheses have already resolved to real TMDB films. Low audience
+  // counts should affect ranking, not prevent factual validation of a rare match.
+  return movie.plot_discovered !== true && !hasEnoughMovieSignal(movie);
 };
 
 const buildUpcomingDiscoverFallbackParams = (pageNumber = 1) => {
@@ -4492,7 +4494,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
-  const cacheKey = `pick:v12:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const cacheKey = `pick:v13:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);

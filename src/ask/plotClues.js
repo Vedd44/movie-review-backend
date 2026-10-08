@@ -82,7 +82,7 @@ function protectEndingSpoilers(reason='',prompt='') {
  const requestedDetails=/\b(?:who dies|how .{0,40}dies|how .{0,40}killed|explain (?:the )?ending|spoilers? (?:please|allowed|are fine)|tell me (?:the )?(?:ending|who))\b/i.test(prompt);
  if(!endingCategory || requestedDetails) return text;
  const sentences=(text.replace(/\b(?:Mr|Mrs|Ms|Dr|Jr|Sr)\./g,word=>word.replace('.','∯')).match(/[^.!?]+(?:[.!?]+|$)/g) || []).map(sentence=>sentence.replace(/∯/g,'.'));
- const safe=sentences.filter(sentence=>!/\b(?:die(?:s|d|ing)?|deaths?|dead|killed|fatal|tragic end|executed|sacrific(?:e|es|ed)|plays|portrays|fate|suicide|doesn[’\']t survive|does not survive)\b/i.test(sentence));
+ const safe=sentences.filter(sentence=>!/\b(?:die(?:s|d)?|dying|deaths?|dead|killed|fatal|tragic end|execut(?:ed|ion|ions)|hang(?:ed|ing)?|behead(?:ed|ing)?|sacrific(?:e|es|ed)|plays|portrays|fate|suicide|doesn[’\']t survive|does not survive)\b/i.test(sentence));
  return safe.length===sentences.length ? text : ['This has the kind of ending you’re looking for. I’ll leave the details for you to discover.',...safe.map(sentence=>sentence.trim())].join(' ');
 }
 const isExplicitModelAbstention = ranking => Boolean(ranking && Object.prototype.hasOwnProperty.call(ranking,'primary') && ranking.primary === null);

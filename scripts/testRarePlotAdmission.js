@@ -1,0 +1,11 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync(require.resolve('../index.js'), 'utf8');
+const context = vm.createContext({hasEnoughMovieSignal: () => false});
+vm.runInContext(source.slice(source.indexOf('const isLowSignalMovie ='), source.indexOf('const buildUpcomingDiscoverFallbackParams')) + '\nthis.reject = isLowSignalMovie;', context);
+const movie = {id: 123, title: 'An obscure verified film', overview: 'An overnight worker at a diner.', poster_path: '/poster.jpg', plot_discovered: true, vote_count: 4};
+assert.equal(context.reject(movie), false, 'A TMDB-resolved semantic discovery must reach factual validation despite low popularity');
+assert.equal(context.reject({...movie, plot_discovered: false}), true, 'Ordinary feeds retain their quality signal threshold');
+for (const bad of [{id: null}, {overview: ''}, {poster_path: ''}, {adult: true}]) assert.equal(context.reject({...movie, ...bad}), true);
+console.log('Rare semantic discovery admission and feed safeguards passed.');

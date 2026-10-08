@@ -2,6 +2,11 @@ const assert=require('node:assert/strict');
 const {passesPlotCandidateEvidence,getPlotClarification,selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require('../src/ask/plotClues');
 const {classifyAskIntent,ASK_INTENTS}=require('../src/ask/askIntent');
 let checks=0;
+for (const reason of ["His execution closes the film. A sweeping historical drama.", "The protagonist is dying in the finale. A tense thriller.", "She is hanged in the final scene. An absorbing period drama."]) {
+ const safe = protectEndingSpoilers(reason, 'A movie where the hero dies in the end');
+ assert.doesNotMatch(safe, /execution|dying|hanged/);
+ assert.match(safe, /drama|thriller/); checks++;
+}
 const scene='Movie where a person or group of people are working late night at a food place and strange things happen';
 const variants=[scene,scene.replace(' and strange things happen',''),scene.replace('Movie where','Moive wher').replace('people','peopel').replace('working','workign').replace('night','nigth').replace('strange','strnage'), 'Film in which workers are working overnight in a restaurant', 'A movie where a waitress works the night shift in a diner'];
 const wrong=[{overview:'An inexplicable doorway opens in a furniture showroom.'},{overview:'Toys contend with a tablet.'},{overview:'Staff working overnight in a biotech facility encounter a virus.'},{overview:'Police work their last night shift confronting a cartel.'},{overview:'A chef runs a restaurant during the daytime.'},{overview:'Patrons eat dinner in a restaurant.'}];
