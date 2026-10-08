@@ -27,6 +27,7 @@ const discoveryQueries = parsed => {
   const queries = [...new Set(films.map(queryFor).filter(Boolean))];
   queries.film_evidence = films.map(film => ({query:queryFor(film),facts:film.facts,source_urls:film.source_urls}));
   queries.retrieved_source_urls = parsed?.retrieved_source_urls || [];
+  queries.keyword_terms = (Array.isArray(parsed?.keyword_terms) ? parsed.keyword_terms : []).slice(0,3);
   return queries;
 };
 module.exports = {attachDiscoveryEvidence,discoveryQueries,matchesDiscoveryIdentity};
