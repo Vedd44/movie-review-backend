@@ -12,7 +12,7 @@ const filterGroundedFollowUps = (items, prompt, context, previousTurn = {}) => {
     // A rating code alone cannot answer why that rating was assigned.
     if (/what makes.*rat|why.*rat|how many.*scare|exact.*gore/i.test(text)) return false;
     if (settled.has(topic) || seen.has(topic || text.toLowerCase())) return false;
-    if (/ending|spoiler/i.test(text) && !/ending|spoiler/i.test(prompt)) return false;
+    if (/ending|spoiler/i.test(text) && !isSpoilerDisclosureRequested(prompt)) return false;
     if (topic === 'runtime' && !context.movie?.runtime) return false;
     if (topic === 'director' && (!context.director || context.director === 'Unknown')) return false;
     if (topic === 'cast' && !context.topCastNames?.length) return false;
@@ -44,3 +44,4 @@ const contentFallback = (prompt, context = {}) => {
   return `${facts} Horror does not appear to be its main emphasis, but that does not rule out distressing moments. I don’t have scene-level guidance to be more specific.`;
 };
 module.exports = { filterGroundedFollowUps, contentFallback };
+const {isSpoilerDisclosureRequested}=require('../src/ask/plotClues');
