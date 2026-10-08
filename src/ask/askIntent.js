@@ -23,7 +23,7 @@ const REFINEMENT_PATTERN = /^(?:no[, ]+|actually[, ]+|i meant\b|not\b)|\b(?:not 
 const HOME_PICK_REFINEMENT_PATTERN = /^(?:something|anything)\s+(?:gentler|lighter|darker|shorter|funnier|less intense|less scary|more like this)|^(?:find|give me)\s+something\s+like\s+this|\b(?:i(?:'|’)ve already seen this|another one like this)\b/i;
 const HOME_DISCOVERY_PATTERN = /^(?:what(?:'s| is)?|anything|any|recommend|give me|find me)\b.*\b(?:movie|movies|film|films|out now|in theaters|under\s+\w+|date night)\b/i;
 const MOVIE_IDENTIFICATION_PATTERN = /\b(?:what(?:['’]s)?|which)\s+(?:(?:was|is)\s+)?(?:that|the)\s+(?:movie|film)\b|\b(?:what|which)\s+(?:movie|film)\s+(?:was|is|had|has|where)\b|\b(?:remember|identify|recall)\b.*\b(?:movie|film)\b|\b(?:movie|film)\b.*\b(?:can't|cannot|don't)\s+remember\b/i;
-const INITIAL_RECOMMENDATION_PATTERN = /\b(?:movie|watch|action|comedy|drama|thriller|horror|sci-?fi|funny|spooky|smart but easy|easy watch|date night|mainstream)\b/i;
+const INITIAL_RECOMMENDATION_PATTERN = /\b(?:movie|film|watch|action|comedy|drama|thriller|horror|sci-?fi|funny|spooky|smart but easy|easy watch|date night|mainstream)\b/i;
 
 const isMovieIdentificationFollowUp = (prompt = "", conversation = {}) =>
   normalize(conversation.activeIntent) === "movie_identification"
@@ -39,9 +39,7 @@ const classifyAskIntent = ({ prompt, context = {}, conversation = {} } = {}) => 
 
   if (!normalizedPrompt) return ASK_INTENTS.UNKNOWN;
   if (isMovieIdentificationFollowUp(prompt, conversation)) return ASK_INTENTS.MOVIE_IDENTIFICATION;
-  const descriptiveMemory = /^(?:a |the )?(?:movie|film)\s+(?:where|in which)\s+(?!can i|should i|do i|to watch)(?:.+)/i.test(normalizedPrompt)
-    || /^(?:a |the )?(?:movie|film)\s+(?:with|about)\s+(?:a |an |the )?(?:man|woman|guy|girl|boy|person|group)\b.*\b(?:works?|working|wakes?|relives?|repeats?|finds?|gets?|goes?|trapped|remembers?|loses?)\b/i.test(normalizedPrompt);
-  if (descriptiveMemory && !RECOMMENDATION_PATTERN.test(normalizedPrompt)) return ASK_INTENTS.MOVIE_IDENTIFICATION;
+  // A description is a recommendation unless the user explicitly asks to identify a remembered film.
   if (MOVIE_IDENTIFICATION_PATTERN.test(normalizedPrompt)) return ASK_INTENTS.MOVIE_IDENTIFICATION;
   if (COMPARISON_PATTERN.test(normalizedPrompt)) return ASK_INTENTS.MOVIE_COMPARISON;
   if (NEXT_PATTERN.test(normalizedPrompt) && hasRecommendation) return ASK_INTENTS.NEXT_RECOMMENDATION;

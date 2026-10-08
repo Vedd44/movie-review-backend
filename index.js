@@ -44,6 +44,7 @@ const { installWatchmodeRoutes } = require("./src/watchmode/routes");
 const { createSupabaseTakeStore } = require("./src/takes/supabaseTakeStore");
 const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
 const { ASK_INTENTS, classifyAskIntent, isMovieIdentificationFollowUp } = require("./src/ask/askIntent");
+const {getCommittedPrompt,canReuseIntentSnapshot}=require("./src/ask/requestContinuity");
 const {selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require("./src/ask/plotClues");
 const {
   normalizeConversationState,
@@ -1114,6 +1115,7 @@ const normalizePickRefinement = (rawRefinement = {}) => {
     label: String(rawRefinement.label || id).trim(),
     source_movie_id: Number.parseInt(rawRefinement.source_movie_id, 10) || null,
     source_movie_title: String(rawRefinement.source_movie_title || "").trim(),
+    source_movie_runtime: Number(rawRefinement.source_movie_runtime) > 1 ? Number(rawRefinement.source_movie_runtime) : null,
   };
 };
 
@@ -1165,6 +1167,9 @@ const applyRefinementToIntent = (intent = {}, refinement = null) => {
       nextIntent.energy_level = "medium";
       break;
     case "shorter":
+      if (refinement.source_movie_runtime > 1) {
+        nextIntent.hard_filters.max_runtime_minutes = Math.min(nextIntent.hard_filters.max_runtime_minutes || Infinity, refinement.source_movie_runtime - 1);
+      }
       nextIntent.runtime_commitment = {
         ...nextIntent.runtime_commitment,
         preference: "short",
@@ -1217,7 +1222,7 @@ const applyRefinementToIntent = (intent = {}, refinement = null) => {
 const hydrateResolvedIntent = async (preferences = {}, rawPreferences = {}) => {
   const refinement = normalizePickRefinement(rawPreferences.refinement);
 
-  if (isIntentSnapshotValid(rawPreferences.intent_snapshot)) {
+  if (canReuseIntentSnapshot(rawPreferences, preferences.prompt) && isIntentSnapshotValid(rawPreferences.intent_snapshot)) {
     const snapshot = rawPreferences.intent_snapshot;
     const hydratedSnapshot = snapshot.query_type ? snapshot : { ...snapshot, query_type: getIntentQueryType(snapshot) };
     return applyRefinementToIntent(hydratedSnapshot, refinement);
@@ -1851,7 +1856,7 @@ const getIntentSpecificFitScore = (movie, intent = {}, promptBoosts = {}) => {
 };
 
 const resolvePickPreferences = (preferences = {}) => {
-  const prompt = String(preferences.prompt || "").replace(/\s+/g, " ").trim().slice(0, 500);
+  const prompt = getCommittedPrompt(preferences);
   const promptSignals = getPromptSignals(prompt);
 
   const view = normalizeDiscoveryView(preferences.view);
@@ -4486,7 +4491,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
-  const cacheKey = `pick:v7:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const cacheKey = `pick:v8:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);

@@ -6,7 +6,7 @@ const scene='Movie where a person or group of people are working late night at a
 const variants=[scene,scene.replace(' and strange things happen',''),scene.replace('Movie where','Moive wher').replace('people','peopel').replace('working','workign').replace('night','nigth').replace('strange','strnage'), 'Film in which workers are working overnight in a restaurant', 'A movie where a waitress works the night shift in a diner'];
 const wrong=[{overview:'An inexplicable doorway opens in a furniture showroom.'},{overview:'Toys contend with a tablet.'},{overview:'Staff working overnight in a biotech facility encounter a virus.'},{overview:'Police work their last night shift confronting a cartel.'},{overview:'A chef runs a restaurant during the daytime.'},{overview:'Patrons eat dinner in a restaurant.'}];
 for(const prompt of variants){
- assert.equal(classifyAskIntent({prompt}),ASK_INTENTS.MOVIE_IDENTIFICATION,prompt);checks++;
+ assert.notEqual(classifyAskIntent({prompt}),ASK_INTENTS.MOVIE_IDENTIFICATION,prompt);checks++;
  const constraints=extractPlotConstraints(prompt);assert.ok(constraints.some(c=>c.label==='food workplace'));checks++;
  for(const movie of wrong){assert.equal(passesPlotConstraints(movie,constraints),false,`${prompt}: ${movie.overview}`);checks++;}
  assert.equal(passesPlotConstraints({overview:'A waitress working the overnight shift at a rural diner faces strange events.'},constraints),true);checks++;
@@ -23,7 +23,7 @@ for(const [prompt,good,bad] of [['A movie where a nurse works at night in a hosp
 }
 for(const title of ['Interstellar','Ronin','Heat','Memento','The Menu','Willy’s Wonderland','Last Straw','Poultrygeist: Night of the Chicken Dead']){assert.equal(normalizeCluePrompt(title),title);checks++;}
 assert.equal(isExplicitModelAbstention({primary:null,backups:[]}),true);assert.equal(isExplicitModelAbstention(null),false);assert.equal(isExplicitModelAbstention({primary:{id:1}}),false);checks+=3;
-for(const prompt of ['Recommend a movie where an accountant discovers his boss is laundering money','A film set on a submarine','Find movies about a woman who discovers messages from the future','Movies with a crew stranded after a storm']){assert.equal(hasDescriptivePlotRequest(prompt),true,prompt);checks++;}
+for(const prompt of ['Movie that takes place after a shift at a restaurant','Something set in a diner','Hero dies in the end','Recommend a movie where an accountant discovers his boss is laundering money','A film set on a submarine','Find movies about a woman who discovers messages from the future','Movies with a crew stranded after a storm']){assert.equal(hasDescriptivePlotRequest(prompt),true,prompt);checks++;}
 for(const prompt of ['Something funny after work','A good movie for friends','An easy watch on a train','Movies like Heat','A movie about comedy']){assert.equal(hasDescriptivePlotRequest(prompt),false,prompt);checks++;}
 const popular=Array.from({length:50},(_,i)=>({id:i+1}));
 const discovered=[{id:701},{id:702},{id:1}];

@@ -4,7 +4,9 @@ const SPELLING = Object.freeze({movue:'movie',mvoie:'movie',moive:'movie',flim:'
 const normalizeCluePrompt = value => String(value || '').replace(/\b[a-z]+\b/gi, word => SPELLING[word.toLowerCase()] || word).replace(/\s+/g,' ').trim();
 function hasDescriptivePlotRequest(prompt='') {
  const text=normalizeCluePrompt(prompt);
- return /\b(?:movie|film)s?\s+(?:where|in which|set (?:in|on|at)|about\s+(?:(?:a|an|the)\s+)?(?:man|woman|person|people|group|crew|family|couple|detective|cop|soldier|child|boy|girl|worker|waitress|chef)\b|with\s+(?:(?:a|an|the)\s+)?(?:man|woman|person|group|crew|family|couple)\b)/i.test(text);
+ return /\b(?:movie|film|thriller|horror|drama|comedy|something|story)s?\s+(?:(?:that|which)\s+)?(?:where|in which|takes place|set (?:in|on|at)|(?:in|on|at)\s+(?:a |an |the )?(?:restaurant|diner|hospital|prison|train|plane|spaceship|submarine)|about\s+(?:(?:a|an|the)\s+)?(?:man|woman|person|people|group|crew|family|couple|detective|cop|soldier|child|boy|girl|worker|waitress|chef)\b|with\s+(?:(?:a|an|the)\s+)?(?:man|woman|person|group|crew|family|couple)\b)/i.test(text)
+  || extractPlotConstraints(text).length>0
+  || /\b(?:hero|protagonist|main character)\b[^.!?]*\b(?:dies|death|killed)\b/i.test(text);
 }
 const SCENE_VENUES = [
  ['food workplace', /\b(?:at|in|inside|working (?:at|in))\s+(?:a |an |the )?(?:restaurant|diner|cafe|caf[eé]|pizzeria|pizza (?:place|parlor)|fast[- ]food (?:place|restaurant|joint)|food (?:place|joint))\b/i, /\b(?:restaurant|diner|caf[eé]|pizzeria|pizza (?:place|parlor)|fast[- ]food|burger (?:joint|restaurant))\b/i],
@@ -33,7 +35,7 @@ function extractPlotConstraints(prompt='') {
   const match=text.match(request);const before=text.slice(Math.max(0,match.index-35),match.index);
   return !/\b(?:not|never|except|avoid|without)\b[^,.!?]*$/i.test(before);
  }).map(([label,,evidence])=>({label,evidence}));
- if (constraints.length && /\b(?:working|works|workers?|employees?|staff|shift)\b/i.test(text)) {
+ if (constraints.length && /\b(?:working|works|workers?|employees?|staff|shift)\b/i.test(text) && !/\bafter (?:a |the |their |his |her )?(?:night |late[- ]night )?shift\b/i.test(text)) {
   constraints.push({label:'people working',evidence:/\b(?:work(?:s|ing|er|ers)?|employee|staff|shift|waiter|waitress|waitstaff|cook|chef|server|cashier|janitor|cleaner|nurse|doctor|guard|pilot|crew)\b/i});
   if (/\b(?:late[- ]night|night shift|overnight|after (?:hours|dark)|at night)\b/i.test(text)) constraints.push({label:'night work',evidence:/\b(?:night|overnight|after (?:hours|dark)|graveyard shift|closing time)\b/i});
  }

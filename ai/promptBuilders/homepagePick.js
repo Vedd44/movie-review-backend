@@ -166,7 +166,7 @@ module.exports = {
         "- Derived signals are estimates: qualify tone or intensity inferences. Runtime is not evidence of pacing. Never promise no scary scenes or guaranteed age suitability.",
         "- No generic praise, internal scoring language, metadata references, or repetition of the request. Write like a thoughtful film guide. Never write plausible match, key miss, the overview cannot confirm or detail remains unverified.",
         "- Stay spoiler-light even when the request names an ending category such as a hero dying. Confirm that the movie fits that category without identifying who dies, how, a twist or further ending details unless the user specifically asks for those details.",
-        "- Preserve the request and previous-pick context when explaining a swap. Do not repeat the previous reason's phrasing.",
+        "- Get another pick means another movie for the SAME request, never a change of subject or a change of pace away from it. Every core clue and hard restriction remains binding. Different angle varies the route within that request. Lighter or shorter modifies only the named dimension. Explain why the new movie fulfills the request, without narrating a departure from the previous pick.",
       ].join("\n")),
       userPrompt: prompts.userPrompt,
     };
