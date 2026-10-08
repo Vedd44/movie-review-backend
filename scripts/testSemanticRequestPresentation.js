@@ -1,0 +1,14 @@
+const assert=require('node:assert/strict');
+const {buildPickDecisionPrompts}=require('../ai/promptBuilders/homepagePick');
+const raw='Moive wher peopel are workign late nigth at a restaraunt, under 100 minutes';
+const preferences={prompt:raw};
+const intent={raw_prompt:raw,hard_filters:{max_runtime_minutes:99}};
+const corrected=buildPickDecisionPrompts({preferences,intent,candidates:[]});
+assert.ok(corrected.userPrompt.includes('movie where people are working late night at a restaurant, under 100 minutes'));
+assert.ok(corrected.userPrompt.includes(raw),'The original request remains available without changing numbers');
+assert.equal(preferences.prompt,raw,'Preparing selection cannot mutate the committed request or draft');
+const named='Movies like Moive, under 100 minutes';
+const preserved=buildPickDecisionPrompts({preferences:{prompt:named},intent:{anchors:{title:'Moive'},hard_filters:{max_runtime_minutes:99}},candidates:[]});
+assert.ok(preserved.userPrompt.includes(named),'An explicit title anchor is never spelling-corrected');
+assert.ok(!preserved.userPrompt.includes('Movies like Movie'));
+console.log('Selection shares conservative clue spelling while retaining original requests and exact entity anchors.');
