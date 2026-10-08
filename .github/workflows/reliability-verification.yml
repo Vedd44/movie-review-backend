@@ -1,0 +1,23 @@
+name: ReelBot deployed reliability verification
+on:
+  push:
+    branches: [codex/reliability-verification-20261008]
+permissions:
+  contents: read
+jobs:
+  deployed-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Clean repeated deployed API and model sweep
+        run: node scripts/runReliabilityVerification.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reelbot-reliability-fda730b-20261008
+          path: verification-output/
+          retention-days: 14
