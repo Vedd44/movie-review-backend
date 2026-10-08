@@ -11,7 +11,7 @@ const decisionReasons = (decision, primary, alternates = []) => {
 };
 // Internal evidence is kept separate from editorial copy. Unknown essential
 // facts are not matches; broad moods use an evidence-based cinematic-fit check.
-const isSupportedDecision = entry => Boolean(entry?.id && entry.experience_fit !== 'weak' && Array.isArray(entry.requirement_checks)
+const isSupportedDecision = entry => Boolean(entry?.id && entry.experience_fit !== 'weak' && !['incidental','unknown'].includes(entry.premise_fit) && Array.isArray(entry.requirement_checks)
   && entry.requirement_checks.length && entry.requirement_checks.every(check =>
     check.status === 'supported' && String(check.requirement || '').trim() && String(check.evidence || '').trim()));
 module.exports = { decisionReasons, isSupportedDecision, cleanDecisionReason };

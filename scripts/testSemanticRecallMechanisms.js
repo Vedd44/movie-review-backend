@@ -23,3 +23,7 @@ for(const prompt of ['A comedy with no horror or animation','A comedy without ho
  assert.ok(intent.hard_filters.exclude_genre_ids.includes(prompt.includes('animation')?16:99));
  assert.ok(!intent.hard_filters.required_genre_ids.includes(27));
 }
+
+assert.deepEqual(parseExplicitTimeConstraint('A comedy from 1994').range,{min_year:1994,max_year:1994},'A plain release-year qualifier remains exact');
+assert.equal(parseExplicitTimeConstraint('A drama set between 1985 and 1995'),null);
+assert.deepEqual(parseExplicitTimeConstraint('A drama set between 1985 and 1995, released in 2000').range,{min_year:2000,max_year:2000});

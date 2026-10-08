@@ -90,6 +90,9 @@ for (const item of [pickDecisionSchema.properties.primary, pickDecisionSchema.pr
   item.required.push("reason");
   item.properties.experience_fit = {type:"string",enum:["strong","adequate","weak"]};
   item.required.push("experience_fit");
+  item.properties.premise_fit = {type:"string",enum:["central","incidental","unknown","not_applicable"]};
+  item.properties.premise_evidence = {type:"string"};
+  item.required.push("premise_fit","premise_evidence");
   item.properties.requirement_checks = {
     type: "array", minItems: 1, maxItems: 6,
     items: { type: "object", additionalProperties: false,

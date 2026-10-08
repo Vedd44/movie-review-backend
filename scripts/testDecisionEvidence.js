@@ -11,3 +11,5 @@ assert.equal(isSupportedDecision({id:4,experience_fit:'weak',requirement_checks:
 
 const {cleanDecisionReason}=require('../ai/decisionPresentation');
 assert.equal(cleanDecisionReason('An unreliable memory makes each discovery unsettling. It is a hidden gem.'),'An unreliable memory makes each discovery unsettling.');
+
+assert.equal(isSupportedDecision({id:5,premise_fit:'incidental',requirement_checks:[{requirement:'A workplace and strange events',evidence:'The character leaves the workplace before the strange events',status:'supported'}]}),false,'Independent clues cannot substitute for their required conjunction');

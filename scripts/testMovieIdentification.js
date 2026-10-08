@@ -13,7 +13,7 @@ const context=vm.createContext({console,Date,Set,ASK_INTENTS,classifyAskIntent,i
  hasExplicitUserTrigger:()=>true,normalizeAskPageContext:x=>x,normalizeConversationState:x=>x,
  normalizePickMovie:(x,p,o)=>({...x,...o}),MODELS:{ask:'test'},
  dedupeMoviesById:list=>[...new Map(list.map(m=>[m.id,m])).values()],
- callStructuredOpenAI:async options=>{calls.push(options);return options.schemaName==='movie_identification_queries'?{search_queries:queries}:ranking;},
+ callStructuredOpenAI:async options=>{calls.push(options);return options.schemaName==='movie_identification_queries'?{films:queries.map(query=>{const match=query.match(/^(.*?)\s+\((\d{4})\)$/);return {title:match?match[1]:query,release_year:match?Number(match[2]):null,facts:'',source_urls:[]};})}:ranking;},
  fetchTmdb:async(path,params)=>{searches.push({path,...params});return {results:candidates};}
 });
 vm.runInContext(source.slice(source.indexOf('const movieIdentificationSchema'),source.indexOf('app.get("/movies/:id/reelbot"'))+'\nthis.identify=identifyMovieFromMemory;this.identificationPick=generateIdentificationPickPayload;',context);
@@ -21,7 +21,7 @@ vm.runInContext(source.slice(source.indexOf('const movieIdentificationSchema'),s
  let result=await context.identify('What was that movie where a guy wakes up every day with no memory?');
  assert.equal(calls.length,2,'retain the existing two model stages');assert.ok(calls[1].systemPrompt.startsWith('Identify a movie'),'explicit memories retain identification confidence');assert.equal(calls[0].webSearch,false,'ordinary remembered titles need no web lookup');assert.equal(searches.length,2);assert.ok(searches.every(x=>x.path==='/search/movie'),'no detail calls');
  assert.equal(result.primary.id,77);assert.equal(result.alternatives[0].id,1824);
- assert.equal(calls[0].schema.properties.search_queries.maxItems,4);assert.ok(calls[0].systemPrompt.includes('never plot keywords'));
+ assert.equal(calls[0].schema.properties.films.maxItems,4);assert.ok(calls[0].systemPrompt.includes('never plot keywords'));
  ranking={primary_id:77,alternative_ids:[77,1824,1824,999],confidence:'low',reason:'uncertain'};
  result=await context.identify('a vague memory');assert.equal(result.primary,null);assert.deepEqual(Array.from(result.alternatives,m=>m.id),[77,1824]);
  ranking={primary_id:999,alternative_ids:[999],confidence:'high',reason:'Invented title'};

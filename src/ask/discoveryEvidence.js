@@ -13,4 +13,12 @@ const attachDiscoveryEvidence = (movie, evidence = [], retrievedSources = []) =>
     .filter(entry => entry.facts.trim() && entry.source_urls.length).slice(0,2);
   return matched.length ? {...movie,discovery_evidence:matched} : movie;
 };
-module.exports = {attachDiscoveryEvidence};
+const discoveryQueries = parsed => {
+  const films = Array.isArray(parsed?.films) ? parsed.films.slice(0,4) : [];
+  const queryFor = film => String(film.title || '').trim() + (Number.isInteger(film.release_year) ? ` (${film.release_year})` : '');
+  const queries = [...new Set(films.map(queryFor).filter(Boolean))];
+  queries.film_evidence = films.map(film => ({query:queryFor(film),facts:film.facts,source_urls:film.source_urls}));
+  queries.retrieved_source_urls = parsed?.retrieved_source_urls || [];
+  return queries;
+};
+module.exports = {attachDiscoveryEvidence,discoveryQueries};

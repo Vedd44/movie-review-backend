@@ -19,7 +19,7 @@ const isSettingContext = (prompt = "", matchIndex = 0) => {
     .slice(Math.max(0, matchIndex - 28), matchIndex)
     .toLowerCase();
 
-  return /(set|takes place|taking place|placed)\s+(squarely\s+|firmly\s+)?(in|during|before|after)\s+(the\s+)?$/.test(leadingWindow);
+  return /(set|takes place|taking place|placed)\s+(squarely\s+|firmly\s+)?(in|during|before|after|between)\s+(the\s+)?$/.test(leadingWindow);
 };
 
 const buildRange = (min, max) => ({
@@ -71,9 +71,10 @@ const parseExplicitTimeConstraint = (prompt = "") => {
   // Relational dates describe a range, not the nearest numeric year. Keep
   // story-setting language separate and never automatically widen the range.
   const interval = /\b(?:between|from)\s+(19\d{2}|20\d{2})\s+(?:and|to|through|-)\s+(19\d{2}|20\d{2})\b/.exec(normalizedPrompt);
-  const boundary = /\b(before|after|prior to|since|from|by|through)\s+(19\d{2}|20\d{2})\b/.exec(normalizedPrompt);
+  const boundary = /\b(before|after|prior to|since|by|through)\s+(19\d{2}|20\d{2})\b/.exec(normalizedPrompt);
   const relational = interval || boundary;
-  if (relational && !isSettingContext(normalizedPrompt, relational.index + relational[0].search(/\d{4}/))) {
+  const storyRange = relational && isSettingContext(normalizedPrompt, relational.index + relational[0].search(/\d{4}/));
+  if (relational && !storyRange) {
     const year = Number(relational[2]);
     const min = interval ? Number(interval[1]) : /^(?:after|since|from)$/.test(boundary[1]) ? year + (boundary[1] === 'after' ? 1 : 0) : 1900;
     const max = interval ? Number(interval[2]) : /^(?:before|prior to|by|through)$/.test(boundary[1]) ? year - (/^(?:before|prior to)$/.test(boundary[1]) ? 1 : 0) : 2100;
@@ -106,7 +107,7 @@ const parseExplicitTimeConstraint = (prompt = "") => {
   const yearPattern = /\b(19[0-9]{2}|20[0-9]{2})\b/g;
   let yearMatch = yearPattern.exec(normalizedPrompt);
   while (yearMatch) {
-    if (!isSettingContext(normalizedPrompt, yearMatch.index || 0)) {
+    if (!isSettingContext(normalizedPrompt, yearMatch.index || 0) && !(storyRange && yearMatch.index >= relational.index && yearMatch.index < relational.index + relational[0].length)) {
       const year = clampYear(Number(yearMatch[0]));
       return buildTimeConstraint({
         type: "year",
