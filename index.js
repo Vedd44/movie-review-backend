@@ -7,6 +7,7 @@ const { timingMiddleware, measureStage, finishTiming, markRecovery } = require("
 const { decisionReasons, isSupportedDecision } = require("./ai/decisionPresentation");
 const {attachDiscoveryEvidence,discoveryQueries,matchesDiscoveryIdentity} = require("./src/ask/discoveryEvidence");
 const {fetchSemanticKeywordCandidates} = require("./src/ask/semanticKeywordRetrieval");
+const {semanticRecallKey,retainVerifiedIdentities}=require("./src/ask/semanticRecall");
 const {describeSearchLimit} = require("./src/ask/searchLimits");
 const { contentFallback, filterGroundedFollowUps } = require("./ai/askEvidence");
 const axios = require("axios");
@@ -82,6 +83,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 const REELBOT_PICK_DEBUG_ENABLED = /^(1|true|yes)$/i.test(String(process.env.REELBOT_PICK_DEBUG || ""));
 const reelbotCache = new Map();
 const pickCache = new Map();
+const semanticRecallCache = new Map();
 const tmdbCache = new Map();
 const streamingAvailabilityCache = new Map();
 const pickSurfaceTally = new Map();
@@ -3155,13 +3157,13 @@ const fetchPickDetail = async (movieId) => {
   };
 };
 
-const fetchMoviesByIds = async (movieIds = []) => {
+const fetchMoviesByIds = async (movieIds = [], {includeKeywords=false} = {}) => {
   const ids = Array.from(new Set((Array.isArray(movieIds) ? movieIds : []).map((value) => Number.parseInt(value, 10)).filter(Boolean)));
   if (!ids.length) {
     return [];
   }
 
-  const responses = await Promise.allSettled(ids.map((movieId) => fetchTmdbCached(`/movie/${movieId}`, { append_to_response: "release_dates,watch/providers" }, CACHE_TTLS.movie_details)));
+  const responses = await Promise.allSettled(ids.map((movieId) => fetchTmdbCached(`/movie/${movieId}`, { append_to_response: includeKeywords ? "release_dates,keywords,watch/providers" : "release_dates,watch/providers" }, CACHE_TTLS.movie_details)));
   return responses
     .filter((response) => response.status === "fulfilled")
     .map((response) => {
@@ -4525,6 +4527,11 @@ const generatePickPayload = async (rawPreferences = {}) => {
     ? rawPreferences.candidate_pool_ids.map((value) => Number.parseInt(value, 10)).filter(Boolean)
     : [];
   const hasProvidedCandidatePool = Boolean(rawPreferences.bounded_pool) || providedCandidatePoolIds.length > 0;
+  const recallKey=semanticRecallKey(rawPreferences,preferences,resolvedIntent);
+  const recalledIds=recallKey ? (readCache(semanticRecallCache,recallKey) || []).filter(id=>!excludedIds.has(id)) : [];
+  const rememberVerified=(primary,alternates=[])=>{
+    if(recallKey && primary?.id) writeCache(semanticRecallCache,recallKey,retainVerifiedIdentities(readCache(semanticRecallCache,recallKey) || [],[primary,...alternates]),CACHE_TTLS.pick,CACHE_LIMITS.pick);
+  };
   const usesHardEntityPool = ["PERSON", "DIRECTOR", "FRANCHISE", "TITLE_SIMILARITY", "COUNTRY", "AWARDS"].includes(queryType)
     || (queryType === "GENRE_THEME" && shouldUseStructuredResolution);
 
@@ -4532,11 +4539,13 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const allowPlotDiscovery = hasDescriptivePlotRequest(preferences.prompt) && !hasProvidedCandidatePool
     && (!usesHardEntityPool || ["PERSON", "DIRECTOR", "FRANCHISE"].includes(queryType));
   const retrieved = await measureStage("retrieval", () => retrieveWithDiscovery({
-    retrieve: async () => hasProvidedCandidatePool
-      ? await fetchMoviesByIds(providedCandidatePoolIds)
-      : shouldUseStructuredResolution
-        ? structuredResolution.movies
-        : await getPickCandidatePool(preferences, resolvedIntent, promptBoosts),
+    retrieve: async () => {
+      const [base,remembered]=await Promise.all([
+        hasProvidedCandidatePool ? fetchMoviesByIds(providedCandidatePoolIds) : shouldUseStructuredResolution ? structuredResolution.movies : getPickCandidatePool(preferences,resolvedIntent,promptBoosts),
+        recalledIds.length && !rawPreferences.semantic_fallback_attempted ? fetchMoviesByIds(recalledIds,{includeKeywords:true}) : [],
+      ]);
+      return dedupeMoviesById([...remembered.map(movie=>({...movie,plot_discovered:true,source_type:'verified_semantic_recall'})),...base]);
+    },
     allowDiscovery: allowPlotDiscovery,
     discover: async () => {
       plotSearchTrace = await extractMovieIdentificationQueries(buildDiscoveryPrompt(preferences.prompt, resolvedIntent.hard_filters, rawPreferences.is_swap ? rawPreferences.last_pick_title : ""));
@@ -4788,7 +4797,8 @@ const generatePickPayload = async (rawPreferences = {}) => {
       ]);
       const discovered = untestedDiscoveryCandidates(dedupeMoviesById([...titles,...keywordCandidates]).filter(movie=>!contradictsPlotConstraints(movie,resolvedIntent.plot_constraints)).slice(0,18), rankingPool);
       if(debugTrace) debugTrace.semantic_fallback = {queries:Array.from(queries),keyword_terms:queries.keyword_terms,title_candidate_ids:titles.map(movie=>movie.id),keyword_candidate_ids:keywordCandidates.map(movie=>movie.id),untested_candidate_ids:discovered.map(movie=>movie.id)};
-      if (discovered.length) return generatePickPayload({
+      if (discovered.length) {
+        const recovered=await generatePickPayload({
         ...rawPreferences,
         intent_snapshot: resolvedIntent,
         candidate_pool_ids: discovered.map(movie => movie.id),
@@ -4797,7 +4807,11 @@ const generatePickPayload = async (rawPreferences = {}) => {
         semantic_fallback_evidence: Object.fromEntries(discovered.filter(movie => movie.discovery_evidence).map(movie => [movie.id,movie.discovery_evidence])),
         semantic_fallback_attempted: true,
         refresh_key: rawPreferences.refresh_key || `semantic-fallback-${Date.now()}`,
-      });
+        });
+        rememberVerified(recovered.primary,recovered.alternates);
+        if(includeDebug && debugTrace?.semantic_fallback) recovered.debug_trace={...recovered.debug_trace,semantic_fallback:debugTrace.semantic_fallback};
+        return recovered;
+      }
     }
     const noPickPayload = {
       label: "Pick for Me",
@@ -4946,6 +4960,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
     pickSurfaceTally.set(movie.id, (pickSurfaceTally.get(movie.id) || 0) + 1);
     trimMap(pickSurfaceTally, CACHE_LIMITS.pick_surface_tally);
   });
+  rememberVerified(primaryPick,alternatePicks);
 
   if (!refreshKey) {
     writeCache(pickCache, cacheKey, payload, CACHE_TTLS.pick, CACHE_LIMITS.pick);

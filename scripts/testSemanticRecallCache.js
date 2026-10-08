@@ -1,0 +1,15 @@
+const assert=require('node:assert/strict');
+const {semanticRecallKey,retainVerifiedIdentities}=require('../src/ask/semanticRecall');
+const preferences={prompt:'A film about researchers working at a remote station',company:'any',include_theatrical:false};
+const intent={hard_filters:{max_runtime_minutes:90},tone_preferences:['tense']};
+const key=semanticRecallKey({},preferences,intent);
+assert.ok(key);
+assert.equal(semanticRecallKey({is_swap:true,candidate_pool_ids:[1]},preferences,intent),key,'A continuation reuses exact-request discovery identities');
+for(const request of [{bounded_pool:true},{candidate_pool_ids:[1]}]) assert.equal(semanticRecallKey(request,preferences,intent),null,'Explicit candidate boundaries never import cached movies');
+assert.equal(semanticRecallKey({}, {...preferences,prompt:'Something funny for a family evening'},intent),null,'Ordinary moods do not gain semantic identity caching');
+for(const next of [{...intent,hard_filters:{max_runtime_minutes:80}},{...intent,tone_preferences:['gentle']}]) assert.notEqual(semanticRecallKey({},preferences,next),key,'Refined runtime and tone have separate discovery keys');
+assert.notEqual(semanticRecallKey({}, {...preferences,prompt:'A film about a musician touring abroad'},intent),key,'Fresh topics cannot inherit a previous story deck');
+for(const override of [{genre:'horror'},{mood:'cozy'},{runtime:'short'},{view:'now_playing'},{company:'family'},{include_theatrical:true}]) assert.notEqual(semanticRecallKey({}, {...preferences,...override},intent),key,'Each surface filter participates in identity cache isolation');
+assert.deepEqual(retainVerifiedIdentities([1,2],[{id:2},{id:3},{id:-1},{id:'bad'}]),[2,3,1]);
+assert.equal(retainVerifiedIdentities([],Array.from({length:30},(_,i)=>({id:i+1}))).length,12,'Verified recall remains bounded independently of response caching');
+console.log('Verified semantic identity reuse isolates exact requests, refinements and explicit candidate boundaries.');
