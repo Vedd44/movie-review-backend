@@ -4500,7 +4500,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
-  const cacheKey = `pick:v18:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const cacheKey = `pick:v19:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);

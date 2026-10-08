@@ -27,3 +27,7 @@ for(const prompt of ['A comedy with no horror or animation','A comedy without ho
 assert.deepEqual(parseExplicitTimeConstraint('A comedy from 1994').range,{min_year:1994,max_year:1994},'A plain release-year qualifier remains exact');
 assert.equal(parseExplicitTimeConstraint('A drama set between 1985 and 1995'),null);
 assert.deepEqual(parseExplicitTimeConstraint('A drama set between 1985 and 1995, released in 2000').range,{min_year:2000,max_year:2000});
+
+assert.equal(parseReelbotIntent('A comedy under 100 minutes').hard_filters.max_runtime_minutes,99);
+assert.equal(parseReelbotIntent('A comedy at most 100 minutes').hard_filters.max_runtime_minutes,100);
+assert.equal(parseReelbotIntent('A drama under two hours').hard_filters.max_runtime_minutes,119);

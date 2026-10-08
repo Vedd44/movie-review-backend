@@ -11,7 +11,7 @@ assert.equal(parsed.lighter_soft_runtime_action.constraint_priority.cognitive_lo
 assert.equal(parsed.lighter_soft_runtime_action.runtime_commitment.strength, "soft");
 assert.equal(parsed.lighter_soft_runtime_action.hard_filters.max_runtime_minutes, null);
 assert.equal(parsed.lighter_soft_runtime_action.hard_filters.min_runtime_minutes, null);
-assert.equal(parseReelbotIntent("action under 100 minutes").hard_filters.max_runtime_minutes, 100);
+assert.equal(parseReelbotIntent("action under 100 minutes").hard_filters.max_runtime_minutes, 99);
 assert.equal(parseReelbotIntent("action under 100 minutes").runtime_commitment.strength, "hard");
 assert.equal(parsed.spooky_but_safe.content_safety, "safe");
 assert.equal(parsed.serious_not_depressing.emotional_tolerance.avoid_depressing, true);

@@ -11,7 +11,7 @@ const combined=parseReelbotIntent('A funny 90s action movie under two hours, no 
 assert.ok(passesRecommendationContract(base,combined,{final:true}));
 for(const movie of [{...base,runtime:121},{...base,genre_ids:[35]},{...base,release_date:'2010-01-01'},{...base,genre_ids:[28,35,27]},{...base,runtime:null}]) assert.equal(passesRecommendationContract(movie,combined,{final:true}),false);
 for(const prompt of ['I want a tense 90-minute thriller.','A thriller no longer than 90 minutes.']) assert.equal(parseReelbotIntent(prompt).hard_filters.max_runtime_minutes,90);
-assert.equal(parseReelbotIntent('under 2 hours').hard_filters.max_runtime_minutes,120);
+assert.equal(parseReelbotIntent('under 2 hours').hard_filters.max_runtime_minutes,119);
 assert.deepEqual(parseReelbotIntent('I loved Interstellar.').anchors.title,'Interstellar');
 assert.equal(parseReelbotIntent('Nothing too heavy').emotional_tolerance.level,'light');
 assert.equal(parseReelbotIntent('gentle for a four year old').audience_age,'preschool');

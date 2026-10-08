@@ -284,16 +284,17 @@ const getPacingEnergyProfile = (prompt = "", emotionalTolerance = {}) => {
 
 const getRuntimeCommitment = (prompt = "") => {
   const normalizedPrompt = lower(prompt);
-  const numericMaximum = normalizedPrompt.match(/\b(?:under|less than|no more than|no longer than|at most|max(?:imum)?(?: of)?)\s*(\d{1,3})\s*(?:minutes?|mins?)?\b(?!\s*hours?\b)/i);
+  const numericMaximum = normalizedPrompt.match(/\b(under|less than|no more than|no longer than|at most|max(?:imum)?(?: of)?)\s*(\d{1,3})\s*(?:minutes?|mins?)?\b(?!\s*hours?\b)/i);
   const underTwoHours = /\bunder\s*(?:2|two)\s*hours?\b|\bunder\s*120\s*(?:minutes?|mins?)?\b/i.test(normalizedPrompt);
   const softShort = /\bnot too long\b|\bsomething shorter\b|\bshort(?:er)?\b|\bquick watch\b|\bmanageable runtime\b/i.test(normalizedPrompt);
   const duration = normalizedPrompt.match(/\b(\d{2,3})[- ]minutes?\b/i);
   const maxRuntimeMinutes = numericMaximum
-    ? Number(numericMaximum[1])
-    : /\bunder ninety\b|\b90 minutes? or less\b/i.test(normalizedPrompt)
-      ? 90
+    ? Math.max(1, Number(numericMaximum[2]) - (/^(?:under|less than)$/.test(numericMaximum[1]) ? 1 : 0))
+    : /\bunder ninety\b/i.test(normalizedPrompt)
+      ? 89
+      : /\b90 minutes? or less\b/i.test(normalizedPrompt) ? 90
       : underTwoHours
-        ? 120
+        ? 119
         : duration ? Number(duration[1]) : null;
 
   return {
