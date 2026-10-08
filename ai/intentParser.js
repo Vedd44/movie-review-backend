@@ -1,5 +1,5 @@
 const { trimEntityQualifier } = require("./entityPrompt");
-const { explicitGenreIds } = require("./recommendationContract");
+const { explicitGenreIds, explicitExcludedGenreIds } = require("./recommendationContract");
 const { getMatchedRubricKeys } = require("./recommendationRubrics");
 const { getAudienceIntentSignals } = require("./audienceSignals");
 const { detectStructuredQuery } = require("./queryInterpreter");
@@ -406,7 +406,7 @@ const parseReelbotIntent = (prompt = "") => {
   const thematicTerms = addUnique(inferThematicTerms(rawPrompt), [
     ...subjectEntities,
     ...queryExpansion.entity_aliases,
-    ...queryExpansion.title_hints.map((value) => lower(value)),
+    // Title hints are soft retrieval seeds, not required story themes.
   ]);
   const strictFilters = buildStrictIntentFilters({
     prompt: rawPrompt,
@@ -487,6 +487,7 @@ const parseReelbotIntent = (prompt = "") => {
     exclude_genre_ids: Array.from(new Set([
       ...(Array.isArray(audienceSignals.guardrails?.hard_exclude_genre_ids) ? audienceSignals.guardrails.hard_exclude_genre_ids : []),
       ...avoidGenreIds,
+      ...explicitExcludedGenreIds(rawPrompt),
     ])),
     certification_allowlist: /\bpg only\b/i.test(normalizedPrompt) ? ["PG"] : [],
     require_country_relevance: structuredQuery?.type === "country",

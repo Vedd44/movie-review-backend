@@ -8,10 +8,14 @@ const GENRES = [
   [99, /\bdocumentary\b|\bdocumentaries\b/i],
 ];
 
-const explicitGenreIds = (prompt = '') => {
-  const positive = String(prompt).replace(/\b(?:no|not|without|avoid|except|hate[sd]?)\s+(?:any\s+|more\s+)?(?:horror|action|comedy|drama|thriller|crime|animation|documentary)\b/gi, '');
-  return GENRES.filter(([,pattern]) => pattern.test(positive)).map(([id]) => id);
-};
+// Read polarity at each genre mention, including articles ("not a documentary").
+// The existing genre vocabulary stays shared by requirements and exclusions.
+const genreMentions = (prompt = '') => GENRES.flatMap(([id, pattern]) => {
+ const text = String(prompt); const matches = [...text.matchAll(new RegExp(pattern.source, 'gi'))];
+ return matches.map(match => ({id, excluded: /\b(?:no|not|without|avoid|except|hate[sd]?)\s+(?:(?:a|an|any|more)\s+)?$/i.test(text.slice(Math.max(0,match.index-40),match.index))}));
+});
+const explicitGenreIds = prompt => [...new Set(genreMentions(prompt).filter(m => !m.excluded).map(m => m.id))];
+const explicitExcludedGenreIds = prompt => [...new Set(genreMentions(prompt).filter(m => m.excluded).map(m => m.id))];
 
 // TMDB synopses and our estimated tone signals cannot verify scene-level absences.
 const needsVerifiedContentGuide = (prompt = '') => /\b(?:no|zero|without any)\s+(?:scary|frightening|violent|sexual)\s+(?:scenes|content)\b|\b(?:zero|absolutely no)\s+(?:violence|nudity|scares)\b/i.test(prompt);
@@ -53,4 +57,4 @@ const recommendationCacheScope = (request = {}, intent = {}) => JSON.stringify({
   previous: request.last_pick_title || '',
 });
 
-module.exports = { explicitGenreIds, passesRecommendationContract, recommendationCacheScope, needsVerifiedContentGuide };
+module.exports = { explicitGenreIds, explicitExcludedGenreIds, passesRecommendationContract, recommendationCacheScope, needsVerifiedContentGuide };

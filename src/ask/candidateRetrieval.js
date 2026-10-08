@@ -4,4 +4,5 @@ const retrieveWithDiscovery = async ({retrieve, discover, allowDiscovery = false
  const [pool, discovered] = await Promise.all([retrieve(), allowDiscovery ? discover() : Promise.resolve([])]);
  return {pool, discovered};
 };
-module.exports = {retrieveWithDiscovery};
+const shouldRunSemanticFallback = ({prompt = '', bounded = false, attempted = false, discoveryPerformed = false}) => Boolean(prompt.trim()) && !bounded && !attempted && !discoveryPerformed;
+module.exports = {retrieveWithDiscovery, shouldRunSemanticFallback};
