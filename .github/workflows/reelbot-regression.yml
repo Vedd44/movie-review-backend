@@ -26,4 +26,5 @@ jobs:
       - run: npm run test:discovery-pagination
       - run: npm run test:reelbot-take
       - run: npm run test:recommendations
+      - run: npm run test:continuity-regressions
       - run: node scripts/testRecommendationNovelty.js

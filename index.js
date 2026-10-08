@@ -1304,7 +1304,7 @@ const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}, options = 
     const anchored = promptBoosts?.titleSimilarMovieIds?.has(movie.id) || promptBoosts?.constrainedAnchorMovieIds?.has(movie.id);
     const anchorGenres = promptBoosts?.anchorGenreIds || [];
     // TMDB recommendations include co-popular films. Require the defining genre too.
-    const definingGenres = anchorGenres.filter(id => [878, 80, 53, 27, 35, 16, 10749, 99].includes(id));
+    const definingGenres = anchorGenres.filter(id => [878, 80, 53, 27, 35, 16, 10749, 99].includes(id) && !(hardFilters.exclude_genre_ids || []).includes(id));
     return Boolean(anchored && (!definingGenres.length || definingGenres.every(id => (movie.genre_ids || []).includes(id))));
   }
 
@@ -3540,8 +3540,8 @@ const resolveGenreThemeCandidates = async (structuredQuery, intent = {}, options
     allowFallback: Boolean(options.allowTimeConstraintFallback),
     genreFilter: timeConstraintGenreFilter,
     runtimeRange: {
-      min: runtimeConfig.min || null,
-      max: runtimeConfig.max || null,
+      min: intent.hard_filters?.min_runtime_minutes || runtimeConfig.min || null,
+      max: intent.hard_filters?.max_runtime_minutes || runtimeConfig.max || null,
     },
   });
   const timeConstraintKeywordBaseParams = timeConstraintDiscoverVariants[0]?.params
@@ -7319,7 +7319,7 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
         movie: primary ? normalizePickMovie(primary, { prompt }) : null,
         alternatives: identification.alternatives.map(movie => normalizePickMovie(movie, { prompt })),
         model: MODELS.ask,
-        conversation_state: { ...incomingConversation, anchorMovie: primary ? { id: primary.id, title: primary.title, release_date: primary.release_date } : null, activeIntent: intent, activeRequest: identificationPrompt, lastUserMessage: prompt, lastAssistantResponse: answer },
+        conversation_state: { ...incomingConversation, anchorMovie: primary ? { id: primary.id, title: primary.title, release_date: primary.release_date } : null, activeIntent: intent, activeTask: intent, activeRequest: identificationPrompt, lastUserMessage: prompt, lastAssistantResponse: answer },
         latency_ms: Date.now() - startedAt,
       });
     }

@@ -1,5 +1,11 @@
 const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim();
 const unique = (values = []) => [...new Set(values.filter(Boolean))];
+const {getRuntimeCommitment}=require('../../ai/intentParser');
+// Remove only explicit runtime ceilings when a resolved numeric mutation replaces
+// them. Preserve titles, years, other numbers and the original stored request.
+const withoutRuntimeCaps = text => String(text || '')
+  .replace(/\b(?:under|less than|no more than|no longer than|at most|max(?:imum)?(?: of)?)\s*(?:\d{1,3}|two|ninety)\s*(?:hours?|minutes?|mins?)?\b/gi,'')
+  .replace(/\b90 minutes? or less\b/gi,'');
 
 const normalizeMovie = (movie = null) => movie && typeof movie === "object" && Number(movie.id)
   ? { id: Number(movie.id), title: compact(movie.title).slice(0, 160), runtime: Number(movie.runtime) || null, release_date: compact(movie.release_date).slice(0, 10) }
@@ -10,6 +16,7 @@ const normalizeConversationState = (value = {}, pageContext = {}) => ({
   pageContext: compact(pageContext.page || value.pageContext || "general").slice(0, 40),
   anchorMovie: normalizeMovie(value.anchorMovie || pageContext.movie || pageContext.currentPick),
   activeIntent: compact(value.activeIntent || (pageContext.originalPrompt ? "GENERAL_RECOMMENDATION" : "")).slice(0, 60),
+  activeTask: compact(value.activeTask || value.activeIntent || (pageContext.originalPrompt ? 'GENERAL_RECOMMENDATION' : '')).slice(0,60),
   activeConstraints: value.activeConstraints && typeof value.activeConstraints === "object" ? value.activeConstraints : {},
   activeRequest: compact(value.activeRequest || pageContext.originalPrompt).slice(0, 1000),
   lastUserMessage: compact(value.lastUserMessage).slice(0, 500),
@@ -57,7 +64,13 @@ const updateConversationForPrompt = (stateValue = {}, prompt = "", intent = "", 
   const continuation = /REFINE_RECOMMENDATION|NEXT_RECOMMENDATION/.test(intent);
   const previous = continuation ? (state.activeConstraints || {}) : {};
   const relative = {};
-  if (continuation && /\bshorter\b/i.test(prompt) && state.anchorMovie?.runtime) relative.maxRuntime = Math.min(previous.maxRuntime || Infinity, state.anchorMovie.runtime - 1);
+  const explicitCap=getRuntimeCommitment(prompt).max_runtime_minutes;
+  if(continuation && explicitCap) {
+    const priorCap=previous.maxRuntime || getRuntimeCommitment(state.activeRequest).max_runtime_minutes || Infinity;
+    const replaces=/\b(?:actually|instead|rather than|i meant|change|set)\b|\bmake (?:it|that|this)\b/i.test(prompt);
+    relative.maxRuntime=replaces?explicitCap:Math.min(priorCap,explicitCap);
+  }
+  if (continuation && /\bshorter\b/i.test(prompt) && state.anchorMovie?.runtime) relative.maxRuntime = Math.min(relative.maxRuntime || Infinity, previous.maxRuntime || getRuntimeCommitment(state.activeRequest).max_runtime_minutes || Infinity, state.anchorMovie.runtime - 1);
   if (continuation && /\bnewer\b|more recent/i.test(prompt) && state.anchorMovie?.release_date) relative.minYear = Number(state.anchorMovie.release_date.slice(0, 4)) + 1;
   const nextConstraints = {
     ...previous,
@@ -75,6 +88,7 @@ const updateConversationForPrompt = (stateValue = {}, prompt = "", intent = "", 
   return {
     ...state,
     activeIntent: intent || state.activeIntent,
+    activeTask: intent || state.activeTask,
     activeConstraints: nextConstraints,
     activeRequest: nextRequest,
     lastUserMessage: compact(prompt),
@@ -88,7 +102,8 @@ const buildContextualRecommendationPrompt = (prompt = "", state = {}, intent = "
   const base = compact(state.activeRequest);
   if (!base || ! /REFINE_RECOMMENDATION|NEXT_RECOMMENDATION/.test(intent)) return current;
   const corrections = unique([...(state.userCorrections || []), ...(isCorrection(current) ? [current] : [])]);
-  return [base, ...corrections.map((item) => `Correction: ${item}`),
+  const hasCap=Boolean(state.activeConstraints?.maxRuntime);
+  return [hasCap?withoutRuntimeCaps(base):base, ...corrections.map((item) => `Correction: ${hasCap?withoutRuntimeCaps(item):item}`),
     state.activeConstraints?.maxRuntime ? `No longer than ${state.activeConstraints.maxRuntime} minutes` : "",
   ].filter(Boolean).join(". ");
 };

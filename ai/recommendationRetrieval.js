@@ -300,6 +300,8 @@ const resolveExpandedRecommendationCandidates = async ({
   // Retrieve across the catalog, not only this week's popular releases.
   // The two orderings balance established films with less overexposed options.
   const hard = intent.hard_filters || {};
+  const minYear=Math.max(hard.min_release_year || 0,hard.time_constraint?.range?.min_year || 0);
+  const maxYear=Math.min(hard.max_release_year || Infinity,hard.time_constraint?.range?.max_year || Infinity);
   const requestedGenres = hard.required_genre_ids?.length ? hard.required_genre_ids : plan.discover_genre_ids;
   const broadParams = {
     include_adult: "false", "vote_count.gte": 250,
@@ -308,10 +310,8 @@ const resolveExpandedRecommendationCandidates = async ({
     ...(hard.exclude_genre_ids?.length ? { without_genres: hard.exclude_genre_ids.join(",") } : {}),
     ...(hard.max_runtime_minutes ? { "with_runtime.lte": hard.max_runtime_minutes } : {}),
     ...(hard.min_runtime_minutes ? { "with_runtime.gte": hard.min_runtime_minutes } : {}),
-    ...(hard.time_constraint?.range ? {
-      "primary_release_date.gte": `${hard.time_constraint.range.min_year}-01-01`,
-      "primary_release_date.lte": `${hard.time_constraint.range.max_year}-12-31`,
-    } : {}),
+    ...(minYear ? {"primary_release_date.gte":`${minYear}-01-01`} : {}),
+    ...(Number.isFinite(maxYear) ? {"primary_release_date.lte":`${maxYear}-12-31`} : {}),
   };
   const catalogResponses = await Promise.allSettled(["vote_average.desc", "vote_count.desc", "popularity.desc"].map(sort_by =>
     fetchTmdb("/discover/movie", { ...broadParams, sort_by, page: 1 })

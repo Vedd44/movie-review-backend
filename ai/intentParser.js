@@ -1,5 +1,5 @@
 const { trimEntityQualifier } = require("./entityPrompt");
-const { explicitGenreIds, explicitExcludedGenreIds } = require("./recommendationContract");
+const { explicitGenreIds, explicitExcludedGenreIds, explicitGenreMatch } = require("./recommendationContract");
 const { getMatchedRubricKeys } = require("./recommendationRubrics");
 const { getAudienceIntentSignals } = require("./audienceSignals");
 const { detectStructuredQuery } = require("./queryInterpreter");
@@ -482,7 +482,7 @@ const parseReelbotIntent = (prompt = "") => {
     hard_filters: {
     family_safe_only: Boolean(audienceSignals.guardrails.child_family_safe),
     required_genre_ids: explicitGenreIds(rawPrompt),
-    genre_match: /\bor\b/i.test(rawPrompt) ? "any" : "all",
+    genre_match: explicitGenreMatch(rawPrompt),
     max_runtime_minutes: runtimeCommitment.strength === "hard" ? runtimeCommitment.max_runtime_minutes : null,
     min_runtime_minutes: runtimeCommitment.min_runtime_minutes,
     exclude_genre_ids: Array.from(new Set([
@@ -527,6 +527,7 @@ const isIntentSnapshotValid = (snapshot = {}) =>
   snapshot && typeof snapshot === "object" && typeof snapshot.lane_key === "string" && typeof snapshot.prompt_type === "string";
 
 module.exports = {
+  getRuntimeCommitment,
   classifyPromptType,
   parseReelbotIntent,
   isIntentSnapshotValid,

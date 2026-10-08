@@ -31,3 +31,8 @@ assert.deepEqual(parseExplicitTimeConstraint('A drama set between 1985 and 1995,
 assert.equal(parseReelbotIntent('A comedy under 100 minutes').hard_filters.max_runtime_minutes,99);
 assert.equal(parseReelbotIntent('A comedy at most 100 minutes').hard_filters.max_runtime_minutes,100);
 assert.equal(parseReelbotIntent('A drama under two hours').hard_filters.max_runtime_minutes,119);
+const conjunction=parseReelbotIntent('A sci-fi thriller, no horror or animation');
+assert.equal(conjunction.hard_filters.genre_match,'all','An exclusion disjunction must not weaken required genres');
+assert.equal(passesRecommendationContract({genre_ids:[878,35],runtime:90},conjunction),false);
+assert.equal(passesRecommendationContract({genre_ids:[878,53],runtime:90},conjunction),true);
+assert.equal(parseReelbotIntent('A sci-fi or thriller, no horror or animation').hard_filters.genre_match,'any');

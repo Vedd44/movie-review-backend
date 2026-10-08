@@ -18,11 +18,15 @@ const genreMentions = (prompt = '') => GENRES.flatMap(([id, pattern]) => {
   // clause or an unrelated word. Use the shared genre grammar, not examples.
   const genreSource = GENRES.map(([,expression]) => `(?:${expression.source})`).join('|');
   const excluded = new RegExp(`\\b(?:no|not|without|avoid|except|hate[sd]?)\\s+(?:(?:a|an|any|more)\\s+)?(?:(?:${genreSource})\\s*(?:,\\s*|(?:and|or)\\s+))*$`, 'i').test(prefix);
-  return {id, excluded};
+  return {id, excluded, index:match.index, end:match.index+match[0].length};
  });
 });
 const explicitGenreIds = prompt => [...new Set(genreMentions(prompt).filter(m => !m.excluded).map(m => m.id))];
 const explicitExcludedGenreIds = prompt => [...new Set(genreMentions(prompt).filter(m => m.excluded).map(m => m.id))];
+const explicitGenreMatch = prompt => {
+ const mentions=genreMentions(prompt).filter(m=>!m.excluded).sort((a,b)=>a.index-b.index);
+ return mentions.some((mention,index)=>index>0 && /^[\s,]*(?:or|and\/or)\s+(?:an?\s+)?$/i.test(String(prompt).slice(mentions[index-1].end,mention.index)))?'any':'all';
+};
 
 // TMDB synopses and our estimated tone signals cannot verify scene-level absences.
 const needsVerifiedContentGuide = (prompt = '') => /\b(?:no|zero|without any)\s+(?:scary|frightening|violent|sexual)\s+(?:scenes|content)\b|\b(?:zero|absolutely no)\s+(?:violence|nudity|scares)\b/i.test(prompt);
@@ -64,4 +68,4 @@ const recommendationCacheScope = (request = {}, intent = {}) => JSON.stringify({
   previous: request.last_pick_title || '',
 });
 
-module.exports = { explicitGenreIds, explicitExcludedGenreIds, passesRecommendationContract, recommendationCacheScope, needsVerifiedContentGuide };
+module.exports = { explicitGenreIds, explicitExcludedGenreIds, explicitGenreMatch, passesRecommendationContract, recommendationCacheScope, needsVerifiedContentGuide };

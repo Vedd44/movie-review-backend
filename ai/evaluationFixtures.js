@@ -20,7 +20,7 @@ module.exports = [
     expected: {
       prompt_type: "explicit_constraints",
       rubric_keys: ["smart_twisty", "under_two_hours"],
-      max_runtime_minutes: 120,
+      max_runtime_minutes: 119,
     },
   },
   {

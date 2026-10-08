@@ -19,6 +19,8 @@ const RECOMMENDATION_PATTERN = /\b(?:something|anything)\s+(?:else\s+)?(?:like|s
 const COMPARISON_PATTERN = /\b(?:better than|compare|which should i watch|this or|it or|versus|vs\.?|should i watch (?:this|it) or)\b/i;
 const QUESTION_PATTERN = /^(?:is|are|does|do|will|would|can|could|should|how|what|who|when|where|why)\b|\b(?:scary|violent|violence|gore|jump scare|sad|funny|confusing|slow|appropriate|good for|happy ending|runtime|how long|toddler|kid|child|group|date movie)\b/i;
 const NEXT_PATTERN = /^(?:okay,?\s*)?(?:another|another one|next|next one|one more)(?:\s+please)?[.!?]*$/i;
+const CONTINUATION_PATTERN = /^(?:okay[, ]+)?(?:(?:find|give)(?: me)?\s+)?(?:another(?:\s+(?:one|pick|movie|film))?|next(?:\s+(?:one|pick))?|one more|(?:something|anything) else)\b/i;
+const CONSTRAINT_CHANGE_PATTERN = /^(?:(?:make|keep|set|change)\s+(?:it|that|this)(?:\s+to)?\b|(?:under|less than|at most|no longer than|no more than)\s+\d)/i;
 const REFINEMENT_PATTERN = /^(?:no[, ]+|actually[, ]+|i meant\b|not\b)|\b(?:not that one|lighter|darker|shorter|funnier|less scary|less intense|less violent|newer|more recent|more mainstream|i(?:[’']ve| have) (?:already )?seen (?:that|this|it)|rather than|instead of)\b/i;
 const HOME_PICK_REFINEMENT_PATTERN = /^(?:something|anything)\s+(?:gentler|lighter|darker|shorter|funnier|less intense|less scary|more like this)|^(?:find|give me)\s+something\s+like\s+this|\b(?:i(?:'|’)ve already seen this|another one like this)\b/i;
 const HOME_DISCOVERY_PATTERN = /^(?:what(?:'s| is)?|anything|any|recommend|give me|find me)\b.*\b(?:movie|movies|film|films|out now|in theaters|under\s+\w+|date night)\b/i;
@@ -26,7 +28,7 @@ const MOVIE_IDENTIFICATION_PATTERN = /\b(?:what(?:['’]s)?|which)\s+(?:(?:was|i
 const INITIAL_RECOMMENDATION_PATTERN = /\b(?:movie|film|watch|action|comedy|drama|thriller|horror|sci-?fi|funny|spooky|smart but easy|easy watch|date night|mainstream)\b/i;
 
 const isMovieIdentificationFollowUp = (prompt = "", conversation = {}) =>
-  normalize(conversation.activeIntent) === "movie_identification"
+  normalize(conversation.activeTask || conversation.activeIntent) === "movie_identification"
   && /^(?:it\b|he\b|she\b|they\b|there\b|i remember\b|actually\b|no\b|the (?:man|woman|guy|movie|film)\b)/i.test(normalize(prompt))
   && !RECOMMENDATION_PATTERN.test(prompt);
 
@@ -35,14 +37,16 @@ const classifyAskIntent = ({ prompt, context = {}, conversation = {} } = {}) => 
   const page = normalize(context.page);
   const activeIntent = normalize(conversation.activeIntent);
   const hasAnchor = Boolean(context.movie?.id || context.movieId || conversation.anchorMovie?.id);
-  const hasRecommendation = /recommendation/.test(activeIntent) || Boolean(conversation.activeRequest);
+  const hasRecommendation = /recommendation/.test(activeIntent) || (Boolean(conversation.activeRequest) && normalize(conversation.activeTask || activeIntent) !== 'movie_identification');
 
   if (!normalizedPrompt) return ASK_INTENTS.UNKNOWN;
+  if (/\b(?:new topic|start fresh|start over|forget (?:that|the previous|my previous)(?: request)?|change (?:the )?topic)\b/i.test(normalizedPrompt)) return ASK_INTENTS.GENERAL_RECOMMENDATION;
   if (isMovieIdentificationFollowUp(prompt, conversation)) return ASK_INTENTS.MOVIE_IDENTIFICATION;
   // A description is a recommendation unless the user explicitly asks to identify a remembered film.
   if (MOVIE_IDENTIFICATION_PATTERN.test(normalizedPrompt)) return ASK_INTENTS.MOVIE_IDENTIFICATION;
   if (COMPARISON_PATTERN.test(normalizedPrompt)) return ASK_INTENTS.MOVIE_COMPARISON;
   if (NEXT_PATTERN.test(normalizedPrompt) && hasRecommendation) return ASK_INTENTS.NEXT_RECOMMENDATION;
+  if (hasRecommendation && (CONTINUATION_PATTERN.test(normalizedPrompt) || CONSTRAINT_CHANGE_PATTERN.test(normalizedPrompt))) return ASK_INTENTS.REFINE_RECOMMENDATION;
   if (page === "home" && context.currentPick?.id && HOME_PICK_REFINEMENT_PATTERN.test(normalizedPrompt)) {
     return ASK_INTENTS.REFINE_RECOMMENDATION;
   }

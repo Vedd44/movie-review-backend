@@ -34,3 +34,33 @@ assert.equal(state.activeConstraints.maxRuntime,89);
 state=updateConversationForPrompt(state,'shorter',I.REFINE_RECOMMENDATION);
 assert.equal(state.activeConstraints.maxRuntime,84);
 console.log('Ask questions preserve constraints; explicit topic changes isolate history; repeated shorter remains relative.');
+const {parseReelbotIntent}=require('../ai/intentParser');
+const base={...initial,activeRequest:'A sci-fi thriller, no horror, under 100 minutes',activeConstraints:{},userCorrections:[]};
+for(const page of ['home','browse','movie_detail','general']) {
+ for(const prompt of ['Another pick please','Another under 90 minutes','One more, but no horror','Something else','Make it under 90 minutes']) {
+  const intent=classifyAskIntent({prompt,context:{page},conversation:base});
+  assert.match(intent,/^(?:NEXT|REFINE)_RECOMMENDATION$/,`${page}: ${prompt}`);
+  const next=updateConversationForPrompt(base,prompt,intent);
+  const effective=buildContextualRecommendationPrompt(prompt,next,intent);
+  const parsed=parseReelbotIntent(effective);
+  assert.ok(parsed.hard_filters.required_genre_ids.includes(878));
+  assert.ok(parsed.hard_filters.exclude_genre_ids.includes(27));
+  assert.equal(parsed.hard_filters.max_runtime_minutes,prompt.includes('90')?89:99);
+  assert.deepEqual(getConversationExcludedIds(next),[1]);
+ }
+}
+for(const [prompt,cap] of [['Actually, under 90 minutes',89],['Actually, under 110 minutes instead',109]]) {
+ const intent=classifyAskIntent({prompt,conversation:base});
+ const next=updateConversationForPrompt(base,prompt,intent);
+ assert.equal(next.activeConstraints.maxRuntime,cap);
+ assert.equal(parseReelbotIntent(buildContextualRecommendationPrompt(prompt,next,intent)).hard_filters.max_runtime_minutes,cap);
+ const again=updateConversationForPrompt(next,'Another',I.NEXT_RECOMMENDATION);
+ assert.equal(parseReelbotIntent(buildContextualRecommendationPrompt('Another',again,I.NEXT_RECOMMENDATION)).hard_filters.max_runtime_minutes,cap);
+}
+const identified={activeIntent:I.MOVIE_IDENTIFICATION,activeRequest:'What was that movie where a man uses tattoos?',anchorMovie:{id:77,title:'Memento'}};
+const stricterBase={...base,activeRequest:'A sci-fi thriller under 80 minutes, no horror',anchorMovie:{id:1,runtime:90}};
+const shorter=updateConversationForPrompt(stricterBase,'shorter',I.REFINE_RECOMMENDATION);
+assert.equal(shorter.activeConstraints.maxRuntime,79,'Relative shorter preserves a stricter cap from the original request');
+const answeredIdentification=updateConversationForPrompt(identified,'Is it scary?',I.CURRENT_MOVIE_QUESTION);
+assert.equal(classifyAskIntent({prompt:'He used Polaroid photographs too.',conversation:answeredIdentification}),I.MOVIE_IDENTIFICATION);
+assert.equal(classifyAskIntent({prompt:'Actually, start fresh: a romantic comedy',conversation:identified}),I.GENERAL_RECOMMENDATION);

@@ -17,5 +17,25 @@ const {retrieveWithDiscovery,shouldRunSemanticFallback,isDiscoveryBounded,buildD
  assert.match(buildDiscoveryPrompt('An active request',{max_runtime_minutes:80},'Previous title'),/80 minutes/);
  for (const block of [{bounded:true},{attempted:true},{discoveryPerformed:true},{prompt:''}]) assert.equal(shouldRunSemanticFallback({prompt:'A request',...block}),false,'Fallback runs at most once and never escapes bounded pools or duplicates discovery');
  await assert.rejects(retrieveWithDiscovery({retrieve: async () => [], discover: async () => {throw Error('upstream unavailable');}, allowDiscovery: true}), /upstream unavailable/);
+ const {resolveExpandedRecommendationCandidates}=require('../ai/recommendationRetrieval');
+ const requests=[];
+ await resolveExpandedRecommendationCandidates({intent:{raw_prompt:'A newer thriller',hard_filters:{min_release_year:2005,max_release_year:2010,max_runtime_minutes:89,required_genre_ids:[53]},query_expansion:{title_hints:[],entity_aliases:[],entity_keyword_terms:[],search_terms:[],keyword_terms:[]}},fetchTmdb:async(path,params)=>{requests.push({path,params});return {results:[]};},fetchStructuredMoviesByIds:async()=>[],normalizeStructuredCandidate:x=>x});
+ assert.equal(requests.length,3,'Keep the bounded catalog query budget');
+ for(const {params} of requests) {
+  assert.equal(params['primary_release_date.gte'],'2005-01-01');
+  assert.equal(params['primary_release_date.lte'],'2010-12-31');
+  assert.equal(params['with_runtime.lte'],89);
+  assert.equal(params.with_genres,'53');
+ }
+ const fs=require('node:fs'),vm=require('node:vm');
+ const source=fs.readFileSync(require.resolve('../index.js'),'utf8');
+ const start=source.indexOf('const resolveGenreThemeCandidates =');
+ const variantsEnd=source.indexOf('  const timeConstraintKeywordBaseParams',start);
+ let range;
+ const context=vm.createContext({uniqueStrings:x=>[...new Set(x)],resolveTmdbKeywordIds:async()=>[],mergeGenreIds:(...lists)=>[...new Set(lists.flat())],normalizePreferenceKey:()=> 'any',PICK_RUNTIME_CONFIG:{any:{}},buildTimeConstraintGenreFilter:()=> '35',buildTimeConstraintDiscoverVariants:options=>{range=options.runtimeRange;return [];}});
+ vm.runInContext(source.slice(start,variantsEnd)+'return [];}; this.resolve=resolveGenreThemeCandidates;',context);
+ await context.resolve({themes:[],genre_ids:[35]},{hard_filters:{max_runtime_minutes:89,min_runtime_minutes:40}});
+ assert.equal(range.max,89,'Time-window retrieval uses the effective numeric cap rather than a UI runtime bucket');
+ assert.equal(range.min,40);
  console.log('Parallel independent retrieval, bounded call budget and transport propagation passed.');
 })();

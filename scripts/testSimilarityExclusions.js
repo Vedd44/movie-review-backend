@@ -1,0 +1,17 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const vm=require('node:vm');
+const {parseReelbotIntent}=require('../ai/intentParser');
+const {passesRecommendationContract}=require('../ai/recommendationContract');
+const source=fs.readFileSync(require.resolve('../index.js'),'utf8');
+const context=vm.createContext({passesRecommendationContract,passesPlotCandidateEvidence:()=>true,getIntentQueryType:i=>i.query_type,passesAudienceGuardrails:()=>true,getKnownBadPatternAdjustments:()=>({hardReject:false}),getMovieReleaseYear:m=>Number(m.release_date?.slice(0,4)),matchesAnyGenre:(g,ids)=>ids.some(id=>g.includes(id))});
+const start=source.indexOf('const isMovieValidForIntent =');
+vm.runInContext(source.slice(start,source.indexOf('\nconst ',start+10))+'\nthis.valid=isMovieValidForIntent;',context);
+const intent={...parseReelbotIntent('Movies like Alien, no horror'),query_type:'TITLE_SIMILARITY'};
+const movie={id:2,genre_ids:[878,53],runtime:95,release_date:'2000-01-01'};
+const boosts={anchorGenreIds:[878,27],titleSimilarMovieIds:new Set([2])};
+assert.equal(context.valid(movie,intent,boosts,{final:true}),true,'Explicit exclusions override anchor-derived genre requirements');
+assert.equal(context.valid({...movie,genre_ids:[878,27]},intent,boosts,{final:true}),false);
+assert.equal(context.valid({...movie,id:3},intent,boosts,{final:true}),false,'Similarity membership remains required');
+assert.equal(context.valid({...movie,genre_ids:[35]},intent,boosts,{final:true}),false,'Anchor genre overlap remains required');
+console.log('Similarity exclusions preserve factual constraints and verified pool membership.');
