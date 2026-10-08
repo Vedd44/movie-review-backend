@@ -57,8 +57,8 @@ const updateConversationForPrompt = (stateValue = {}, prompt = "", intent = "", 
   const continuation = /REFINE_RECOMMENDATION|NEXT_RECOMMENDATION/.test(intent);
   const previous = continuation ? (state.activeConstraints || {}) : {};
   const relative = {};
-  if (/\bshorter\b/i.test(prompt) && state.anchorMovie?.runtime) relative.maxRuntime = Math.min(previous.maxRuntime || Infinity, state.anchorMovie.runtime - 1);
-  if (/\bnewer\b|more recent/i.test(prompt) && state.anchorMovie?.release_date) relative.minYear = Number(state.anchorMovie.release_date.slice(0, 4)) + 1;
+  if (continuation && /\bshorter\b/i.test(prompt) && state.anchorMovie?.runtime) relative.maxRuntime = Math.min(previous.maxRuntime || Infinity, state.anchorMovie.runtime - 1);
+  if (continuation && /\bnewer\b|more recent/i.test(prompt) && state.anchorMovie?.release_date) relative.minYear = Number(state.anchorMovie.release_date.slice(0, 4)) + 1;
   const nextConstraints = {
     ...previous,
     ...relative,

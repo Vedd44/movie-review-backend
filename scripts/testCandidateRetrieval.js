@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const {retrieveWithDiscovery,shouldRunSemanticFallback} = require('../src/ask/candidateRetrieval');
+const {retrieveWithDiscovery,shouldRunSemanticFallback,isDiscoveryBounded,buildDiscoveryPrompt} = require('../src/ask/candidateRetrieval');
 (async () => {
  let started = [], release;
  const held = new Promise(resolve => {release = resolve;});
@@ -11,6 +11,10 @@ const {retrieveWithDiscovery,shouldRunSemanticFallback} = require('../src/ask/ca
  assert.deepEqual(await retrieveWithDiscovery({retrieve: async () => [3], discover: async () => {calls++;}, allowDiscovery: false}), {pool: [3], discovered: []});
  assert.equal(calls, 0, 'Bounded and ordinary requests gain no discovery call');
  assert.equal(shouldRunSemanticFallback({prompt:'An unfamiliar relational story clue'}),true);
+ assert.equal(isDiscoveryBounded({candidate_pool_ids:[1,2],is_swap:true}),false,'A cached swap deck may receive a bounded retrieval refill');
+ assert.equal(isDiscoveryBounded({candidate_pool_ids:[1,2],is_swap:true,bounded_pool:true}),true,'An explicit collection boundary never expands');
+ assert.equal(isDiscoveryBounded({candidate_pool_ids:[1,2]}),true,'Explicit fresh candidate sets remain bounded');
+ assert.match(buildDiscoveryPrompt('An active request',{max_runtime_minutes:80},'Previous title'),/80 minutes/);
  for (const block of [{bounded:true},{attempted:true},{discoveryPerformed:true},{prompt:''}]) assert.equal(shouldRunSemanticFallback({prompt:'A request',...block}),false,'Fallback runs at most once and never escapes bounded pools or duplicates discovery');
  await assert.rejects(retrieveWithDiscovery({retrieve: async () => [], discover: async () => {throw Error('upstream unavailable');}, allowDiscovery: true}), /upstream unavailable/);
  console.log('Parallel independent retrieval, bounded call budget and transport propagation passed.');

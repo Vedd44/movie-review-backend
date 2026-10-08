@@ -8,6 +8,7 @@ for(const prompt of ['Find me a warm romantic comedy for adults','A movie about 
  assert.equal(buildAnchoredRecommendationPrompt(prompt,{intent,anchorTitle:'Alien',latestPrompt:prompt}),prompt,'A new request must not acquire an unrequested similarity anchor');
 }
 const initial={activeRequest:'An adult sci-fi thriller, no horror',activeIntent:I.GENERAL_RECOMMENDATION,activeConstraints:{maxRuntime:95,hardExclusions:['no_horror']},userCorrections:['shorter'],anchorMovie:{id:1,title:'Previous',runtime:90},recommendationHistory:[{id:1,status:'recommended'}]};
+assert.equal(updateConversationForPrompt(initial,'Start fresh: a shorter romantic comedy',I.GENERAL_RECOMMENDATION).activeConstraints.maxRuntime,undefined,'A fresh request cannot derive a cap from the previous topic');
 for(const prompt of ['Is this scary?','Who directed it?','Is it shorter than two hours?']) {
  assert.equal(classifyAskIntent({prompt,conversation:initial}),I.CURRENT_MOVIE_QUESTION,prompt);
  const answered=updateConversationForPrompt(initial,prompt,I.CURRENT_MOVIE_QUESTION);
