@@ -45,7 +45,7 @@ const { createSupabaseTakeStore } = require("./src/takes/supabaseTakeStore");
 const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
 const { ASK_INTENTS, classifyAskIntent, isMovieIdentificationFollowUp } = require("./src/ask/askIntent");
 const {getCommittedPrompt,canReuseIntentSnapshot}=require("./src/ask/requestContinuity");
-const {passesPlotCandidateEvidence,getPlotClarification,selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require("./src/ask/plotClues");
+const {retainPlotRankingEntries,passesPlotCandidateEvidence,getPlotClarification,selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require("./src/ask/plotClues");
 const {
   normalizeConversationState,
   updateConversationForPrompt,
@@ -4651,9 +4651,10 @@ const generatePickPayload = async (rawPreferences = {}) => {
     : subjectMatchedFinalEntries.length
       ? subjectMatchedFinalEntries
       : rankingBaseEntries;
-  const curatedRankingEntries = usesHardEntityPool
+  const eraCuratedRankingEntries = usesHardEntityPool
     ? rankingSourceEntries.slice(0, Math.max(8, Math.min(rankingSourceEntries.length, 40)))
     : balanceCandidatesByEra(rankingSourceEntries, 22);
+  const curatedRankingEntries = retainPlotRankingEntries(rankingSourceEntries, eraCuratedRankingEntries, usesHardEntityPool ? 40 : 22);
   const rankingPool = curatedRankingEntries.map((entry) => entry.movie);
   if (BEHAVIOR_DEBUG_ENABLED) {
     console.log(

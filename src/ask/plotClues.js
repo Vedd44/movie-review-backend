@@ -25,6 +25,17 @@ function selectMetadataCandidates(preliminary=[],semantic=[],discovered=[]) {
   seen.add(movie.id);return true;
  }).slice(0,48);
 }
+// Keep valid clue-discovered films in the final model input too. Popularity and
+// era balancing must not undo the semantic discovery performed upstream.
+function retainPlotRankingEntries(validated=[],curated=[],limit=22) {
+ const seen=new Set();
+ return [...validated.filter(entry=>entry.movie?.plot_discovered === true),...curated]
+  .filter(entry=>{
+   const id=entry.movie?.id;
+   if(!id || seen.has(id)) return false;
+   seen.add(id);return true;
+  }).slice(0,limit);
+}
 function extractPlotConstraints(prompt='') {
  const text=normalizeCluePrompt(prompt);
  // A venue requested as part of a story, not a viewing occasion or a negation.
@@ -75,4 +86,4 @@ function protectEndingSpoilers(reason='',prompt='') {
  return safe.length===sentences.length ? text : ['This has the kind of ending you’re looking for. I’ll leave the details for you to discover.',...safe.map(sentence=>sentence.trim())].join(' ');
 }
 const isExplicitModelAbstention = ranking => Boolean(ranking && Object.prototype.hasOwnProperty.call(ranking,'primary') && ranking.primary === null);
-module.exports={passesPlotCandidateEvidence,getPlotClarification,selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention};
+module.exports={retainPlotRankingEntries,passesPlotCandidateEvidence,getPlotClarification,selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention};
