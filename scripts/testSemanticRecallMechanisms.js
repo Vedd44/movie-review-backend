@@ -36,3 +36,11 @@ assert.equal(conjunction.hard_filters.genre_match,'all','An exclusion disjunctio
 assert.equal(passesRecommendationContract({genre_ids:[878,35],runtime:90},conjunction),false);
 assert.equal(passesRecommendationContract({genre_ids:[878,53],runtime:90},conjunction),true);
 assert.equal(parseReelbotIntent('A sci-fi or thriller, no horror or animation').hard_filters.genre_match,'any');
+for(const wording of ['exclude horror','excluding horror or animation','avoiding horror and documentaries']) {
+ const intent=parseReelbotIntent(`A thoughtful sci-fi thriller less than 100 minutes, ${wording}`);
+ assert.ok(!intent.hard_filters.required_genre_ids.includes(27),'An exclusion verb cannot turn horror into a requirement');
+ assert.ok(intent.hard_filters.exclude_genre_ids.includes(27));
+ assert.equal(intent.hard_filters.genre_match,'all');
+ assert.equal(passesRecommendationContract({genre_ids:[878,53],runtime:93},intent,{final:true}),true);
+ assert.equal(passesRecommendationContract({genre_ids:[878,53,27],runtime:93},intent,{final:true}),false);
+}

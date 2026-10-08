@@ -1,5 +1,8 @@
 const assert=require('node:assert/strict');
 const {classifyAskIntent,ASK_INTENTS:I}=require('../src/ask/askIntent');
+for(const prompt of ['Change the limit to under 110 minutes','Set my runtime cap to 90 minutes']) {
+ assert.equal(classifyAskIntent({prompt,conversation:{activeRequest:'A sci-fi thriller',activeIntent:I.GENERAL_RECOMMENDATION}}),I.REFINE_RECOMMENDATION);
+}
 const {updateConversationForPrompt,buildContextualRecommendationPrompt,getConversationExcludedIds,buildAnchoredRecommendationPrompt}=require('../src/ask/conversationState');
 for(const prompt of ['Find me a warm romantic comedy for adults','A movie about a woman receiving messages from the future']) {
  const context={page:'movie_detail',movie:{id:1,title:'Alien'}};
@@ -49,7 +52,7 @@ for(const page of ['home','browse','movie_detail','general']) {
   assert.deepEqual(getConversationExcludedIds(next),[1]);
  }
 }
-for(const [prompt,cap] of [['Actually, under 90 minutes',89],['Actually, under 110 minutes instead',109]]) {
+for(const [prompt,cap] of [['Actually, under 90 minutes',89],['Actually, under 110 minutes instead',109],['Change the limit to under 110 minutes',109],['Set my runtime cap to 90 minutes',90]]) {
  const intent=classifyAskIntent({prompt,conversation:base});
  const next=updateConversationForPrompt(base,prompt,intent);
  assert.equal(next.activeConstraints.maxRuntime,cap);

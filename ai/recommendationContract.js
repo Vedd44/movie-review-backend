@@ -17,7 +17,7 @@ const genreMentions = (prompt = '') => GENRES.flatMap(([id, pattern]) => {
   // Negation extends through a coordinated list of genres, but stops at a new
   // clause or an unrelated word. Use the shared genre grammar, not examples.
   const genreSource = GENRES.map(([,expression]) => `(?:${expression.source})`).join('|');
-  const excluded = new RegExp(`\\b(?:no|not|without|avoid|except|hate[sd]?)\\s+(?:(?:a|an|any|more)\\s+)?(?:(?:${genreSource})\\s*(?:,\\s*|(?:and|or)\\s+))*$`, 'i').test(prefix);
+  const excluded = new RegExp(`\\b(?:no|not|without|avoid(?:ing)?|exclud(?:e|ing)|except|hate[sd]?)\\s+(?:(?:a|an|any|more)\\s+)?(?:(?:${genreSource})\\s*(?:,\\s*|(?:and|or)\\s+))*$`, 'i').test(prefix);
   return {id, excluded, index:match.index, end:match.index+match[0].length};
  });
 });
