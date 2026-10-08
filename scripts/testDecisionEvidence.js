@@ -6,3 +6,8 @@ assert.equal(isSupportedDecision({id:3,requirement_checks:[{requirement:'Under 9
 assert.equal(isSupportedDecision({id:3}),false,'Missing verification cannot silently authorize a default candidate');
 assert.equal(isSupportedDecision({id:3,requirement_checks:[]}),false);
 console.log('Unsupported, contradictory and missing decision evidence cannot become recommendations.');
+
+assert.equal(isSupportedDecision({id:4,experience_fit:'weak',requirement_checks:[{requirement:'warm adult comedy',evidence:'Generic comedy genre only',status:'supported'}]}),false,'Weak intended-experience fit cannot be promoted by genre overlap');
+
+const {cleanDecisionReason}=require('../ai/decisionPresentation');
+assert.equal(cleanDecisionReason('An unreliable memory makes each discovery unsettling. It is a hidden gem.'),'An unreliable memory makes each discovery unsettling.');

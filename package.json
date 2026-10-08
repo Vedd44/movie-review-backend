@@ -16,7 +16,7 @@
     "benchmark:models": "node scripts/benchmarkReelbotModels.js",
     "inspect:sitemap": "node scripts/inspectSitemap.js",
     "test:watch-history": "node scripts/testWatchHistoryPolicy.js",
-    "test:recommendations": "node scripts/testWatchHistoryPolicy.js && node scripts/testRecommendationContract.js && node scripts/testRecommendationNovelty.js && node scripts/testWatchCompanyRouting.js && node scripts/testIntelligenceRegressions.js && node scripts/testPlotClues.js && node scripts/testRequestContinuity.js && node scripts/testAskContinuityReliability.js && node scripts/testDecisionEvidence.js && node scripts/testGracefulShutdown.js && node scripts/testMovieIdentification.js && npm run test:product-regressions && node scripts/testRarePlotAdmission.js && node scripts/testCandidateRetrieval.js && node scripts/testSemanticRecallMechanisms.js",
+    "test:recommendations": "node scripts/testWatchHistoryPolicy.js && node scripts/testRecommendationContract.js && node scripts/testRecommendationNovelty.js && node scripts/testWatchCompanyRouting.js && node scripts/testIntelligenceRegressions.js && node scripts/testPlotClues.js && node scripts/testRequestContinuity.js && node scripts/testAskContinuityReliability.js && node scripts/testDecisionEvidence.js && node scripts/testGracefulShutdown.js && node scripts/testMovieIdentification.js && npm run test:product-regressions && node scripts/testRarePlotAdmission.js && node scripts/testCandidateRetrieval.js && node scripts/testSemanticRecallMechanisms.js && node scripts/testDiscoveryEvidence.js",
     "test:product-regressions": "node scripts/testProductRegressionCases.js",
     "test:catalog-protection": "node --test src/http/catalogProtection.test.js && node scripts/testCatalogMetadata.js"
   },

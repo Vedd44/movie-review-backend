@@ -8,6 +8,7 @@ let queries=['Memento','50 First Dates'],ranking={primary_id:77,alternative_ids:
 const handlers={};
 const context=vm.createContext({console,Date,Set,ASK_INTENTS,classifyAskIntent,isMovieIdentificationFollowUp,
  ...require('../src/ask/plotClues'),
+ ...require('../src/ask/discoveryEvidence'),
  app:{post:(path,middleware,handler)=>handlers[path]=handler},timingMiddleware:()=>{},
  hasExplicitUserTrigger:()=>true,normalizeAskPageContext:x=>x,normalizeConversationState:x=>x,
  normalizePickMovie:(x,p,o)=>({...x,...o}),MODELS:{ask:'test'},

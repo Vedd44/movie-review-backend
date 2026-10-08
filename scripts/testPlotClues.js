@@ -53,3 +53,6 @@ assert.equal(passesPlotCandidateEvidence({plot_discovered:true,overview:'A doorw
 assert.match(getPlotClarification('A movie that takes place after a shift at a hospital'),/after they finish work/);checks++;
 assert.equal(getPlotClarification('Something funny to watch after my shift'),null);checks++;
 console.log(`${checks} descriptive clue, routing, typo, occasion, venue, title and abstention checks passed.`);
+
+assert.equal(hasDescriptivePlotRequest('A movie about a son communicating with his father across time'),true);
+assert.equal(hasDescriptivePlotRequest('A comedy about coworkers closing a restaurant'),true);

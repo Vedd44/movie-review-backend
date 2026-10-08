@@ -12,7 +12,14 @@ const GENRES = [
 // The existing genre vocabulary stays shared by requirements and exclusions.
 const genreMentions = (prompt = '') => GENRES.flatMap(([id, pattern]) => {
  const text = String(prompt); const matches = [...text.matchAll(new RegExp(pattern.source, 'gi'))];
- return matches.map(match => ({id, excluded: /\b(?:no|not|without|avoid|except|hate[sd]?)\s+(?:(?:a|an|any|more)\s+)?$/i.test(text.slice(Math.max(0,match.index-40),match.index))}));
+ return matches.map(match => {
+  const prefix = text.slice(Math.max(0,match.index-100),match.index);
+  // Negation extends through a coordinated list of genres, but stops at a new
+  // clause or an unrelated word. Use the shared genre grammar, not examples.
+  const genreSource = GENRES.map(([,expression]) => `(?:${expression.source})`).join('|');
+  const excluded = new RegExp(`\\b(?:no|not|without|avoid|except|hate[sd]?)\\s+(?:(?:a|an|any|more)\\s+)?(?:(?:${genreSource})\\s*(?:,\\s*|(?:and|or)\\s+))*$`, 'i').test(prefix);
+  return {id, excluded};
+ });
 });
 const explicitGenreIds = prompt => [...new Set(genreMentions(prompt).filter(m => !m.excluded).map(m => m.id))];
 const explicitExcludedGenreIds = prompt => [...new Set(genreMentions(prompt).filter(m => m.excluded).map(m => m.id))];

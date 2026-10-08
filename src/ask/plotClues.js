@@ -5,6 +5,9 @@ const normalizeCluePrompt = value => String(value || '').replace(/\b[a-z]+\b/gi,
 function hasDescriptivePlotRequest(prompt='') {
  const text=normalizeCluePrompt(prompt);
  return /\b(?:movie|film|thriller|horror|drama|comedy|something|story)s?\s+(?:(?:that|which)\s+)?(?:where|in which|takes place|set (?:in|on|at)|(?:in|on|at)\s+(?:a |an |the )?(?:restaurant|diner|hospital|prison|train|plane|spaceship|submarine)|about\s+(?:(?:a|an|the)\s+)?(?:[a-z-]+\s+){0,3}(?:man|woman|person|people|group|crew|family|couple|detective|cop|soldier|child|boy|girl|workers?|employees?|staff|waitress|chef)\b|with\s+(?:(?:a|an|the)\s+)?(?:man|woman|person|group|crew|family|couple)\b)/i.test(text)
+  // A story's subject is open-ended; a finite character-noun list must not
+  // prevent semantic discovery for an ordinary "film about ..." request.
+  || /\b(?:movie|film|thriller|horror|drama|comedy|story)s?\s+about\s+\S+\s+\S/i.test(text)
   || extractPlotConstraints(text).length>0
   || /\b(?:hero|protagonist|main character)\b[^.!?]*\b(?:dies|death|killed)\b|\b(?:tragic|sad) ending\b/i.test(text);
 }

@@ -1,0 +1,10 @@
+const assert=require('node:assert/strict');
+const {attachDiscoveryEvidence}=require('../src/ask/discoveryEvidence');
+const film={id:1,title:'Example Film',original_title:'Example Film',release_date:'2000-01-01'};
+const evidence=[{query:'Example Film (2000)',facts:'The central relationship crosses time.',source_urls:['https://distributor.example/film','https://invented.example/film']}];
+const result=attachDiscoveryEvidence(film,evidence,['https://distributor.example/film']);
+assert.deepEqual(result.discovery_evidence[0].source_urls,['https://distributor.example/film']);
+assert.equal(attachDiscoveryEvidence({...film,release_date:'2020-01-01'},evidence,['https://distributor.example/film']).discovery_evidence,undefined,'Distant namesakes cannot inherit evidence');
+assert.equal(attachDiscoveryEvidence(film,evidence,[]).discovery_evidence,undefined,'Model-authored URLs are not evidence of a retrieved source');
+assert.equal(attachDiscoveryEvidence({...film,title:'Another Film',original_title:'Another Film'},evidence,['https://distributor.example/film']).discovery_evidence,undefined,'Evidence follows verified title identity');
+console.log('Sourced discovery evidence retains identity and retrieved provenance only.');

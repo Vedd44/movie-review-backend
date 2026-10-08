@@ -88,6 +88,8 @@ const pickDecisionSchema = JSON.parse(JSON.stringify(pickRankingSchema));
 for (const item of [pickDecisionSchema.properties.primary, pickDecisionSchema.properties.backups.items]) {
   item.properties.reason = { type: "string" };
   item.required.push("reason");
+  item.properties.experience_fit = {type:"string",enum:["strong","adequate","weak"]};
+  item.required.push("experience_fit");
   item.properties.requirement_checks = {
     type: "array", minItems: 1, maxItems: 6,
     items: { type: "object", additionalProperties: false,

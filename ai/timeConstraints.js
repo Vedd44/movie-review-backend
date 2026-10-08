@@ -19,7 +19,7 @@ const isSettingContext = (prompt = "", matchIndex = 0) => {
     .slice(Math.max(0, matchIndex - 28), matchIndex)
     .toLowerCase();
 
-  return /(set|takes place|taking place|placed)\s+(squarely\s+|firmly\s+)?(in|during)\s+(the\s+)?$/.test(leadingWindow);
+  return /(set|takes place|taking place|placed)\s+(squarely\s+|firmly\s+)?(in|during|before|after)\s+(the\s+)?$/.test(leadingWindow);
 };
 
 const buildRange = (min, max) => ({
@@ -66,6 +66,23 @@ const parseExplicitTimeConstraint = (prompt = "") => {
   const normalizedPrompt = lower(prompt);
   if (!normalizedPrompt) {
     return null;
+  }
+
+  // Relational dates describe a range, not the nearest numeric year. Keep
+  // story-setting language separate and never automatically widen the range.
+  const interval = /\b(?:between|from)\s+(19\d{2}|20\d{2})\s+(?:and|to|through|-)\s+(19\d{2}|20\d{2})\b/.exec(normalizedPrompt);
+  const boundary = /\b(before|after|prior to|since|from|by|through)\s+(19\d{2}|20\d{2})\b/.exec(normalizedPrompt);
+  const relational = interval || boundary;
+  if (relational && !isSettingContext(normalizedPrompt, relational.index + relational[0].search(/\d{4}/))) {
+    const year = Number(relational[2]);
+    const min = interval ? Number(interval[1]) : /^(?:after|since|from)$/.test(boundary[1]) ? year + (boundary[1] === 'after' ? 1 : 0) : 1900;
+    const max = interval ? Number(interval[2]) : /^(?:before|prior to|by|through)$/.test(boundary[1]) ? year - (/^(?:before|prior to)$/.test(boundary[1]) ? 1 : 0) : 2100;
+    if (min <= max) {
+      const constraint = buildTimeConstraint({type:'range', label:relational[0], min, max});
+      constraint.relaxed_range = constraint.range;
+      constraint.fallback_note = null;
+      return constraint;
+    }
   }
 
   for (const entry of TIME_CONSTRAINT_DECADES) {
