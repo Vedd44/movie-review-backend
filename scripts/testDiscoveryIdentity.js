@@ -1,5 +1,12 @@
 const assert=require('node:assert/strict');
 const {discoveryQueries}=require('../src/ask/discoveryEvidence');
+const {matchesDiscoveryIdentity}=require('../src/ask/discoveryEvidence');
+const film={title:'Last Straw',original_title:'Last Straw',release_date:'2024-09-20'};
+assert.equal(matchesDiscoveryIdentity(film,'Last Straw (2023)'),true,'Premiere and theatrical year differences remain supported');
+assert.equal(matchesDiscoveryIdentity({...film,title:'Diary of a Wimpy Kid: The Last Straw',original_title:'Diary of a Wimpy Kid: The Last Straw',release_date:'2025-01-01'},'Last Straw (2024)'),false,'A search hit sharing words and a nearby year is not the hypothesized film');
+assert.equal(matchesDiscoveryIdentity({...film,release_date:'2000-01-01'},'Last Straw (2024)'),false);
+assert.equal(matchesDiscoveryIdentity({title:'Localized title',original_title:'Example Film',release_date:'2000-01-01'},'Example Film (2000)'),true);
+assert.equal(matchesDiscoveryIdentity({title:'Example: Film!',release_date:'2000-01-01'},'example film'),true);
 const queries=discoveryQueries({films:[{title:'Example Film',release_year:2000,facts:'',source_urls:[]}]});
 assert.deepEqual(Array.from(queries),['Example Film (2000)']);
 assert.equal(queries.film_evidence.length,1);

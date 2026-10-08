@@ -5,7 +5,7 @@ const { normalizeWatchedAt, getWatchCooldownIds, getWatchedMovieAdjustment, isEx
 const express = require("express");
 const { timingMiddleware, measureStage, finishTiming, markRecovery } = require("./ai/requestTiming");
 const { decisionReasons, isSupportedDecision } = require("./ai/decisionPresentation");
-const {attachDiscoveryEvidence,discoveryQueries} = require("./src/ask/discoveryEvidence");
+const {attachDiscoveryEvidence,discoveryQueries,matchesDiscoveryIdentity} = require("./src/ask/discoveryEvidence");
 const {describeSearchLimit} = require("./src/ask/searchLimits");
 const { contentFallback, filterGroundedFollowUps } = require("./ai/askEvidence");
 const axios = require("axios");
@@ -47,7 +47,7 @@ const { createSupabaseTakeStore } = require("./src/takes/supabaseTakeStore");
 const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
 const { ASK_INTENTS, classifyAskIntent, isMovieIdentificationFollowUp } = require("./src/ask/askIntent");
 const {getCommittedPrompt,canReuseIntentSnapshot}=require("./src/ask/requestContinuity");
-const {retrieveWithDiscovery,shouldRunSemanticFallback,isDiscoveryBounded,buildDiscoveryPrompt} = require("./src/ask/candidateRetrieval");
+const {retrieveWithDiscovery,shouldRunSemanticFallback,isDiscoveryBounded,buildDiscoveryPrompt,untestedDiscoveryCandidates} = require("./src/ask/candidateRetrieval");
 const {retainPlotRankingEntries,passesPlotCandidateEvidence,getPlotClarification,selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require("./src/ask/plotClues");
 const {
   normalizeConversationState,
@@ -4767,12 +4767,12 @@ const generatePickPayload = async (rawPreferences = {}) => {
     : null;
 
   if (!primaryPick) {
-    // A rejection from a generic feed is not proof that the catalogue lacks a
-    // matching film. One bounded semantic retry covers unseen wording without
-    // adding noun/venue exceptions or weakening any active factual constraint.
+    // A rejected feed or semantic shortlist is not catalogue exhaustion. One
+    // bounded search for new hypotheses preserves all factual constraints.
     if (shouldRunSemanticFallback({prompt:preferences.prompt,bounded:isDiscoveryBounded(rawPreferences),attempted:rawPreferences.semantic_fallback_attempted,discoveryPerformed:allowPlotDiscovery})) {
-      const queries = await extractMovieIdentificationQueries(buildDiscoveryPrompt(preferences.prompt, resolvedIntent.hard_filters, rawPreferences.is_swap ? rawPreferences.last_pick_title : ""), {semanticFallback:true});
-      const discovered = await fetchMovieTitleHypotheses(queries, resolvedIntent.plot_constraints);
+      const testedTitles = allowPlotDiscovery ? rankingPool.filter(movie => movie.plot_discovered).map(movie => movie.title).slice(0, 4) : [];
+      const queries = await extractMovieIdentificationQueries(buildDiscoveryPrompt(preferences.prompt, resolvedIntent.hard_filters, rawPreferences.is_swap ? rawPreferences.last_pick_title : "", testedTitles), {semanticFallback:true});
+      const discovered = untestedDiscoveryCandidates(await fetchMovieTitleHypotheses(queries, resolvedIntent.plot_constraints), rankingPool);
       if (discovered.length) return generatePickPayload({
         ...rawPreferences,
         intent_snapshot: resolvedIntent,
@@ -7163,10 +7163,9 @@ const fetchMovieTitleHypotheses = async (effectiveQueries, constraints=[]) => {
     effectiveQueries.map(async query => {
       const dated = query.match(/^(.*?)\s+\((\d{4})\)$/);
       const title = dated ? dated[1] : query;
-      const year = dated ? dated[2] : null;
       const response = await fetchTmdb("/search/movie", { query:title, include_adult:"false", page:1 });
-      // Allow a premiere/theatrical year difference, while excluding distant namesakes.
-      return {...response,results:(response?.results || []).filter(movie=>!year || Math.abs(Number(String(movie.release_date || '').slice(0,4))-Number(year))<=1)};
+      // Verify title identity as well as premiere/theatrical year differences.
+      return {...response,results:(response?.results || []).filter(movie=>matchesDiscoveryIdentity(movie, query))};
     })
   );
   if (responses.length && responses.every(response => response.status === "rejected")) throw responses[0].reason;

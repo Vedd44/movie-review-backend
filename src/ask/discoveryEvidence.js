@@ -2,6 +2,14 @@
 // TMDB identity, credits, hard constraints or contradictions. Keep only sources
 // that the web tool actually returned, attached to the matching title and year.
 const normalizeTitle = value => String(value || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+// Search relevance is not identity: sequels and longer titles often appear in
+// the same result page. Only the hypothesized title may enter semantic discovery.
+const matchesDiscoveryIdentity = (movie, query) => {
+  const dated = String(query || '').match(/^(.*?)\s+\((\d{4})\)$/);
+  const title = normalizeTitle(dated ? dated[1] : query);
+  return Boolean(title && [movie?.title, movie?.original_title].some(value => normalizeTitle(value) === title)
+    && (!dated || Math.abs(Number(String(movie.release_date || '').slice(0, 4)) - Number(dated[2])) <= 1));
+};
 const attachDiscoveryEvidence = (movie, evidence = [], retrievedSources = []) => {
   const sources = new Set(retrievedSources);
   const year = Number(String(movie.release_date || '').slice(0,4));
@@ -21,4 +29,4 @@ const discoveryQueries = parsed => {
   queries.retrieved_source_urls = parsed?.retrieved_source_urls || [];
   return queries;
 };
-module.exports = {attachDiscoveryEvidence,discoveryQueries};
+module.exports = {attachDiscoveryEvidence,discoveryQueries,matchesDiscoveryIdentity};

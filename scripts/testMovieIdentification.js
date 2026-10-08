@@ -31,7 +31,7 @@ vm.runInContext(source.slice(source.indexOf('const movieIdentificationSchema'),s
  ranking={primary_id:999,alternative_ids:[999],confidence:'high',reason:'Invented title'};
  result=await context.identify('an invented plot');assert.equal(result.primary,null);assert.equal(result.confidence,'low');assert.equal(result.alternatives.length,0);
  queries=[];calls=[];searches=[];result=await context.identify('a man goes on a journey');assert.equal(calls.length,1);assert.equal(searches.length,0);assert.equal(result.primary,null);
- queries=['Memento'];ranking={primary_id:77,alternative_ids:[1824],confidence:'medium',reason:'The tattoo clue fits.'};
+ queries=['Memento','50 First Dates'];ranking={primary_id:77,alternative_ids:[1824],confidence:'medium',reason:'The tattoo clue fits.'};
  let response,status=200;const res={json:x=>(response=x),status:code=>{status=code;return res;},set:()=>{}};
  await handlers['/reelbot/ask']({body:{prompt:'What was that movie where a man uses tattoos to remember?',page_context:{page:'movie_detail'},conversation_state:{}}},res);
  assert.equal(response.kind,'answer','existing UI understands the response');assert.equal(response.intent,ASK_INTENTS.MOVIE_IDENTIFICATION);assert.match(response.answer,/One possibility is Memento/);assert.match(response.answer,/50 First Dates/);assert.equal(response.conversation_state.anchorMovie.id,77);
