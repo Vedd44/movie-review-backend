@@ -24,7 +24,7 @@ const { REELBOT_BANNED_PHRASES } = require("./ai/reelbotPrinciples");
 const { deriveMovieSignals } = require("./ai/movieSignals");
 const { getRecommendationFitBreakdown } = require("./ai/recommendationScoring");
 const { getExposurePenaltyMultiplier } = require("./ai/recommendationNovelty");
-const { getEntitySearchPrompt } = require("./ai/entityPrompt");
+const { getEntitySearchPrompt, trimEntityQualifier } = require("./ai/entityPrompt");
 const { resolveExpandedRecommendationCandidates } = require("./ai/recommendationRetrieval");
 const {
   buildTimeConstraintDiscoverVariants,
@@ -948,12 +948,12 @@ const extractPromptEntityText = (prompt = "") => {
   ].map((pattern) => rawPrompt.match(pattern)?.[1]?.trim()).find(Boolean);
 
   if (similarityTitle) {
-    return { kind: "movie_title", text: similarityTitle, explicit: true };
+    return { kind: "movie_title", text: trimEntityQualifier(similarityTitle), explicit: true };
   }
 
   const personMatch = PERSON_WITH_PATTERNS.map((pattern) => rawPrompt.match(pattern)?.[1]?.trim()).find(Boolean);
   if (personMatch) {
-    return { kind: "person", text: personMatch, explicit: true };
+    return { kind: "person", text: trimEntityQualifier(personMatch), explicit: true };
   }
 
   return { kind: "raw", text: rawPrompt, explicit: false };
@@ -1419,8 +1419,8 @@ const getPromptMovieBoosts = async (prompt = "", intent = null) => {
     try {
       const personId = intent.entity_anchor.id;
       const credits = await fetchTmdb("/person/" + personId + "/movie_credits");
-      const actorMovies = credits.cast || [];
-      const directorMovies = (credits.crew || []).filter((entry) => entry.job === "Director");
+      const actorMovies = [...(credits.cast || [])].sort((a,b) => (Math.log1p(Number(b.vote_count)||0)*10 - Math.min(Number(b.order)||0,20)) - (Math.log1p(Number(a.vote_count)||0)*10 - Math.min(Number(a.order)||0,20)));
+      const directorMovies = (credits.crew || []).filter((entry) => entry.job === "Director").sort((a,b)=>(Number(b.vote_count)||0)-(Number(a.vote_count)||0));
 
       actorMovies.forEach((movie) => {
         if (movie?.id) {
@@ -4491,7 +4491,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
-  const cacheKey = `pick:v9:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const cacheKey = `pick:v10:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);

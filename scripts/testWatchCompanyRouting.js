@@ -2,14 +2,14 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 const { parseReelbotIntent } = require("../ai/intentParser");
-const { getEntitySearchPrompt } = require("../ai/entityPrompt");
+const { getEntitySearchPrompt, trimEntityQualifier } = require("../ai/entityPrompt");
 
 // Exercise the actual resolver with deterministic TMDB replies, including the
 // misleading collection that caused the production failure.
 const source = fs.readFileSync(require.resolve("../index.js"), "utf8");
 const calls = [];
 const context = vm.createContext({
-  getEntitySearchPrompt, console,
+  getEntitySearchPrompt, trimEntityQualifier, console,
   fetchTmdb: async (path, params) => {
     calls.push({ path, query: params.query });
     const results = path === "/search/collection"
@@ -30,6 +30,8 @@ vm.runInContext(source.slice(source.indexOf("const PERSON_WITH_PATTERNS"), sourc
   }
   for (const [prompt, kind, id] of [
     ["movies with Keanu Reeves", "actor", 6384],
+    ["A movie starring Keanu Reeves, not just a cameo", "actor", 6384],
+    ["I loved Interstellar, something with that sense of wonder", "movie_title", 157336],
     ["movies with Keanu Reeves with friends", "actor", 6384],
     ["Christopher Nolan", "director", 525],
     ["movies like Interstellar", "movie_title", 157336],
@@ -40,6 +42,8 @@ vm.runInContext(source.slice(source.indexOf("const PERSON_WITH_PATTERNS"), sourc
     assert.equal(result?.kind, kind, prompt);
     assert.equal(result?.id, id, prompt);
   }
+  assert.equal(parseReelbotIntent('I loved Interstellar, something with that sense of wonder').anchors.title,'Interstellar');
+  for (const name of ['Paris, Texas','Robert Downey Jr.','Me and Earl and the Dying Girl','Withnail & I']) assert.equal(trimEntityQualifier(name),name);
   const genreContext = vm.createContext({
     getGenreFilterIds: () => [],
     PICK_COMPANY_CONFIG: { friends: { genreIds: [28, 35, 53] } },

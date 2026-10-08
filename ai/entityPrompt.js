@@ -1,3 +1,11 @@
+// Separate a named anchor from a trailing request clause without stripping
+// meaningful punctuation from titles such as Paris, Texas or names such as Jr.
+const trimEntityQualifier = (value = "") => String(value)
+  .replace(/[,;]\s*(?:but|not|no|something|anything|with|under|over|from|in|and)\b.*$/i, "")
+  .replace(/\.\s+(?:something|anything|but|not|no|with|under|over)\b.*$/i, "")
+  .replace(/\s+(?:but|under|over|without|not just|not only)\b.*$/i, "")
+  .replace(/[,;]\s*$/, "")
+  .trim();
 // Watch companions describe the audience, not a performer or a title.
 const stripWatchCompanyContext = (prompt = "") => String(prompt)
   .replace(/\bwith\s+(?:(?:my|our|the|some|a few)\s+)?(?:friends|family|kids|children|partner|wife|husband|girlfriend|boyfriend)\b/gi, " ")
@@ -13,4 +21,4 @@ const getEntitySearchPrompt = (prompt = "") => {
   return stripped;
 };
 
-module.exports = { stripWatchCompanyContext, getEntitySearchPrompt };
+module.exports = { stripWatchCompanyContext, getEntitySearchPrompt, trimEntityQualifier };

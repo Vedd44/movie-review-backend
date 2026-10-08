@@ -1,3 +1,4 @@
+const { trimEntityQualifier } = require("./entityPrompt");
 const { explicitGenreIds } = require("./recommendationContract");
 const { getMatchedRubricKeys } = require("./recommendationRubrics");
 const { getAudienceIntentSignals } = require("./audienceSignals");
@@ -18,13 +19,13 @@ const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim();
 const lower = (value = "") => compact(value).toLowerCase();
 const sanitizeAnchorText = (value = "") =>
   compact(
-    String(value || "")
+    trimEntityQualifier(value)
       .replace(/\.\s+(?:Correction:|Similar to|No longer than|Released from).*$/i, "")
       .replace(/\b(?:under|over|but|that are|that's|that is|for|from)\b.*$/i, " ")
   );
 const sanitizeTitleAnchorText = (value = "") =>
   compact(
-    String(value || "")
+    trimEntityQualifier(value)
       .replace(/\.\s+(?:Correction:|Similar to|No longer than|Released from).*$/i, "")
       .replace(/\b(?:under|over|but|that are|that's|that is|from)\b.*$/i, " ")
   );

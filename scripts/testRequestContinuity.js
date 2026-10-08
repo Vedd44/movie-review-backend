@@ -34,4 +34,12 @@ for (const id of ['lighter','darker','shorter','funnier','less_intense','more_li
   assert.equal(result.hard_filters.max_runtime_minutes,100); checks++;
   assert.equal(result.hard_filters.min_release_year,1990); checks++;
 }
+const { parseReelbotIntent } = require('../ai/intentParser');
+const { passesRecommendationContract } = require('../ai/recommendationContract');
+const adult = parseReelbotIntent('A Sunday night feel good movie for adults');
+for (const id of ['lighter','less_intense','funnier']) {
+  const refined = context.refine(adult,{id});
+  assert.equal(passesRecommendationContract({genre_ids:[16,10751,35],runtime:90}, refined),false); checks++;
+  assert.equal(passesRecommendationContract({genre_ids:[35,18],runtime:90}, refined),true); checks++;
+}
 console.log(`${checks} request continuity, fresh-request isolation and relative refinement checks passed.`);

@@ -33,7 +33,8 @@ const passesRecommendationContract = (movie = {}, intent = {}, { final = false }
   // An adult audience is a request constraint, not a maturity rating. Animation
   // remains eligible; only generic child/family picks are excluded unless asked for.
   const adultAudience = intent.audience_age === 'adults';
-  const familyRequested = (intent.preferred_genre_ids || []).some(id => id === 16 || id === 10751)
+  const familyRequested = explicitGenreIds(intent.raw_prompt || '').includes(16)
+    || /\b(?:family|kids|children)\b/i.test(String(intent.raw_prompt || '').replace(/\b(?:no|not|without|avoid)\s+(?:family|kids|children)\b/gi,''))
     || Boolean(intent.anchors?.title);
   if (adultAudience && !familyRequested && genres.includes(10751)) return false;
   if ((hard.exclude_genre_ids || []).some(id => genres.includes(id))) return false;
