@@ -88,6 +88,13 @@ const pickDecisionSchema = JSON.parse(JSON.stringify(pickRankingSchema));
 for (const item of [pickDecisionSchema.properties.primary, pickDecisionSchema.properties.backups.items]) {
   item.properties.reason = { type: "string" };
   item.required.push("reason");
+  item.properties.requirement_checks = {
+    type: "array", minItems: 1, maxItems: 6,
+    items: { type: "object", additionalProperties: false,
+      properties: { requirement: { type: "string" }, evidence: { type: "string" }, status: { type: "string", enum: ["supported", "contradicted", "unknown"] } },
+      required: ["requirement", "evidence", "status"] },
+  };
+  item.required.push("requirement_checks");
 }
 
 // An empty candidate fit is a valid decision, never a forced winner.

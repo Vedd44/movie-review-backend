@@ -49,6 +49,9 @@ const classifyAskIntent = ({ prompt, context = {}, conversation = {} } = {}) => 
   if (page === "home" && HOME_DISCOVERY_PATTERN.test(normalizedPrompt)) {
     return ASK_INTENTS.GENERAL_RECOMMENDATION;
   }
+  // Explicit topic changes override correction prefixes and old movie anchors.
+  if (/\b(?:new topic|start fresh|start over|forget (?:that|the previous|my previous)(?: request)?|change (?:the )?topic)\b/i.test(normalizedPrompt)) return ASK_INTENTS.GENERAL_RECOMMENDATION;
+  if (hasAnchor && /^(?:is|was|does|do|how|who|why|what)\b/i.test(normalizedPrompt) && QUESTION_PATTERN.test(normalizedPrompt) && !RECOMMENDATION_PATTERN.test(normalizedPrompt)) return ASK_INTENTS.CURRENT_MOVIE_QUESTION;
   if (REFINEMENT_PATTERN.test(normalizedPrompt) && hasRecommendation) return ASK_INTENTS.REFINE_RECOMMENDATION;
   if (hasRecommendation && hasAnchor && /^(?:why|is|was|does|how|what).*(?:this|that|it|one|pick)/i.test(normalizedPrompt)) return ASK_INTENTS.CURRENT_MOVIE_QUESTION;
   if (page === "person" || page === "collection") return ASK_INTENTS.CURRENT_SET_RECOMMENDATION;

@@ -46,13 +46,15 @@ const extractConstraintMutation = (prompt = "") => {
 
 const updateConversationForPrompt = (stateValue = {}, prompt = "", intent = "", pageContext = {}) => {
   const state = normalizeConversationState(stateValue, pageContext);
-  const correction = isCorrection(prompt) || intent === "REFINE_RECOMMENDATION";
+  // Answers inspect the current film; they do not mutate the active search.
+  if (!/RECOMMENDATION/.test(intent)) return { ...state, activeIntent: intent || state.activeIntent, lastUserMessage: compact(prompt) };
+  const correction = intent === "REFINE_RECOMMENDATION";
   const rejectsLast = /\b(?:not that one|skip that|not that|i(?:[’']ve| have) (?:already )?seen (?:that|this|it))\b/i.test(prompt);
   const recommendationHistory = rejectsLast
     ? state.recommendationHistory.map((entry, index, list) => index === list.length - 1 ? { ...entry, status: "rejected" } : entry)
     : state.recommendationHistory;
   const mutation = extractConstraintMutation(prompt);
-  const continuation = correction || /REFINE_RECOMMENDATION|NEXT_RECOMMENDATION/.test(intent);
+  const continuation = /REFINE_RECOMMENDATION|NEXT_RECOMMENDATION/.test(intent);
   const previous = continuation ? (state.activeConstraints || {}) : {};
   const relative = {};
   if (/\bshorter\b/i.test(prompt) && state.anchorMovie?.runtime) relative.maxRuntime = Math.min(previous.maxRuntime || Infinity, state.anchorMovie.runtime - 1);
@@ -76,7 +78,7 @@ const updateConversationForPrompt = (stateValue = {}, prompt = "", intent = "", 
     activeConstraints: nextConstraints,
     activeRequest: nextRequest,
     lastUserMessage: compact(prompt),
-    recommendationHistory,
+    recommendationHistory: continuation ? recommendationHistory : [],
     userCorrections: correction ? [...state.userCorrections, compact(prompt)].slice(-12) : continuation ? state.userCorrections : [],
   };
 };
@@ -84,7 +86,7 @@ const updateConversationForPrompt = (stateValue = {}, prompt = "", intent = "", 
 const buildContextualRecommendationPrompt = (prompt = "", state = {}, intent = "") => {
   const current = compact(prompt);
   const base = compact(state.activeRequest);
-  if (!base || (!/REFINE_RECOMMENDATION|NEXT_RECOMMENDATION/.test(intent) && !isCorrection(current))) return current;
+  if (!base || ! /REFINE_RECOMMENDATION|NEXT_RECOMMENDATION/.test(intent)) return current;
   const corrections = unique([...(state.userCorrections || []), ...(isCorrection(current) ? [current] : [])]);
   return [base, ...corrections.map((item) => `Correction: ${item}`),
     state.activeConstraints?.maxRuntime ? `No longer than ${state.activeConstraints.maxRuntime} minutes` : "",

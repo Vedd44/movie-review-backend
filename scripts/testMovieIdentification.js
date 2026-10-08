@@ -27,7 +27,7 @@ vm.runInContext(source.slice(source.indexOf('const movieIdentificationSchema'),s
  result=await context.identify('an invented plot');assert.equal(result.primary,null);assert.equal(result.confidence,'low');assert.equal(result.alternatives.length,0);
  queries=[];calls=[];searches=[];result=await context.identify('a man goes on a journey');assert.equal(calls.length,1);assert.equal(searches.length,0);assert.equal(result.primary,null);
  queries=['Memento'];ranking={primary_id:77,alternative_ids:[1824],confidence:'medium',reason:'The tattoo clue fits.'};
- let response;const res={json:x=>(response=x),status:()=>res,set:()=>{}};
+ let response,status=200;const res={json:x=>(response=x),status:code=>{status=code;return res;},set:()=>{}};
  await handlers['/reelbot/ask']({body:{prompt:'What was that movie where a man uses tattoos to remember?',page_context:{page:'movie_detail'},conversation_state:{}}},res);
  assert.equal(response.kind,'answer','existing UI understands the response');assert.equal(response.intent,ASK_INTENTS.MOVIE_IDENTIFICATION);assert.match(response.answer,/One possibility is Memento/);assert.match(response.answer,/50 First Dates/);assert.equal(response.conversation_state.anchorMovie.id,77);
  assert.equal(classifyAskIntent({prompt:'Is it scary?',context:{page:'movie_detail'},conversation:response.conversation_state}),ASK_INTENTS.CURRENT_MOVIE_QUESTION);
@@ -84,8 +84,8 @@ vm.runInContext(source.slice(source.indexOf('const movieIdentificationSchema'),s
  assert.equal(response.primary.id,77);assert.equal(response.intent,ASK_INTENTS.MOVIE_IDENTIFICATION);assert.equal(fallbackCalls,0);
  context.callStructuredOpenAI=async()=>{throw new Error('identification unavailable');};
  await handlers['/reelbot/pick']({body:{prompt:"What's that movie where a man uses tattoos?"}},res);
- assert.equal(response.primary,null);assert.equal(response.no_pick_reason,'identification_uncertain');assert.equal(fallbackCalls,0);
+ assert.equal(status,503);assert.equal(response.error_code,'recommendation_unavailable');assert.equal(response.no_pick_reason,undefined);assert.equal(fallbackCalls,0);
  await handlers['/reelbot/pick']({body:{prompt:'Something funny'}},res);
- assert.equal(fallbackCalls,1,'ordinary recommendations retain the existing path and fallback');
+ assert.equal(status,503);assert.equal(response.error_code,'recommendation_unavailable');assert.equal(fallbackCalls,0,'dependency failures must not masquerade as no-match or retry intent parsing');
  console.log('Identification confidence, real-ID validation, alternatives, empty-clue fast path, call limits and existing-UI contract passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
