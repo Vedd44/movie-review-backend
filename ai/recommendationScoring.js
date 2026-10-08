@@ -253,13 +253,13 @@ const getContextScore = (signals = {}, intent = {}) => {
   return score;
 };
 
-const getLowRegretScore = (movie = {}, signals = {}) => {
+const getLowRegretScore = (movie = {}, signals = {}, intent = {}) => {
   let score = 0;
   score += Math.min(Number(movie.popularity || 0), 120) / 8;
   score += Math.min(Number(movie.vote_count || 0), 500) / 28;
   score += Math.max(0, Number(movie.vote_average || 0) - 6.2) * 6;
 
-  if (signals.kid_friendliness >= 0.72 && (movie.popularity || 0) >= 25) {
+  if (intent.guardrails?.child_family_safe && signals.kid_friendliness >= 0.72 && (movie.popularity || 0) >= 25) {
     score += 8;
   }
 
@@ -431,7 +431,12 @@ const getRecommendationFitBreakdown = (movie = {}, intent = {}, extra = {}, sign
   const sweepingEpic = getSweepingEpicScore(movie, derivedSignals, intent);
   const canonicalEntry = getCanonicalEntryScore(movie, derivedSignals, intent);
   const context = getContextScore(derivedSignals, intent);
-  const lowRegret = getLowRegretScore(movie, derivedSignals);
+  // Clarity and child-friendliness are contextual preferences, not universal quality.
+  const lowRegret = hasConsensusAsk(intent) || hasCozyAsk(intent) || intent.guardrails?.child_family_safe
+    ? getLowRegretScore(movie, derivedSignals, intent) : 0;
+  const lesserKnown = getSoftPreferences(intent).includes("lesser_known")
+    && Number(movie.vote_count) >= 50 && Number(movie.vote_count) <= 1500
+    && Number(movie.vote_average) >= 6.5 ? 28 : 0;
   const penalties = getPenaltyAdjustments(movie, derivedSignals, intent);
   const priorityConstraints = getPriorityConstraintScore(movie, derivedSignals, intent);
   const bonus = clamp(Number(extra.structured_match_score || movie.structured_match_score || 0) / 20, 0, 18);
@@ -440,7 +445,7 @@ const getRecommendationFitBreakdown = (movie = {}, intent = {}, extra = {}, sign
   const requestedGenres = intent.hard_filters?.required_genre_ids || [];
   const constraintFit = requestedGenres.length && (intent.hard_filters?.genre_match === "any" ? requestedGenres.some(id => genres.includes(id)) : requestedGenres.every(id => genres.includes(id)))
     ? 42 : intent.anchors?.title ? 35 : 20;
-  const total = constraintFit + entity.score + audience + safety + tone + consensus + cozy + sweepingEpic + canonicalEntry + context + lowRegret + bonus + penalties.total + priorityConstraints.total;
+  const total = constraintFit + entity.score + audience + safety + tone + consensus + cozy + sweepingEpic + canonicalEntry + context + lowRegret + lesserKnown + bonus + penalties.total + priorityConstraints.total;
   const fitTier = getFitTier(total);
 
   return {
@@ -459,6 +464,7 @@ const getRecommendationFitBreakdown = (movie = {}, intent = {}, extra = {}, sign
       canonical_entry: canonicalEntry,
       watch_context_fit: context,
       low_regret: lowRegret,
+      discovery_fit: lesserKnown,
       structured_bonus: bonus,
       penalties: penalties.total,
       priority_tone: priorityConstraints.tone,

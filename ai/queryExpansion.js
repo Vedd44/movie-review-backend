@@ -210,6 +210,11 @@ const inferSoftPreferences = (prompt = "", audienceAge = null) => {
   const normalizedPrompt = lower(prompt);
   const softPreferences = [];
 
+  if (/never heard of|lesser[- ]known|little[- ]known|overlooked|hidden gem|under[- ]?the[- ]?radar|something obscure/i.test(normalizedPrompt)
+      && !/not (?:too )?obscure|nothing obscure|no obscure/i.test(normalizedPrompt)) {
+    softPreferences.push("lesser_known");
+  }
+
   if (/not too loud|not loud|not chaotic|not too chaotic|gentle|quiet night|cozy|cosy|low[-\s]?intensity|low[-\s]?key/i.test(normalizedPrompt)) {
     softPreferences.push("calm", "low_stimulation");
   }

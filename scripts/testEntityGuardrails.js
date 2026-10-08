@@ -48,7 +48,7 @@ const postPick = async (body) => {
     assert(Array.isArray(first.candidate_pool_ids) && first.candidate_pool_ids.length > 0, `${testCase.prompt} should preserve candidate_pool_ids`);
 
     const excludedIds = [first.primary?.id, ...((first.alternates || []).map((movie) => movie?.id))].filter(Boolean);
-    const swap = await postPick({
+    let swap = await postPick({
       prompt: testCase.prompt,
       source: 'library',
       view: 'popular',
@@ -63,6 +63,24 @@ const postPick = async (body) => {
     });
 
     assert.strictEqual(swap.resolved_intent.query_type, testCase.expectedType, `${testCase.prompt} swap query_type mismatch`);
+    const remainingIds = first.candidate_pool_ids.filter(id => !excludedIds.includes(id));
+    if (remainingIds.length === 0) {
+      // A finite franchise can be exhausted by the primary plus its backups.
+      // Forcing another title would break the very entity/exclusion lock under test.
+      assert.strictEqual(swap.primary, null, `${testCase.prompt} exhausted pool must not invent a pick`);
+      assert.deepStrictEqual(swap.alternates, [], `${testCase.prompt} exhausted pool must not repeat backups`);
+      assert.strictEqual(swap.validation?.primary_valid, false);
+      assert.strictEqual(swap.no_pick_reason, 'no_suitable_candidate');
+      assert(first.candidate_pool_ids.length > 1, 'The valid-swap fixture needs another eligible film');
+      swap = await postPick({
+        prompt: testCase.prompt, source: 'library', view: 'popular', mood: 'all',
+        runtime: 'any', company: 'any', genre: 'all', excluded_ids: [first.primary.id],
+        intent_snapshot: first.resolved_intent, candidate_pool_ids: first.candidate_pool_ids,
+        refresh_key: `remaining-${Date.now()}`,
+      });
+      assert.strictEqual(swap.resolved_intent.query_type, testCase.expectedType);
+      console.log(`${testCase.prompt}: exhausted-pool guard and available-alternate swap checked.`);
+    }
     assert.strictEqual(swap.validation?.primary_valid, true, `${testCase.prompt} swap primary should validate`);
     assert.strictEqual(swap.validation?.alternates_valid, true, `${testCase.prompt} swap alternates should validate`);
     assert(swap.primary?.id && swap.primary.id !== first.primary.id, `${testCase.prompt} swap should produce a different valid primary`);

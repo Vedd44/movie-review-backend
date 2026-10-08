@@ -109,6 +109,7 @@ const buildRecommendationRetrievalPlan = (intent = {}) => {
     ]).map((value) => Number(value)).filter(Boolean),
     family_safe_bias: intent.content_safety === "very_safe" || intent.content_safety === "safe" || Boolean(intent.guardrails?.child_family_safe),
     historical_sweep_bias: historicalSweepBias,
+    lesser_known: softPreferences.includes("lesser_known"),
     keyword_only_mode: Boolean(intent.subject_entities?.length),
   };
 };
@@ -127,6 +128,12 @@ const buildRecommendationStructuredScore = (movie = {}, plan = {}, matchReasons 
   score += Math.round(searchTermScore * 0.45);
   score += Math.min(Number(movie.popularity || 0), 120) / 5;
   score += Math.min(Number(movie.vote_count || 0), 400) / 20;
+
+  if (plan.lesser_known && Number(movie.vote_count) >= 50 && Number(movie.vote_count) <= 1500 && Number(movie.vote_average) >= 6.5) {
+    // A less-familiar match must survive the admission threshold that otherwise
+    // uses popularity/vote volume as its only signal for a broad request.
+    score += 28;
+  }
 
   if (plan.family_safe_bias) {
     if (genreIds.some((genreId) => FAMILY_DISCOVER_GENRES.includes(genreId))) {
@@ -305,7 +312,10 @@ const resolveExpandedRecommendationCandidates = async ({
   const maxYear=Math.min(hard.max_release_year || Infinity,hard.time_constraint?.range?.max_year || Infinity);
   const requestedGenres = hard.required_genre_ids?.length ? hard.required_genre_ids : plan.discover_genre_ids;
   const broadParams = {
-    include_adult: "false", "vote_count.gte": 250,
+    include_adult: "false", "vote_count.gte": plan.lesser_known ? 50 : 250,
+    // Explicit discovery asks need a credible less-familiar catalogue slice.
+    // This changes the same bounded queries, not eligibility in the full pool.
+    ...(plan.lesser_known ? { "vote_count.lte": 1500, "vote_average.gte": 6.5 } : {}),
     "primary_release_date.lte": new Date().toISOString().slice(0, 10),
     ...(requestedGenres.length ? { with_genres: requestedGenres.join(!hard.required_genre_ids?.length || hard.genre_match === "any" ? "|" : ",") } : {}),
     ...(hard.exclude_genre_ids?.length ? { without_genres: hard.exclude_genre_ids.join(",") } : {}),
@@ -314,8 +324,18 @@ const resolveExpandedRecommendationCandidates = async ({
     ...(minYear ? {"primary_release_date.gte":`${minYear}-01-01`} : {}),
     ...(Number.isFinite(maxYear) ? {"primary_release_date.lte":`${maxYear}-12-31`} : {}),
   };
-  const catalogResponses = await Promise.allSettled(["vote_average.desc", "vote_count.desc", "popularity.desc"].map(sort_by =>
-    fetchTmdb("/discover/movie", { ...broadParams, sort_by, page: 1 })
+  // Popularity is already represented by the feed pool. General viewing needs
+  // a complementary, well-supported middle-familiarity slice, not another copy
+  // of current hits. Explicit family retrieval keeps its established plan.
+  const catalogVariants = [
+    { sort_by: "vote_average.desc" },
+    { sort_by: "vote_count.desc" },
+    plan.family_safe_bias || plan.lesser_known
+      ? { sort_by: "popularity.desc" }
+      : { sort_by: "vote_average.desc", "vote_count.gte": 1000, "vote_count.lte": 10000 },
+  ];
+  const catalogResponses = await Promise.allSettled(catalogVariants.map(variant =>
+    fetchTmdb("/discover/movie", { ...broadParams, ...variant, page: 1 })
   ));
   catalogResponses.filter(response => response.status === "fulfilled").forEach(response => {
     (response.value.results || []).forEach(movie => rememberCandidate(movie, { source_endpoint: "/discover/movie" }));

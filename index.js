@@ -2491,12 +2491,6 @@ const getExposurePenalty = (movie) => {
     penalty += 4;
   }
 
-  const eraBucket = getMovieEraBucket(movie);
-  if (eraBucket === "older") {
-    penalty += 8;
-  } else if (eraBucket === "1990s") {
-    penalty += 4;
-  }
 
   return penalty;
 };
@@ -2506,7 +2500,6 @@ const getQualityFitBoost = (movie) => {
   const voteAverage = movie?.vote_average || 0;
   const voteCount = movie?.vote_count || 0;
   const popularity = movie?.popularity || 0;
-  const eraBucket = getMovieEraBucket(movie);
 
   if (voteAverage >= 6.5 && voteAverage <= 8.3) {
     boost += 10;
@@ -2524,9 +2517,6 @@ const getQualityFitBoost = (movie) => {
     boost += 6;
   }
 
-  if (eraBucket === "recent" || eraBucket === "2010s" || eraBucket === "2000s") {
-    boost += 4;
-  }
 
   return boost;
 };
@@ -2553,19 +2543,16 @@ const balanceCandidatesByEra = (rankedCandidates = [], targetCount = 24) => {
     }
   };
 
-  takeFromBucket("recent", 7);
-  takeFromBucket("2010s", 6);
-  takeFromBucket("2000s", 5);
-  takeFromBucket("1990s", 3);
-  takeFromBucket("older", 2);
-  takeFromBucket("unknown", 2);
-
-  const leftovers = Object.values(buckets).flat();
-  leftovers.sort((left, right) => right.score - left.score);
-
-  while (curated.length < targetCount && leftovers.length) {
-    curated.push(leftovers.shift());
+  // Give each available era a turn within the existing bound. Previously the
+  // recent-first quotas filled 23 slots then sliced to 22, losing older films.
+  const eraNames = Object.keys(buckets);
+  while (curated.length < targetCount && eraNames.some(name => buckets[name].length)) {
+    for (const name of eraNames) {
+      if (curated.length >= targetCount) break;
+      takeFromBucket(name, 1);
+    }
   }
+  curated.sort((left, right) => right.score - left.score);
 
   return curated.slice(0, targetCount);
 };
@@ -2752,7 +2739,7 @@ const scorePickCandidate = (
   score -= getMoodMismatchPenalty(movie, preferences);
   score -= getPromptTonePenalty(movie, preferences);
 
-  if (isReleaseFeedMovie(movie)) {
+  if (preferences.view === "now_playing" && isReleaseFeedMovie(movie)) {
     score += 7;
   }
 
@@ -2803,15 +2790,6 @@ const scorePickCandidate = (
 
   if (preferences.view === "now_playing") {
     score += movie.release_date ? new Date(movie.release_date).getTime() / 1000000000000 : 0;
-  }
-
-  const releaseYear = getMovieReleaseYear(movie);
-  if (releaseYear) {
-    if (releaseYear >= 2015) {
-      score += 4;
-    } else if (releaseYear < 1990) {
-      score -= 6;
-    }
   }
 
   const signals = deriveMovieSignals(movie);
@@ -3803,6 +3781,7 @@ const enrichCandidatesWithDetails = async (movies = []) => {
 };
 
 const buildCompactCandidate = (movie, intent = null) => {
+  const childAudience = Boolean(intent?.guardrails?.child_family_safe);
   const derivedSignals = deriveMovieSignals(movie);
   const fitBreakdown = intent ? getRecommendationFitBreakdown(movie, intent, { structured_match_score: movie.structured_match_score || 0 }) : null;
 
@@ -3826,8 +3805,10 @@ const buildCompactCandidate = (movie, intent = null) => {
     derived_signals: {
       animal_presence: derivedSignals.animal_presence,
       entity_prominence: derivedSignals.entity_prominence,
-      kid_friendliness: Number((derivedSignals.kid_friendliness || 0).toFixed(2)),
-      toddler_friendliness: Number((derivedSignals.toddler_friendliness || 0).toFixed(2)),
+      ...(childAudience ? {
+        kid_friendliness: Number((derivedSignals.kid_friendliness || 0).toFixed(2)),
+        toddler_friendliness: Number((derivedSignals.toddler_friendliness || 0).toFixed(2)),
+      } : {}),
       scariness: Number((derivedSignals.scariness || 0).toFixed(2)),
       peril: Number((derivedSignals.peril || 0).toFixed(2)),
       stimulation_level: Number((derivedSignals.stimulation_level || 0).toFixed(2)),
@@ -3840,7 +3821,7 @@ const buildCompactCandidate = (movie, intent = null) => {
       sweeping_epic_score: Number((derivedSignals.sweeping_epic_score || 0).toFixed(2)),
       series_metadata: derivedSignals.series_metadata,
       vibe_tags: derivedSignals.vibe_tags,
-      practical_watch_fit: derivedSignals.practical_watch_fit,
+      practical_watch_fit: derivedSignals.practical_watch_fit.filter(tag => childAudience || tag !== "family_safe"),
     },
     fit_summary: fitBreakdown && !movie.plot_discovered
       ? {
@@ -3851,7 +3832,7 @@ const buildCompactCandidate = (movie, intent = null) => {
           penalties: fitBreakdown.penalties,
         }
       : null,
-    overview: truncateText(movie.overview || "", hasDescriptivePlotRequest(intent?.raw_prompt) ? 700 : 180),
+    overview: truncateText(movie.overview || "", hasDescriptivePlotRequest(intent?.raw_prompt) ? 700 : 360),
     ...(movie.discovery_evidence?.length ? {discovery_evidence:movie.discovery_evidence} : {}),
     ...(intent?.plot_constraints?.length ? {keywords:movie.keyword_names || [],required_plot_clues:intent.plot_constraints.map(clue=>clue.label)} : {}),
   };
@@ -4157,7 +4138,7 @@ const rankCandidatesWithOpenAI = async (preferences, intent, candidates) => {
     candidates: candidates.map((movie) => buildCompactCandidate(movie, intent)),
   });
 
-  return callStructuredOpenAI({
+  return measureStage("ranking_model", () => callStructuredOpenAI({
     systemPrompt: prompts.systemPrompt,
     userPrompt: prompts.userPrompt,
     schema: pickDecisionSchema,
@@ -4165,7 +4146,7 @@ const rankCandidatesWithOpenAI = async (preferences, intent, candidates) => {
     maxTokens: 2000,
     type: "reco",
     temperature: 0.25,
-  });
+  }));
 };
 
 const buildMatchScore = (score, topScore) => {
@@ -4504,7 +4485,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
-  const cacheKey = `pick:v19:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const cacheKey = `pick:v20:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);
@@ -4603,7 +4584,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
     .sort((left, right) => Number(right.structured_match_score || 0) - Number(left.structured_match_score || 0))
     .slice(0, 12);
   const topPreliminaryCandidates = selectMetadataCandidates(
-    preliminaryRanked.map(entry=>entry.movie),
+    (usesHardEntityPool ? preliminaryRanked : balanceCandidatesByEra(preliminaryRanked, 36)).map(entry=>entry.movie),
     semanticPriorityCandidates,
     baseRankingPool.filter(movie=>movie.plot_discovered),
   );
@@ -4768,7 +4749,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
         },
         top_preliminary_candidates: preliminaryRanked.slice(0, 8).map((entry) => toScoreDebugEntry(entry, resolvedIntent)),
         top_candidates_before_final_ranking: finalRankedCandidates.slice(0, 8).map((entry) => toScoreDebugEntry(entry, resolvedIntent)),
-        top_candidates_considered_by_llm: curatedRankingEntries.slice(0, 8).map((entry) => toScoreDebugEntry(entry, resolvedIntent)),
+        top_candidates_considered_by_llm: curatedRankingEntries.map((entry) => toScoreDebugEntry(entry, resolvedIntent)),
         rabbit_score_breakdown: {
           preliminary: buildRabbitRankingSnapshot(preliminaryRanked, resolvedIntent),
           final_ranked: buildRabbitRankingSnapshot(finalRankedCandidates, resolvedIntent),

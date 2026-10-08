@@ -71,7 +71,7 @@ const inferPreferredGenreIds = (prompt = "") => {
   const genreIds = [];
 
   if (/sci-?fi|science fiction|space/i.test(normalizedPrompt)) addUnique(genreIds, [878]);
-  if (/mystery|whodunit|detective/i.test(normalizedPrompt)) addUnique(genreIds, [9648]);
+  if (/mystery|whodunit|detective|keep (?:me|us|you) guessing|twists? and turns|unpredictable/i.test(normalizedPrompt)) addUnique(genreIds, [9648]);
   if (/thriller|tense|suspense/i.test(normalizedPrompt)) addUnique(genreIds, [53]);
   if (/drama|emotional|moving|heavy|serious/i.test(normalizedPrompt)) addUnique(genreIds, [18]);
   if (/comedy|funny|funnier|laugh|stupid/i.test(normalizedPrompt)) addUnique(genreIds, [35]);
