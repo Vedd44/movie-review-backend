@@ -1,6 +1,12 @@
 const assert=require('node:assert/strict');
 const {classifyAskIntent,ASK_INTENTS:I}=require('../src/ask/askIntent');
-const {updateConversationForPrompt,buildContextualRecommendationPrompt,getConversationExcludedIds}=require('../src/ask/conversationState');
+const {updateConversationForPrompt,buildContextualRecommendationPrompt,getConversationExcludedIds,buildAnchoredRecommendationPrompt}=require('../src/ask/conversationState');
+for(const prompt of ['Find me a warm romantic comedy for adults','A movie about a woman receiving messages from the future']) {
+ const context={page:'movie_detail',movie:{id:1,title:'Alien'}};
+ const intent=classifyAskIntent({prompt,context});
+ assert.match(intent,/RECOMMENDATION/,'A complete new movie request on a detail page is a recommendation');
+ assert.equal(buildAnchoredRecommendationPrompt(prompt,{intent,anchorTitle:'Alien',latestPrompt:prompt}),prompt,'A new request must not acquire an unrequested similarity anchor');
+}
 const initial={activeRequest:'An adult sci-fi thriller, no horror',activeIntent:I.GENERAL_RECOMMENDATION,activeConstraints:{maxRuntime:95,hardExclusions:['no_horror']},userCorrections:['shorter'],anchorMovie:{id:1,title:'Previous',runtime:90},recommendationHistory:[{id:1,status:'recommended'}]};
 for(const prompt of ['Is this scary?','Who directed it?','Is it shorter than two hours?']) {
  assert.equal(classifyAskIntent({prompt,conversation:initial}),I.CURRENT_MOVIE_QUESTION,prompt);

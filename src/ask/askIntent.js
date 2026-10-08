@@ -63,6 +63,10 @@ const classifyAskIntent = ({ prompt, context = {}, conversation = {} } = {}) => 
     return ASK_INTENTS.GENERAL_RECOMMENDATION;
   }
 
+  // A complete fresh request remains a recommendation even on a movie page.
+  // Short questions about that movie still use its contextual answer path.
+  if (INITIAL_RECOMMENDATION_PATTERN.test(normalizedPrompt) && /^(?:a|an|some|something|anything|i want|i would like|i[’\']d like|movie|film)\b/i.test(normalizedPrompt)) return ASK_INTENTS.GENERAL_RECOMMENDATION;
+
   if (page === "movie_detail" || context.movie?.id || context.movieId || (hasAnchor && activeIntent === "current_movie_question")) {
     return QUESTION_PATTERN.test(normalizedPrompt)
       ? ASK_INTENTS.CURRENT_MOVIE_QUESTION

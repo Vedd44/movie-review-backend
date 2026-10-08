@@ -49,7 +49,7 @@ for (const original of ['Movie where people work late night at a food place','A 
  }
 }
 assert.equal(buildAnchoredRecommendationPrompt('something like this',{intent:'MOVIE_RECOMMENDATION',anchorTitle:'Heat',latestPrompt:'something like this'}),'something like Heat');checks++;
-assert.match(buildAnchoredRecommendationPrompt('Something else',{intent:'MOVIE_RECOMMENDATION',anchorTitle:'Heat'}),/Similar to Heat/);checks++;
+assert.equal(buildAnchoredRecommendationPrompt('Something else',{intent:'MOVIE_RECOMMENDATION',anchorTitle:'Heat'}),'Something else');checks++;
 const newState = updateConversationForPrompt({activeRequest:'A short comedy',activeConstraints:{maxRuntime:89,minYear:2020},userCorrections:['shorter']},'A sweeping epic over two hours','GENERAL_RECOMMENDATION');
 assert.equal(newState.activeConstraints.maxRuntime,undefined);checks++;
 assert.equal(newState.activeConstraints.minYear,undefined);checks++;

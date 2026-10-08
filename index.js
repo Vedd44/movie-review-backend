@@ -45,6 +45,7 @@ const { createSupabaseTakeStore } = require("./src/takes/supabaseTakeStore");
 const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
 const { ASK_INTENTS, classifyAskIntent, isMovieIdentificationFollowUp } = require("./src/ask/askIntent");
 const {getCommittedPrompt,canReuseIntentSnapshot}=require("./src/ask/requestContinuity");
+const {retrieveWithDiscovery} = require("./src/ask/candidateRetrieval");
 const {retainPlotRankingEntries,passesPlotCandidateEvidence,getPlotClarification,selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require("./src/ask/plotClues");
 const {
   normalizeConversationState,
@@ -4494,7 +4495,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
-  const cacheKey = `pick:v13:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const cacheKey = `pick:v14:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);
@@ -4521,20 +4522,24 @@ const generatePickPayload = async (rawPreferences = {}) => {
     || (queryType === "GENRE_THEME" && shouldUseStructuredResolution);
 
   let plotSearchTrace = [];
-  let candidatePool = await measureStage("retrieval", async () => hasProvidedCandidatePool
-    ? await fetchMoviesByIds(providedCandidatePoolIds)
-    : shouldUseStructuredResolution
-      ? structuredResolution.movies
-      : await getPickCandidatePool(preferences, resolvedIntent, promptBoosts));
-  // Concrete plot requests need semantic title discovery, not only popular feeds.
-  // Bounded pools remain intact. Entity seeds must pass the same verified credit/franchise
-  // membership checks as all other candidates. Ordinary moods take no extra call.
-  if (hasDescriptivePlotRequest(preferences.prompt) && !hasProvidedCandidatePool && (!usesHardEntityPool || ["PERSON", "DIRECTOR", "FRANCHISE"].includes(queryType))) {
-    const plotQueries = await extractMovieIdentificationQueries(preferences.prompt);
-    plotSearchTrace = plotQueries;
-    const plotMovies = await fetchMovieTitleHypotheses(plotQueries,resolvedIntent.plot_constraints);
-    candidatePool = dedupeMoviesById([...plotMovies.map(movie=>({...movie,source_type:"semantic_prompt_search",plot_discovered:true})),...candidatePool]);
-  }
+  const allowPlotDiscovery = hasDescriptivePlotRequest(preferences.prompt) && !hasProvidedCandidatePool
+    && (!usesHardEntityPool || ["PERSON", "DIRECTOR", "FRANCHISE"].includes(queryType));
+  const retrieved = await measureStage("retrieval", () => retrieveWithDiscovery({
+    retrieve: async () => hasProvidedCandidatePool
+      ? await fetchMoviesByIds(providedCandidatePoolIds)
+      : shouldUseStructuredResolution
+        ? structuredResolution.movies
+        : await getPickCandidatePool(preferences, resolvedIntent, promptBoosts),
+    allowDiscovery: allowPlotDiscovery,
+    discover: async () => {
+      plotSearchTrace = await extractMovieIdentificationQueries(preferences.prompt);
+      return fetchMovieTitleHypotheses(plotSearchTrace, resolvedIntent.plot_constraints);
+    },
+  }));
+  let candidatePool = dedupeMoviesById([
+    ...retrieved.discovered.map(movie => ({...movie, source_type:"semantic_prompt_search", plot_discovered:true})),
+    ...retrieved.pool,
+  ]);
   // Rewatch requests must retrieve watched candidates as well as removing
   // their cooldown; otherwise older favorites may never reach the ranker.
   if (isExplicitRewatchRequest(preferences.prompt) && !hasProvidedCandidatePool && behavioralMemory.seenMovieIds.size) {

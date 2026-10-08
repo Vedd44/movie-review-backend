@@ -100,7 +100,7 @@ const buildAnchoredRecommendationPrompt = (contextualPrompt = "", { intent = "",
   if (explicitTarget) return contextualPrompt;
   const pronounSimilarity = /\b(?:like|similar to)\s+(?:this|it|that)\b/i;
   if (pronounSimilarity.test(latestPrompt)) return contextualPrompt.replace(pronounSimilarity, matched => matched.replace(/(?:this|it|that)$/i, anchorTitle));
-  return intent === "MOVIE_RECOMMENDATION" ? `${contextualPrompt} Similar to ${anchorTitle}.` : contextualPrompt;
+  return contextualPrompt;
 };
 
 const getConversationExcludedIds = (state = {}, { allowRewatch = false } = {}) => (state.recommendationHistory || [])
