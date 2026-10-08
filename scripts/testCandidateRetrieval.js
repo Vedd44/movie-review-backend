@@ -40,5 +40,12 @@ const {retrieveWithDiscovery,shouldRunSemanticFallback,isDiscoveryBounded,buildD
  await context.resolve({themes:[],genre_ids:[35]},{hard_filters:{max_runtime_minutes:89,min_runtime_minutes:40}});
  assert.equal(range.max,89,'Time-window retrieval uses the effective numeric cap rather than a UI runtime bucket');
  assert.equal(range.min,40);
+ const excludedStart=source.indexOf('      const excludedTitles = Array.from(excludedIds)');
+ const excludedEnd=source.indexOf('      const queries =',excludedStart);
+ let cacheReads=0;
+ const discoveryContext=vm.createContext({Set,excludedIds:new Set([101,102]),rankingPool:[{id:103,title:'Unselected alternative',plot_discovered:true}],tmdbCache:new Map(),stableStringify:JSON.stringify,readCache:(cache,key)=>{cacheReads++;return key.startsWith('/movie/101:')?{title:'Earlier primary'}:key.startsWith('/movie/102:')?{title:'Latest primary'}:null;}});
+ vm.runInContext(source.slice(excludedStart,excludedEnd)+'this.testedTitles=testedTitles;',discoveryContext);
+ assert.deepEqual(Array.from(discoveryContext.testedTitles),['Earlier primary','Latest primary','Unselected alternative'],'Discovery can avoid all previous primaries even after their IDs disappear from the swap deck');
+ assert.equal(cacheReads,2,'Reuse cached identities without new metadata calls');
  console.log('Parallel independent retrieval, bounded call budget and transport propagation passed.');
 })();
