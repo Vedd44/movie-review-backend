@@ -1,5 +1,5 @@
 const assert=require('node:assert/strict');
-const {selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require('../src/ask/plotClues');
+const {passesPlotCandidateEvidence,getPlotClarification,selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require('../src/ask/plotClues');
 const {classifyAskIntent,ASK_INTENTS}=require('../src/ask/askIntent');
 let checks=0;
 const scene='Movie where a person or group of people are working late night at a food place and strange things happen';
@@ -23,7 +23,7 @@ for(const [prompt,good,bad] of [['A movie where a nurse works at night in a hosp
 }
 for(const title of ['Interstellar','Ronin','Heat','Memento','The Menu','Willy’s Wonderland','Last Straw','Poultrygeist: Night of the Chicken Dead']){assert.equal(normalizeCluePrompt(title),title);checks++;}
 assert.equal(isExplicitModelAbstention({primary:null,backups:[]}),true);assert.equal(isExplicitModelAbstention(null),false);assert.equal(isExplicitModelAbstention({primary:{id:1}}),false);checks+=3;
-for(const prompt of ['Movie that takes place after a shift at a restaurant','Something set in a diner','Hero dies in the end','Recommend a movie where an accountant discovers his boss is laundering money','A film set on a submarine','Find movies about a woman who discovers messages from the future','Movies with a crew stranded after a storm']){assert.equal(hasDescriptivePlotRequest(prompt),true,prompt);checks++;}
+for(const prompt of ['Movie that takes place after a shift at a restaurant','Something set in a diner','A movie about restaurant employees finishing their shift','A movie with a tragic ending','Hero dies in the end','Recommend a movie where an accountant discovers his boss is laundering money','A film set on a submarine','Find movies about a woman who discovers messages from the future','Movies with a crew stranded after a storm']){assert.equal(hasDescriptivePlotRequest(prompt),true,prompt);checks++;}
 for(const prompt of ['Something funny after work','A good movie for friends','An easy watch on a train','Movies like Heat','A movie about comedy']){assert.equal(hasDescriptivePlotRequest(prompt),false,prompt);checks++;}
 const popular=Array.from({length:50},(_,i)=>({id:i+1}));
 const discovered=[{id:701},{id:702},{id:1}];
@@ -41,4 +41,10 @@ assert.equal(protectEndingSpoilers('Tony Stark dies.','Who dies? Spoilers please
 for(const reason of ['Thelma and Louise end with their deaths.','Robert Downey Jr. plays Tony Stark, who dies in the finale. An emotional superhero epic.']){const safe=protectEndingSpoilers(reason,'movie where the hero dies in the end');assert.doesNotMatch(safe,/Thelma|Tony Stark|Downey|deaths/);checks++;}
 const principles=require('../ai/reelbotPrinciples').getFullReelbotFrameworkText();assert.ok(!principles.includes('say where it misses'));assert.ok(!principles.includes('name the strength and the miss'));
 checks+=2;
+const workClues = extractPlotConstraints(scene);
+assert.equal(passesPlotCandidateEvidence({plot_discovered:true,overview:'A waitress faces a siege at a rural diner.'},workClues),true);checks++;
+assert.equal(passesPlotCandidateEvidence({overview:'A waitress faces a siege at a rural diner.'},workClues),false);checks++;
+assert.equal(passesPlotCandidateEvidence({plot_discovered:true,overview:'A doorway opens in a furniture showroom.'},workClues),false);checks++;
+assert.match(getPlotClarification('A movie that takes place after a shift at a hospital'),/after they finish work/);checks++;
+assert.equal(getPlotClarification('Something funny to watch after my shift'),null);checks++;
 console.log(`${checks} descriptive clue, routing, typo, occasion, venue, title and abstention checks passed.`);

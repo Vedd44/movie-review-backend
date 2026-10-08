@@ -45,7 +45,7 @@ const { createSupabaseTakeStore } = require("./src/takes/supabaseTakeStore");
 const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
 const { ASK_INTENTS, classifyAskIntent, isMovieIdentificationFollowUp } = require("./src/ask/askIntent");
 const {getCommittedPrompt,canReuseIntentSnapshot}=require("./src/ask/requestContinuity");
-const {selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require("./src/ask/plotClues");
+const {passesPlotCandidateEvidence,getPlotClarification,selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require("./src/ask/plotClues");
 const {
   normalizeConversationState,
   updateConversationForPrompt,
@@ -1239,7 +1239,7 @@ const hydrateResolvedIntent = async (preferences = {}, rawPreferences = {}) => {
 
 const isMovieValidForIntent = (movie, intent = {}, promptBoosts = {}, options = {}) => {
   if (!passesRecommendationContract(movie, intent, options)) return false;
-  if (options.final && !passesPlotConstraints(movie, intent.plot_constraints || [])) return false;
+  if (options.final && !passesPlotCandidateEvidence(movie, intent.plot_constraints || [])) return false;
   if (promptBoosts?.anchorMovieIds?.has(movie?.id)) return false;
   const queryType = intent?.query_type || getIntentQueryType(intent);
   if (!movie?.id) {
@@ -4491,7 +4491,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
-  const cacheKey = `pick:v8:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const cacheKey = `pick:v9:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);
@@ -4524,8 +4524,9 @@ const generatePickPayload = async (rawPreferences = {}) => {
       ? structuredResolution.movies
       : await getPickCandidatePool(preferences, resolvedIntent, promptBoosts));
   // Concrete plot requests need semantic title discovery, not only popular feeds.
-  // Keep entity and bounded pools intact; ordinary mood requests take no extra call.
-  if (hasDescriptivePlotRequest(preferences.prompt) && !hasProvidedCandidatePool && !usesHardEntityPool) {
+  // Bounded pools remain intact. Entity seeds must pass the same verified credit/franchise
+  // membership checks as all other candidates. Ordinary moods take no extra call.
+  if (hasDescriptivePlotRequest(preferences.prompt) && !hasProvidedCandidatePool && (!usesHardEntityPool || ["PERSON", "DIRECTOR", "FRANCHISE"].includes(queryType))) {
     const plotQueries = await extractMovieIdentificationQueries(preferences.prompt).catch(()=>[]);
     plotSearchTrace = plotQueries;
     const plotMovies = await fetchMovieTitleHypotheses(plotQueries,resolvedIntent.plot_constraints);
@@ -4766,7 +4767,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
       label: "Pick for Me",
       summary: buildPickNoMatchSummary(preferences),
       no_pick_reason: "no_suitable_candidate",
-      user_message: "I couldn’t find a movie that fits the key details closely enough. Add another clue or tell me which detail you’d be happy to broaden.",
+      user_message: getPlotClarification(preferences.prompt) || "I couldn’t find a movie that fits the key details closely enough. Add another clue or tell me which detail you’d be happy to broaden.",
       assistant_note: usesHardEntityPool
         ? "ReelBot stayed inside the anchored candidate set and could not find a strong enough valid result."
         : "ReelBot could not find a strong-enough fit from the current candidate pool.",

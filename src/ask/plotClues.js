@@ -4,9 +4,9 @@ const SPELLING = Object.freeze({movue:'movie',mvoie:'movie',moive:'movie',flim:'
 const normalizeCluePrompt = value => String(value || '').replace(/\b[a-z]+\b/gi, word => SPELLING[word.toLowerCase()] || word).replace(/\s+/g,' ').trim();
 function hasDescriptivePlotRequest(prompt='') {
  const text=normalizeCluePrompt(prompt);
- return /\b(?:movie|film|thriller|horror|drama|comedy|something|story)s?\s+(?:(?:that|which)\s+)?(?:where|in which|takes place|set (?:in|on|at)|(?:in|on|at)\s+(?:a |an |the )?(?:restaurant|diner|hospital|prison|train|plane|spaceship|submarine)|about\s+(?:(?:a|an|the)\s+)?(?:man|woman|person|people|group|crew|family|couple|detective|cop|soldier|child|boy|girl|worker|waitress|chef)\b|with\s+(?:(?:a|an|the)\s+)?(?:man|woman|person|group|crew|family|couple)\b)/i.test(text)
+ return /\b(?:movie|film|thriller|horror|drama|comedy|something|story)s?\s+(?:(?:that|which)\s+)?(?:where|in which|takes place|set (?:in|on|at)|(?:in|on|at)\s+(?:a |an |the )?(?:restaurant|diner|hospital|prison|train|plane|spaceship|submarine)|about\s+(?:(?:a|an|the)\s+)?(?:[a-z-]+\s+){0,3}(?:man|woman|person|people|group|crew|family|couple|detective|cop|soldier|child|boy|girl|workers?|employees?|staff|waitress|chef)\b|with\s+(?:(?:a|an|the)\s+)?(?:man|woman|person|group|crew|family|couple)\b)/i.test(text)
   || extractPlotConstraints(text).length>0
-  || /\b(?:hero|protagonist|main character)\b[^.!?]*\b(?:dies|death|killed)\b/i.test(text);
+  || /\b(?:hero|protagonist|main character)\b[^.!?]*\b(?:dies|death|killed)\b|\b(?:tragic|sad) ending\b/i.test(text);
 }
 const SCENE_VENUES = [
  ['food workplace', /\b(?:at|in|inside|working (?:at|in))\s+(?:a |an |the )?(?:restaurant|diner|cafe|caf[eé]|pizzeria|pizza (?:place|parlor)|fast[- ]food (?:place|restaurant|joint)|food (?:place|joint))\b/i, /\b(?:restaurant|diner|caf[eé]|pizzeria|pizza (?:place|parlor)|fast[- ]food|burger (?:joint|restaurant))\b/i],
@@ -53,6 +53,18 @@ function contradictsPlotConstraints(movie={},constraints=[]) {
  if(food && !food.evidence.test(text) && /\b(?:furniture showroom|biotech facility|police (?:station|officers)|cartel|tablet|hospital|prison|spaceship)\b/i.test(text)) return true;
  return false;
 }
+// Semantic title discovery may rely on an established scene absent from a teaser.
+// The ranker still must validate the complete premise; explicit contradictions reject it.
+function passesPlotCandidateEvidence(movie={},constraints=[]) {
+ return movie.plot_discovered === true
+  ? !contradictsPlotConstraints(movie,constraints)
+  : passesPlotConstraints(movie,constraints);
+}
+function getPlotClarification(prompt='') {
+ return hasDescriptivePlotRequest(prompt) && /\bafter (?:a |the |their |his |her )?(?:night |late[- ]night )?shift\b/i.test(prompt)
+  ? "Do you mean a film about people working that shift, or what happens after they finish work?"
+  : null;
+}
 function protectEndingSpoilers(reason='',prompt='') {
  const text=String(reason || '').trim();
  const endingCategory=/\b(?:hero|protagonist|main character)\b[^.!?]*\b(?:dies|death|killed)\b|\b(?:tragic ending|sad ending|ending where)\b/i.test(prompt);
@@ -63,4 +75,4 @@ function protectEndingSpoilers(reason='',prompt='') {
  return safe.length===sentences.length ? text : ['This has the kind of ending you’re looking for. I’ll leave the details for you to discover.',...safe.map(sentence=>sentence.trim())].join(' ');
 }
 const isExplicitModelAbstention = ranking => Boolean(ranking && Object.prototype.hasOwnProperty.call(ranking,'primary') && ranking.primary === null);
-module.exports={selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention};
+module.exports={passesPlotCandidateEvidence,getPlotClarification,selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention};
