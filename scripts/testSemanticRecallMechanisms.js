@@ -1,6 +1,12 @@
 const assert = require('node:assert/strict');
 const {parseReelbotIntent} = require('../ai/intentParser');
 const {passesRecommendationContract} = require('../ai/recommendationContract');
+const {buildRecommendationRetrievalPlan}=require('../ai/recommendationRetrieval');
+const romanticPlan=buildRecommendationRetrievalPlan(parseReelbotIntent('Something romantic but not cheesy'));
+assert.equal(romanticPlan.historical_sweep_bias,false,'Romance or immersion alone cannot manufacture a period/frontier request');
+assert.deepEqual(romanticPlan.discover_genre_ids,[10749],'Explicit romantic preference seeds romance catalogue retrieval');
+assert.ok(!romanticPlan.movie_query_terms.includes('frontier epic'));
+assert.equal(buildRecommendationRetrievalPlan(parseReelbotIntent('A sweeping historical romance')).historical_sweep_bias,true,'Explicit historical sweep keeps its established retrieval');
 for (const [prompt, genre] of [['A movie starring an actor, not a documentary',99], ['A feel-good movie for adults, no animation',16], ['A comedy without any horror',27]]) {
  const intent = parseReelbotIntent(prompt);
  assert.ok(!intent.hard_filters.required_genre_ids.includes(genre), 'A negated genre cannot become a requirement');

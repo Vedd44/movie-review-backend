@@ -76,7 +76,7 @@ const buildRecommendationRetrievalPlan = (intent = {}) => {
     : Array.isArray(intent.soft_preferences?.preference_signals)
       ? intent.soft_preferences.preference_signals
       : [];
-  const historicalSweepBias = softPreferences.some((signal) => ["historical_sweep", "nature_scale", "romantic_prestige", "immersive"].includes(signal));
+  const historicalSweepBias = softPreferences.some((signal) => ["historical_sweep", "nature_scale"].includes(signal));
   const queryExpansion = intent.query_expansion || buildQueryExpansion({
     prompt: intent.raw_prompt,
     audienceAge: intent.audience_age,
@@ -102,6 +102,7 @@ const buildRecommendationRetrievalPlan = (intent = {}) => {
     keyword_terms: uniqueStrings(queryExpansion.keyword_terms).slice(0, 10),
     title_hints: uniqueStrings(queryExpansion.title_hints).slice(0, 6),
     discover_genre_ids: uniqueStrings([
+      ...(Array.isArray(intent.soft_preferences?.boost_genre_ids) ? intent.soft_preferences.boost_genre_ids : []),
       ...(Array.isArray(intent.preferred_genre_ids) ? intent.preferred_genre_ids : []),
       ...(intent.content_safety === "very_safe" || intent.content_safety === "safe" ? FAMILY_DISCOVER_GENRES : []),
       ...(historicalSweepBias ? SWEEPING_EPIC_GENRES : []),

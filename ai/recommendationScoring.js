@@ -33,8 +33,6 @@ const hasSweepingEpicAsk = (intent = {}) => {
   const softPreferences = getSoftPreferences(intent);
   return softPreferences.includes("historical_sweep")
     || softPreferences.includes("nature_scale")
-    || softPreferences.includes("romantic_prestige")
-    || softPreferences.includes("immersive")
 ;
 };
 
