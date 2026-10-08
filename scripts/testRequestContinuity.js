@@ -42,4 +42,17 @@ for (const id of ['lighter','less_intense','funnier']) {
   assert.equal(passesRecommendationContract({genre_ids:[16,10751,35],runtime:90}, refined),false); checks++;
   assert.equal(passesRecommendationContract({genre_ids:[35,18],runtime:90}, refined),true); checks++;
 }
+const { buildAnchoredRecommendationPrompt, updateConversationForPrompt, buildContextualRecommendationPrompt } = require('../src/ask/conversationState');
+for (const original of ['Movie where people work late night at a food place','A smart sci-fi movie under 100 minutes','Something comforting for adults']) {
+ for (const intent of ['NEXT_RECOMMENDATION','REFINE_RECOMMENDATION']) {
+  assert.equal(buildAnchoredRecommendationPrompt(original,{intent,anchorTitle:'The Last Shift',latestPrompt:'another'}),original); checks++;
+ }
+}
+assert.equal(buildAnchoredRecommendationPrompt('something like this',{intent:'MOVIE_RECOMMENDATION',anchorTitle:'Heat',latestPrompt:'something like this'}),'something like Heat');checks++;
+assert.match(buildAnchoredRecommendationPrompt('Something else',{intent:'MOVIE_RECOMMENDATION',anchorTitle:'Heat'}),/Similar to Heat/);checks++;
+const newState = updateConversationForPrompt({activeRequest:'A short comedy',activeConstraints:{maxRuntime:89,minYear:2020},userCorrections:['shorter']},'A sweeping epic over two hours','GENERAL_RECOMMENDATION');
+assert.equal(newState.activeConstraints.maxRuntime,undefined);checks++;
+assert.equal(newState.activeConstraints.minYear,undefined);checks++;
+assert.equal(newState.userCorrections.length,0);checks++;
+assert.equal(newState.activeRequest,'A sweeping epic over two hours');checks++;
 console.log(`${checks} request continuity, fresh-request isolation and relative refinement checks passed.`);

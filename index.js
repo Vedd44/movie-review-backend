@@ -50,6 +50,7 @@ const {
   normalizeConversationState,
   updateConversationForPrompt,
   buildContextualRecommendationPrompt,
+  buildAnchoredRecommendationPrompt,
   getConversationExcludedIds,
 } = require("./src/ask/conversationState");
 const {
@@ -4491,7 +4492,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   const refreshKey = rawPreferences.refresh_key ? String(rawPreferences.refresh_key) : "";
   const refinementSignature = refinement?.id ? `:refine:${refinement.id}` : "";
   const scopeKey = recommendationCacheScope(rawPreferences, resolvedIntent);
-  const cacheKey = `pick:v10:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
+  const cacheKey = `pick:v11:${scopeKey}:${preferences.source}:${preferences.view}:${preferences.genre}:${preferences.mood}:${preferences.runtime}:${preferences.company}:theatrical:${preferences.include_theatrical ? "yes" : "no"}:${preferences.prompt.toLowerCase()}:lane:${resolvedIntent.lane_key}${refinementSignature}:excluded:${Array.from(excludedIds).sort((left, right) => left - right).join(",")}:behavior:${getBehavioralMemoryCacheKey(behavioralMemory)}`;
 
   if (!refreshKey) {
     const cachedPayload = readCache(pickCache, cacheKey);
@@ -7391,12 +7392,7 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
     const boundedPool = ["person", "collection", "my_movies", "browse", "now_playing"].includes(pageContext.page);
     const anchorTitle = (conversation.anchorMovie || pageContext.movie || pageContext.currentPick)?.title || "";
     const contextualPrompt = buildContextualRecommendationPrompt(prompt, conversation, intent);
-    const hasExplicitSimilarityTarget = /\b(?:similar to|like|loved)\s+(?!this\b|it\b|that\b)\S/i.test(contextualPrompt);
-    const recommendationPrompt = !boundedPool && [ASK_INTENTS.MOVIE_RECOMMENDATION, ASK_INTENTS.REFINE_RECOMMENDATION, ASK_INTENTS.NEXT_RECOMMENDATION].includes(intent) && anchorTitle && !hasExplicitSimilarityTarget
-      ? (/\b(?:this|it|that)\b/i.test(contextualPrompt)
-          ? contextualPrompt.replace(/\b(?:this|it|that)\b/gi, anchorTitle)
-          : `${contextualPrompt} Similar to ${anchorTitle}.`)
-      : contextualPrompt;
+    const recommendationPrompt = buildAnchoredRecommendationPrompt(contextualPrompt, { intent, anchorTitle, boundedPool, latestPrompt: prompt });
     const wantsRewatch = isExplicitRewatchRequest(prompt);
     const excludedIds = Array.from(new Set([
       ...pageContext.excludedMovieIds,

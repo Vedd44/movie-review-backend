@@ -52,7 +52,8 @@ const updateConversationForPrompt = (stateValue = {}, prompt = "", intent = "", 
     ? state.recommendationHistory.map((entry, index, list) => index === list.length - 1 ? { ...entry, status: "rejected" } : entry)
     : state.recommendationHistory;
   const mutation = extractConstraintMutation(prompt);
-  const previous = state.activeConstraints || {};
+  const continuation = correction || /REFINE_RECOMMENDATION|NEXT_RECOMMENDATION/.test(intent);
+  const previous = continuation ? (state.activeConstraints || {}) : {};
   const relative = {};
   if (/\bshorter\b/i.test(prompt) && state.anchorMovie?.runtime) relative.maxRuntime = Math.min(previous.maxRuntime || Infinity, state.anchorMovie.runtime - 1);
   if (/\bnewer\b|more recent/i.test(prompt) && state.anchorMovie?.release_date) relative.minYear = Number(state.anchorMovie.release_date.slice(0, 4)) + 1;
@@ -76,7 +77,7 @@ const updateConversationForPrompt = (stateValue = {}, prompt = "", intent = "", 
     activeRequest: nextRequest,
     lastUserMessage: compact(prompt),
     recommendationHistory,
-    userCorrections: correction ? [...state.userCorrections, compact(prompt)].slice(-12) : state.userCorrections,
+    userCorrections: correction ? [...state.userCorrections, compact(prompt)].slice(-12) : continuation ? state.userCorrections : [],
   };
 };
 
@@ -88,6 +89,16 @@ const buildContextualRecommendationPrompt = (prompt = "", state = {}, intent = "
   return [base, ...corrections.map((item) => `Correction: ${item}`),
     state.activeConstraints?.maxRuntime ? `No longer than ${state.activeConstraints.maxRuntime} minutes` : "",
   ].filter(Boolean).join(". ");
+};
+
+// A new film for an active request is not a similarity search for the last result.
+const buildAnchoredRecommendationPrompt = (contextualPrompt = "", { intent = "", anchorTitle = "", boundedPool = false, latestPrompt = "" } = {}) => {
+  if (boundedPool || !anchorTitle) return contextualPrompt;
+  const explicitTarget = /\b(?:similar to|like|loved)\s+(?!this\b|it\b|that\b)\S/i.test(contextualPrompt);
+  if (explicitTarget) return contextualPrompt;
+  const pronounSimilarity = /\b(?:like|similar to)\s+(?:this|it|that)\b/i;
+  if (pronounSimilarity.test(latestPrompt)) return contextualPrompt.replace(pronounSimilarity, matched => matched.replace(/(?:this|it|that)$/i, anchorTitle));
+  return intent === "MOVIE_RECOMMENDATION" ? `${contextualPrompt} Similar to ${anchorTitle}.` : contextualPrompt;
 };
 
 const getConversationExcludedIds = (state = {}, { allowRewatch = false } = {}) => (state.recommendationHistory || [])
@@ -102,4 +113,5 @@ module.exports = {
   updateConversationForPrompt,
   buildContextualRecommendationPrompt,
   getConversationExcludedIds,
+  buildAnchoredRecommendationPrompt,
 };

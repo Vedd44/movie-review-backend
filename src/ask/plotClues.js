@@ -61,7 +61,7 @@ function passesPlotCandidateEvidence(movie={},constraints=[]) {
   : passesPlotConstraints(movie,constraints);
 }
 function getPlotClarification(prompt='') {
- return hasDescriptivePlotRequest(prompt) && /\bafter (?:a |the |their |his |her )?(?:night |late[- ]night )?shift\b/i.test(prompt)
+ return hasDescriptivePlotRequest(prompt) && /\bafter (?:a |the |their |his |her )?(?:night |late[- ]night )?shift\b|\b(?:finishing|finished|ending) (?:their |the |a )?shift\b/i.test(prompt)
   ? "Do you mean a film about people working that shift, or what happens after they finish work?"
   : null;
 }
