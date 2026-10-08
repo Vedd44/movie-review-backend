@@ -14,6 +14,11 @@ const untestedDiscoveryCandidates = (discovered = [], considered = []) => {
 // A swap may carry a cached discovery deck. It is not an explicit collection,
 // filmography or saved-list boundary; those always set bounded_pool.
 const isDiscoveryBounded = request => Boolean(request.bounded_pool) || (Array.isArray(request.candidate_pool_ids) && request.candidate_pool_ids.length > 0 && !request.is_swap);
+// A continuation deck loses its transient discovery flags when its real IDs
+// are rehydrated from TMDB. Missing synopsis words must not become rejection
+// evidence on the next turn; contradictions and final premise checks still apply.
+const retainContinuationDiscovery = (movie, request, descriptive) => request.is_swap && !request.bounded_pool && descriptive
+ ? {...movie,plot_discovered:true,source_type:'semantic_continuation_pool'} : movie;
 const buildDiscoveryPrompt = (prompt, hard = {}, previousTitle = '', testedTitles = []) => [prompt,
  hard.max_runtime_minutes ? `No longer than ${hard.max_runtime_minutes} minutes.` : '',
  hard.min_runtime_minutes ? `At least ${hard.min_runtime_minutes} minutes.` : '',
@@ -22,4 +27,4 @@ const buildDiscoveryPrompt = (prompt, hard = {}, previousTitle = '', testedTitle
  previousTitle ? `Find a different suitable film; do not suggest ${previousTitle}.` : '',
  testedTitles.length ? `The following titles were already considered without a valid selection. Search for other real films satisfying the same complete request; do not repeat these titles: ${testedTitles.join('; ')}. Return no hypotheses if none fit; do not loosen any requirement.` : '',
 ].filter(Boolean).join('\n');
-module.exports = {retrieveWithDiscovery, shouldRunSemanticFallback, isDiscoveryBounded, buildDiscoveryPrompt, untestedDiscoveryCandidates};
+module.exports = {retrieveWithDiscovery, shouldRunSemanticFallback, isDiscoveryBounded, buildDiscoveryPrompt, untestedDiscoveryCandidates,retainContinuationDiscovery};

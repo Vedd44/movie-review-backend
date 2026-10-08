@@ -48,7 +48,7 @@ const { createSupabaseTakeStore } = require("./src/takes/supabaseTakeStore");
 const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
 const { ASK_INTENTS, classifyAskIntent, isMovieIdentificationFollowUp } = require("./src/ask/askIntent");
 const {getCommittedPrompt,canReuseIntentSnapshot}=require("./src/ask/requestContinuity");
-const {retrieveWithDiscovery,shouldRunSemanticFallback,isDiscoveryBounded,buildDiscoveryPrompt,untestedDiscoveryCandidates} = require("./src/ask/candidateRetrieval");
+const {retrieveWithDiscovery,shouldRunSemanticFallback,isDiscoveryBounded,buildDiscoveryPrompt,untestedDiscoveryCandidates,retainContinuationDiscovery} = require("./src/ask/candidateRetrieval");
 const {retainPlotRankingEntries,passesPlotCandidateEvidence,getPlotClarification,selectMetadataCandidates,normalizeCluePrompt,hasDescriptivePlotRequest,extractPlotConstraints,passesPlotConstraints,contradictsPlotConstraints,protectEndingSpoilers,isExplicitModelAbstention}=require("./src/ask/plotClues");
 const {
   normalizeConversationState,
@@ -4545,7 +4545,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
   }));
   let candidatePool = dedupeMoviesById([
     ...retrieved.discovered.map(movie => ({...movie, source_type:"semantic_prompt_search", plot_discovered:true})),
-    ...retrieved.pool.map(movie => (rawPreferences.semantic_fallback_candidate_ids || []).includes(movie.id) ? {...movie,discovery_evidence:rawPreferences.semantic_fallback_evidence?.[movie.id],plot_discovered:true,source_type:"semantic_prompt_search"} : movie),
+    ...retrieved.pool.map(movie => (rawPreferences.semantic_fallback_candidate_ids || []).includes(movie.id) ? {...movie,discovery_evidence:rawPreferences.semantic_fallback_evidence?.[movie.id],plot_discovered:true,source_type:"semantic_prompt_search"} : retainContinuationDiscovery(movie,rawPreferences,hasDescriptivePlotRequest(preferences.prompt))),
   ]);
   // Rewatch requests must retrieve watched candidates as well as removing
   // their cooldown; otherwise older favorites may never reach the ranker.
@@ -4787,6 +4787,7 @@ const generatePickPayload = async (rawPreferences = {}) => {
         hasDescriptivePlotRequest(preferences.prompt) ? fetchSemanticKeywordCandidates(queries.keyword_terms, resolvedIntent.hard_filters, {resolveKeywordIds: terms => resolveTmdbKeywordIds(terms,{strict:true}),fetchTmdb:fetchTmdbCached}) : [],
       ]);
       const discovered = untestedDiscoveryCandidates(dedupeMoviesById([...titles,...keywordCandidates]).filter(movie=>!contradictsPlotConstraints(movie,resolvedIntent.plot_constraints)).slice(0,18), rankingPool);
+      if(debugTrace) debugTrace.semantic_fallback = {queries:Array.from(queries),keyword_terms:queries.keyword_terms,title_candidate_ids:titles.map(movie=>movie.id),keyword_candidate_ids:keywordCandidates.map(movie=>movie.id),untested_candidate_ids:discovered.map(movie=>movie.id)};
       if (discovered.length) return generatePickPayload({
         ...rawPreferences,
         intent_snapshot: resolvedIntent,

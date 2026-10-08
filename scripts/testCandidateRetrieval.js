@@ -1,5 +1,13 @@
 const assert = require('node:assert/strict');
 const {retrieveWithDiscovery,shouldRunSemanticFallback,isDiscoveryBounded,buildDiscoveryPrompt,untestedDiscoveryCandidates} = require('../src/ask/candidateRetrieval');
+const {retainContinuationDiscovery}=require('../src/ask/candidateRetrieval');
+const {passesPlotCandidateEvidence,extractPlotConstraints}=require('../src/ask/plotClues');
+const constraints=extractPlotConstraints('A film where people are working overnight at a restaurant');
+const sparse={id:901,title:'Verified previous discovery',overview:'A woman begins a new job and encounters strange events.'};
+assert.equal(passesPlotCandidateEvidence(sparse,constraints),false);
+assert.equal(passesPlotCandidateEvidence(retainContinuationDiscovery(sparse,{is_swap:true},true),constraints),true,'Rehydrating a semantic continuation deck must preserve missing-synopsis admission');
+assert.equal(passesPlotCandidateEvidence(retainContinuationDiscovery({...sparse,overview:'Events unfold in a furniture showroom.'},{is_swap:true},true),constraints),false,'Explicit setting contradictions still reject a continuation candidate');
+for(const [request,descriptive] of [[{},true],[{is_swap:true,bounded_pool:true},true],[{is_swap:true},false]]) assert.equal(retainContinuationDiscovery(sparse,request,descriptive),sparse,'Fresh, explicitly bounded and nonstory requests keep normal admission');
 (async () => {
  let started = [], release;
  const held = new Promise(resolve => {release = resolve;});
