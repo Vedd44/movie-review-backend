@@ -17,6 +17,7 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - run: npm run test:tmdb-cache
       - run: npm run test:intent
       - run: npm run test:strict-intent
       - run: npm run test:ask-intent
@@ -26,5 +27,6 @@ jobs:
       - run: npm run test:discovery-pagination
       - run: npm run test:reelbot-take
       - run: npm run test:recommendations
+      - run: npm run test:recommendation-quality
       - run: npm run test:continuity-regressions
       - run: node scripts/testRecommendationNovelty.js

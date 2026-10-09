@@ -85,6 +85,8 @@ const reelbotCache = new Map();
 const pickCache = new Map();
 const semanticRecallCache = new Map();
 const tmdbCache = new Map();
+const tmdbInFlight = new Map();
+const TMDB_IN_FLIGHT_MAX_AGE_MS = 30_000;
 const streamingAvailabilityCache = new Map();
 const pickSurfaceTally = new Map();
 const promptLookupCache = new Map();
@@ -491,8 +493,31 @@ const fetchTmdbCached = async (path, params = {}, ttlMs = CACHE_TTLS.discover) =
     return cachedValue;
   }
 
-  const payload = await fetchTmdb(path, params);
-  return writeCache(tmdbCache, cacheKey, payload, ttlMs, CACHE_LIMITS.tmdb);
+  // This bounds joining a stalled request, not its transport lifetime. A later
+  // caller may start fresh work; existing callers retain their original promise.
+  pruneExpiredCache(tmdbInFlight);
+  const pending = tmdbInFlight.get(cacheKey);
+  if (pending) {
+    return pending.promise;
+  }
+
+  // Bound tracking without queuing requests or evicting eligible pending work.
+  // At capacity, retain the original independent-fetch behavior for new keys.
+  if (tmdbInFlight.size >= CACHE_LIMITS.tmdb) {
+    const payload = await fetchTmdb(path, params);
+    return writeCache(tmdbCache, cacheKey, payload, ttlMs, CACHE_LIMITS.tmdb);
+  }
+
+  const entry = { expiresAt: Date.now() + TMDB_IN_FLIGHT_MAX_AGE_MS };
+  entry.promise = fetchTmdb(path, params)
+    .then((payload) => writeCache(tmdbCache, cacheKey, payload, ttlMs, CACHE_LIMITS.tmdb))
+    .finally(() => {
+      if (tmdbInFlight.get(cacheKey) === entry) {
+        tmdbInFlight.delete(cacheKey);
+      }
+    });
+  tmdbInFlight.set(cacheKey, entry);
+  return entry.promise;
 };
 
 const getFeedCacheTtl = (type) => {
