@@ -21,6 +21,7 @@ jobs:
       - run: npm run test:intent
       - run: npm run test:strict-intent
       - run: npm run test:ask-intent
+      - run: npm run test:ask-route-journey
       - run: npm run test:ask-followups
       - run: npm run test:interaction-hardening
       - run: npm run test:presentation

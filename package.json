@@ -8,6 +8,7 @@
     "test:intent": "node scripts/evaluateReelbotPrompts.js",
     "test:strict-intent": "node scripts/testStrictIntentFilters.js",
     "test:ask-intent": "node scripts/testAskIntentRouting.js",
+    "test:ask-route-journey": "node --test scripts/testAskRouteJourney.js",
     "test:ask-followups": "node scripts/testAskFollowUps.js",
     "test:interaction-hardening": "node scripts/testInteractionHardening.js",
     "test:presentation": "node scripts/testMoviePresentation.js",
