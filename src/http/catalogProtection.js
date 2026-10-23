@@ -55,7 +55,7 @@ function createCatalogProtection({ now = Date.now, maxEntries = 12000, ttl = 6 *
       return res.status(503).set('Cache-Control', 'no-store').set('Retry-After', '60').json({error:'Movie details temporarily unavailable'});
     }
     const retry = reserve(kind);
-    if (retry) return res.status(429).set('Cache-Control', 'no-store').set('Retry-After', String(retry)).json({error:'Please try again shortly'});
+    if (retry) return res.status(429).set('Cache-Control', 'no-store').set('Retry-After', String(retry)).json({error:'Please try again shortly', retry_after_seconds:retry});
     let settle;
     const operation = new Promise(resolve => { settle = resolve; });
     pending.set(key, operation);
@@ -87,3 +87,4 @@ function createCatalogProtection({ now = Date.now, maxEntries = 12000, ttl = 6 *
   };
 }
 module.exports = {createCatalogProtection};
+
