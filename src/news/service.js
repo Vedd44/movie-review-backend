@@ -1,8 +1,8 @@
 const { randomUUID, createHash } = require('node:crypto');
 const { TAKE_VERSION, validTake } = require('./take');
-const { SOURCES, parseFeed, selectStories } = require('./feed');
+const { hasSpoilerWarning, SOURCES, parseFeed, selectStories } = require('./feed');
 function publicSnapshot(snapshot) {
- const items = (snapshot?.items || []).filter(x => x && x.takeVersion===TAKE_VERSION && validTake(x.take)).slice(0,25).map(x => Object.fromEntries(['id','headline','summary','take','sourceName','sourceUrl','publishedAt','editorialReviewedAt','author'].map(k => [k,x[k] || ''])));
+ const items = (snapshot?.items || []).filter(x => x && !hasSpoilerWarning(x) && x.takeVersion===TAKE_VERSION && validTake(x.take)).slice(0,25).map(x => Object.fromEntries(['id','headline','summary','take','sourceName','sourceUrl','publishedAt','editorialReviewedAt','author'].map(k => [k,x[k] || ''])));
  return {version:1,updatedAt:snapshot?.updatedAt || null,items};
 }
 function createNewsService({ store, httpClient, generateTake, clock=Date.now, enabled=true, logger=console }) {
@@ -25,7 +25,7 @@ function createNewsService({ store, httpClient, generateTake, clock=Date.now, en
    const fresh=feeds.flatMap(r=>r.status==='fulfilled'?r.value:[]);
    if(!fresh.length){await store.finish(token,null);return {status:'feeds_unavailable'};}
    const existing=new Map([...(previous.cache||[]),...(previous.items||[])].map(x=>[x.id,x]));
-   const candidates=selectStories([...fresh,...(previous.items||[])],25); const items=[]; const attempts=[];
+   const candidates=selectStories([...fresh,...(previous.items||[])].filter(x=>!hasSpoilerWarning(x)),25); const items=[]; const attempts=[];
    for(const story of candidates){
     const old=existing.get(story.id);
     if(old?.takeVersion===TAKE_VERSION && validTake(old?.take) && old.headline===story.headline && old.summary===story.summary){items.push({...story,take:old.take,takeVersion:TAKE_VERSION,editorialReviewedAt:old.editorialReviewedAt});continue;}
@@ -41,7 +41,7 @@ function createNewsService({ store, httpClient, generateTake, clock=Date.now, en
      if(validTake(result?.take))items.push({...story,take:result.take,takeVersion:TAKE_VERSION,editorialReviewedAt:new Date(clock()).toISOString()});
     } catch { /* Ambiguous calls keep the full reservation. No retry or model fallback. */ }
    }
-   const output=selectStories([...items,...(previous.items||[]).filter(x=>x.takeVersion===TAKE_VERSION && validTake(x.take))],25);
+   const output=selectStories([...items,...(previous.items||[]).filter(x=>!hasSpoilerWarning(x) && x.takeVersion===TAKE_VERSION && validTake(x.take))],25);
    if(!output.length && (previous.items||[]).length){await store.finish(token,null);return {status:'no_publishable_stories'};}
       const cache=Array.from(new Map([...(previous.cache||[]),...(previous.items||[]),...attempts,...items].map(x=>[x.id,x])).values()).sort((a,b)=>Date.parse(b.publishedAt)-Date.parse(a.publishedAt)).slice(0,200);
    const updated=Math.max(Date.parse(previous.updatedAt)||0,...items.map(x=>Date.parse(x.editorialReviewedAt)||0));

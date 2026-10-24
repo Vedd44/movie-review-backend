@@ -13,6 +13,7 @@ function plain(value) {
 function canonical(value, host) {
   try { const u = new URL(value); if (u.protocol !== 'https:' || u.username || u.password || u.hostname.replace(/^www\./, '') !== host.replace(/^www\./, '')) return null; u.hash = ''; [...u.searchParams.keys()].filter(k => /^(utm_|ref$|source$)/i.test(k)).forEach(k => u.searchParams.delete(k)); return u.href; } catch { return null; }
 }
+const hasSpoilerWarning = story => /spoiler\s*(alert|warning)|contains (major )?spoilers/i.test((story?.headline || '') + ' ' + (story?.summary || ''));
 function parseFeed(xml, source, now = Date.now()) {
   if (typeof xml !== 'string' || Buffer.byteLength(xml) > 2_000_000 || /<!DOCTYPE|<!ENTITY/i.test(xml)) throw new Error('invalid_feed');
   const channel = parser.parse(xml)?.rss?.channel;
@@ -20,6 +21,7 @@ function parseFeed(xml, source, now = Date.now()) {
   const raw = Array.isArray(channel.item) ? channel.item : channel.item ? [channel.item] : [];
   return raw.slice(0, 100).flatMap(item => {
     const headline = plain(item.title); const summary = plain(item.description); const sourceUrl = canonical(plain(item.link), source.host); const at = Date.parse(plain(item.pubDate));
+    if (hasSpoilerWarning({headline,summary})) return [];
     if (!headline || headline.length > 1000 || !summary || summary.length > 16000 || !sourceUrl || !Number.isFinite(at) || at > now + 60000 || now - at > 7 * 86400000) return [];
     if (/\b(HBO|Netflix|Apple TV\+?|television)\s+series\b|\bTV series\b/i.test(headline) && !/\b(film|movie|cinema)\b/i.test(headline)) return [];
     const categories = (Array.isArray(item.category) ? item.category : [item.category]).map(plain).join(' ').toLowerCase();
@@ -42,4 +44,4 @@ function selectStories(stories, limit = 25) {
   }
   return selected;
 }
-module.exports = { SOURCES, parseFeed, plain, canonical, sameStory, selectStories };
+module.exports = { hasSpoilerWarning, SOURCES, parseFeed, plain, canonical, sameStory, selectStories };
