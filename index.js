@@ -7565,7 +7565,7 @@ app.get("/movies/:id/ai-summary", async (req, res) => {
 });
 
 const server = app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`✅ Server running on port ${PORT} (Node ${process.version})`);
 });
 
 
