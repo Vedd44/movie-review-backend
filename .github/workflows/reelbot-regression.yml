@@ -31,3 +31,5 @@ jobs:
       - run: npm run test:recommendation-quality
       - run: npm run test:continuity-regressions
       - run: node scripts/testRecommendationNovelty.js
+
+      - run: npm run test:movie-news

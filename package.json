@@ -22,7 +22,8 @@
     "test:product-regressions": "node scripts/testProductRegressionCases.js",
     "test:continuity-regressions": "node scripts/testAskContinuityReliability.js && node scripts/testSimilarityExclusions.js && node scripts/testCandidateRetrieval.js && node scripts/testSemanticRecallMechanisms.js && node scripts/testMovieIdentification.js && node scripts/testSemanticKeywordRetrieval.js && node scripts/testSemanticRequestPresentation.js && node scripts/testSemanticRecallCache.js",
     "test:tmdb-cache": "node --test scripts/testTmdbRequestCoalescing.js",
-    "test:catalog-protection": "node --test src/http/catalogProtection.test.js && node scripts/testCatalogMetadata.js"
+    "test:catalog-protection": "node --test src/http/catalogProtection.test.js && node scripts/testCatalogMetadata.js",
+    "test:movie-news": "node --test scripts/testMovieNews.js && node scripts/testMovieNewsSql.js"
   },
   "keywords": [],
   "author": "",
@@ -33,6 +34,10 @@
     "compression": "^1.8.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "fast-xml-parser": "5.11.2"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8"
   }
 }

@@ -7564,8 +7564,30 @@ app.get("/movies/:id/ai-summary", async (req, res) => {
   }
 });
 
+// Movie news runs in the background with persistent cadence and a separate spend cap.
+const { createNewsStore } = require("./src/news/store");
+const { createTakeGenerator } = require("./src/news/take");
+const { createNewsService } = require("./src/news/service");
+const movieNewsService = createNewsService({
+  store: createNewsStore({ baseUrl: SUPABASE_URL, serviceKey: SUPABASE_SERVICE_ROLE_KEY, httpClient: axios }),
+  httpClient: axios,
+  generateTake: createTakeGenerator({ httpClient: axios, apiKey: OPENAI_API_KEY }),
+  enabled: process.env.NEWS_ENABLED !== "false",
+});
+app.get("/movie-news", async (req, res) => {
+  movieNewsService.wake(); // Free Render instances resume on traffic; persistent lease/cadence still controls work.
+  try {
+    const snapshot = await movieNewsService.read();
+    res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    return res.json(snapshot);
+  } catch {
+    return res.status(503).json({ error: "Movie news is temporarily unavailable" });
+  }
+});
+
 const server = app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT} (Node ${process.version})`);
+  movieNewsService.start();
 });
 
 

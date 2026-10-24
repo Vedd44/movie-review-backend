@@ -67,6 +67,7 @@ function harness(movies) {
     const restrictedRequire = name => {
       if (name.startsWith('.')) return load(path.resolve(path.dirname(filename), name));
       if (['node:crypto', 'node:async_hooks', 'node:perf_hooks'].includes(name)) return require(name);
+      if (name === 'fast-xml-parser') return require(name); // Pure parser used by isolated news worker; no transport.
       if (name === 'axios') return transport;
       if (name === 'dotenv') return { config() {} };
       if (name === 'express') return express;
