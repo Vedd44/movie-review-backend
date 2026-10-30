@@ -1,4 +1,3 @@
-const { verifyBrowseRuntimes } = require("./src/discovery/browseRuntime");
 require("dotenv").config();
 const { createHash } = require("node:crypto");
 const { passesRecommendationContract, recommendationCacheScope, needsVerifiedContentGuide } = require("./ai/recommendationContract");
@@ -6830,13 +6829,6 @@ const fetchFilledDiscoverResults = async (type, pageNumber, options = {}, fillCo
   const normalizedType = normalizeDiscoveryView(type);
   const minimumCount = Math.max(0, Number.parseInt(fillCount, 10) || 0);
   const hasFilters = Boolean(options.genre) || options.runtime !== "any";
-  const browseDiscoverParams = (sourcePage) => {
-    const params = buildDiscoverParams(normalizedType, sourcePage, options);
-    // Browse labels are strict: Under 2 hours / 2+ hours. Keep Pick semantics separate.
-    if (options.runtime === "under_two_hours") params["with_runtime.lte"] = 119;
-    if (options.runtime === "over_two_hours") params["with_runtime.gte"] = 120;
-    return params;
-  };
 
   if (!hasFilters) {
     if (minimumCount <= 0) {
@@ -6859,21 +6851,20 @@ const fetchFilledDiscoverResults = async (type, pageNumber, options = {}, fillCo
     const discoverPage = minimumCount <= 0
       ? resolveProgressiveSourcePage({ requestedPage: pageNumber, firstSourcePage: getRotatedPage("discover", 0) })
       : pageNumber;
-    const payload = await fetchTmdbCached("/discover/movie", browseDiscoverParams(discoverPage), CACHE_TTLS.discover);
+    const payload = await fetchTmdbCached("/discover/movie", buildDiscoverParams(normalizedType, discoverPage, options), CACHE_TTLS.discover);
     const sourcedResults = withMovieSource(payload.results, "discover", "/discover/movie");
     return {
       ...payload,
       page: pageNumber,
       source_page: discoverPage,
-      results: await verifyBrowseRuntimes(sortDiscoveryResults(normalizedType, sourcedResults), options.runtime,
-        (id) => fetchTmdbCached(`/movie/${id}`, {}, CACHE_TTLS.movie_details)),
+      results: sortDiscoveryResults(normalizedType, sourcedResults),
     };
   }
 
   const discoverPages = [getRotatedPage("discover", 0), getRotatedPage("discover", 1)];
   const responses = await Promise.allSettled(
     discoverPages.map((discoverPage) =>
-      fetchTmdbCached("/discover/movie", browseDiscoverParams(discoverPage), CACHE_TTLS.discover)
+      fetchTmdbCached("/discover/movie", buildDiscoverParams(normalizedType, discoverPage, options), CACHE_TTLS.discover)
     )
   );
 
@@ -6888,8 +6879,7 @@ const fetchFilledDiscoverResults = async (type, pageNumber, options = {}, fillCo
     page: 1,
     total_pages: totalPages,
     total_results: collected.length,
-    results: (await verifyBrowseRuntimes(collected, options.runtime,
-      (id) => fetchTmdbCached(`/movie/${id}`, {}, CACHE_TTLS.movie_details), minimumCount)).slice(0, minimumCount),
+    results: collected.slice(0, minimumCount),
   };
 };
 
@@ -7056,10 +7046,6 @@ app.get("/movies", async (req, res) => {
     res.set("Cache-Control", buildFeedCacheControlHeader(normalizedType));
     res.json(payload);
   } catch (error) {
-    if (error.code === "BROWSE_RUNTIME_UNAVAILABLE") {
-      res.set("Retry-After", "30");
-      return res.status(503).json({ error: error.message });
-    }
     console.error(`❌ Error fetching ${normalizedType} movies:`, error.response?.data || error.message);
     res.status(500).json({ error: `Failed to fetch ${normalizedType} movies` });
   }
