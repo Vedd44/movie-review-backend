@@ -1,6 +1,7 @@
 const { getFullReelbotFrameworkText } = require("../reelbotPrinciples");
 const { RUBRICS } = require("../recommendationRubrics");
 const {normalizeCluePrompt} = require('../../src/ask/plotClues');
+const { getMildScareProfile } = require('../mildScareProfile');
 
 const stableStringify = (value) => {
   if (value instanceof Set) {
@@ -53,6 +54,8 @@ const buildUserPreferenceBlock = (preferences = {}) => {
 
 const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
   const candidateBlock = candidates.map((movie) => stableStringify(movie)).join("\n");
+  const mildScare = getMildScareProfile(intent.raw_prompt || preferences.prompt);
+  const explicitChildAudience = Boolean(intent.guardrails?.child_family_safe || intent.hard_filters?.family_safe_only || ['toddler', 'preschool', 'young_kids', 'older_kids', 'tweens', 'broad_family'].includes(intent.audience_age));
 
   return {
     systemPrompt: [
@@ -71,6 +74,11 @@ const buildPickRankerPrompts = ({ preferences, intent, candidates }) => {
       "- Candidate order and numeric signals are retrieval aids, not an editorial verdict. Compare the whole pool for the best current-request fit across eras before using popularity or recency as tie-breakers.",
       "- For unfamiliar discoveries, favor credible less-familiar options over famous classics or heavily promoted new releases. Never claim the person has not heard of a film; familiarity is uncertain. Offer distinct relevant backups when the pool supports them, without padding weak matches.",
       "- Treat the user's moment as the real target, not just broad genre similarity.",
+      ...(mildScare.active && !explicitChildAudience ? [
+        "- This request wants a genuinely mild-scary viewing experience: sustained eerie suspense, macabre humor or spooky atmosphere with restrained intensity. A witch, creature, curse or villain appearing in an otherwise warm fantasy or youth adventure is not enough. Judge the central viewing experience for the primary AND every backup; reject incidental scare overlap instead of describing a mostly whimsical film as the gentlest option. Supernatural comedy and restrained adult suspense can qualify; do not equate mild with child-oriented or harmless.",
+        ...(mildScare.seasonal ? ["- Halloween atmosphere is part of the request. Look for a central gothic, haunted, macabre or seasonal identity, not merely any magic, spirits or dark scenes. The story need not literally take place on Halloween."] : []),
+        ...(mildScare.adultTone ? ["- Not too childlike requests grown-up tone, humor or thematic texture. Do not call a youth-franchise adventure mature merely because it has darker scenes. Prefer a genuinely adult/neutral spooky route when the pool supports one. This is not a ban on animation, family genres or low age ratings: assess the film itself, not those labels."] : []),
+      ] : []),
       "- Distinguish the safest strong fit from the most interesting strong fit when they are not the same movie.",
       "- Derived signals are estimates, not verified content guidance. Animation or family genre never proves a movie is gentle or suitable for a particular age.",
       ...(intent.guardrails?.child_family_safe ? ["- For explicit child-safety requirements, absence of a warning in a synopsis is not evidence of absence of frightening scenes, violence or peril. Family genre, comedy, and numeric scariness/kid-friendliness estimates cannot establish a nothing-scary or gentle-content requirement. Use film-specific content evidence or reliable established knowledge; otherwise mark that requirement unknown and reject the candidate. Cartoon slapstick can still be intense for a young child. Do not call an unsupported option the gentlest available to bypass the requirement."] : []),

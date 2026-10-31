@@ -115,7 +115,9 @@ const SUBJECT_MATCH_PATTERNS = [
 
 const findAudienceAgeRule = (prompt = "") => {
   const normalizedPrompt = lower(prompt);
-  return AUDIENCE_AGE_RULES.find((rule) => rule.aliases.some((alias) => normalizedPrompt.includes(alias))) || null;
+  // Audience aliases are words/phrases, not substrings ("between" is not
+  // "tween", and a kidnapping premise does not imply a kid viewer).
+  return AUDIENCE_AGE_RULES.find((rule) => rule.aliases.some((alias) => new RegExp(`\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(normalizedPrompt))) || null;
 };
 
 const inferAudienceAgeBucket = (prompt = "", audienceSignals = {}) => {

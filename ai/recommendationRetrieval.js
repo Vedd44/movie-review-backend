@@ -1,4 +1,5 @@
 const { buildQueryExpansion } = require("./queryExpansion");
+const { getMildScareProfile } = require("./mildScareProfile");
 
 const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim();
 const lower = (value = "") => compact(value).toLowerCase();
@@ -116,6 +117,7 @@ const buildRecommendationRetrievalPlan = (intent = {}) => {
     historical_sweep_bias: historicalSweepBias,
     lesser_known: softPreferences.includes("lesser_known"),
     keyword_only_mode: Boolean(intent.subject_entities?.length),
+    mild_scare_profile: getMildScareProfile(intent.raw_prompt),
   };
 };
 
@@ -133,6 +135,10 @@ const buildRecommendationStructuredScore = (movie = {}, plan = {}, matchReasons 
   score += Math.round(searchTermScore * 0.45);
   score += Math.min(Number(movie.popularity || 0), 120) / 5;
   score += Math.min(Number(movie.vote_count || 0), 400) / 20;
+  // Preserve a small representative set from the request-specific probes
+  // through metadata/shortlist truncation. This is retrieval relevance only;
+  // the semantic decision must still validate intensity and the whole request.
+  if (plan.mild_scare_profile?.active && matchReasons.some(reason => reason.startsWith("Mild-scare retrieval:"))) score += 24;
 
   if (plan.lesser_known && Number(movie.vote_count) >= 50 && Number(movie.vote_count) <= 1500 && Number(movie.vote_average) >= 6.5) {
     // A less-familiar match must survive the admission threshold that otherwise
@@ -332,18 +338,45 @@ const resolveExpandedRecommendationCandidates = async ({
   // Popularity is already represented by the feed pool. General viewing needs
   // a complementary, well-supported middle-familiarity slice, not another copy
   // of current hits. Explicit family retrieval keeps its established plan.
-  const catalogVariants = [
+  let catalogVariants = [
     { sort_by: "vote_average.desc" },
     { sort_by: "vote_count.desc" },
     plan.family_safe_bias || plan.lesser_known
       ? { sort_by: "popularity.desc" }
       : { sort_by: "vote_average.desc", "vote_count.gte": 1000, "vote_count.lte": 10000 },
   ];
+  const mildScareCatalog = plan.mild_scare_profile.active && !plan.family_safe_bias;
+  let mildScareKeyword = null;
+  if (mildScareCatalog) {
+    // Spend the existing three-call catalogue budget on one exact taxonomy
+    // lookup and two complementary probes, not three broad genre OR lists.
+    try {
+      const term = plan.mild_scare_profile.keywordTerm;
+      const keywords = await fetchTmdb("/search/keyword", { query: term, page: 1 });
+      mildScareKeyword = (keywords.results || []).find(keyword => Number(keyword.id) > 0 && lower(keyword.name) === term) || null;
+    } catch (error) {
+      // An unavailable/ambiguous taxonomy lookup falls back within the same
+      // budget. It never triggers more keyword requests or relaxes filters.
+      console.error("Error resolving mild-scare keyword:", error.message);
+    }
+    const excluded = new Set(hard.exclude_genre_ids || []);
+    const complementaryGenres = excluded.has(27) ? [14, 35] : [27, 35];
+    const canUseComplement = !hard.required_genre_ids?.length && !complementaryGenres.some(id => excluded.has(id));
+    catalogVariants = [
+      { sort_by: "vote_count.desc", ...(mildScareKeyword ? { with_keywords: mildScareKeyword.id } : {}) },
+      { sort_by: "vote_count.desc", ...(canUseComplement ? { with_genres: complementaryGenres.join(",") } : {}) },
+    ];
+  }
   const catalogResponses = await Promise.allSettled(catalogVariants.map(variant =>
     fetchTmdb("/discover/movie", { ...broadParams, ...variant, page: 1 })
   ));
-  catalogResponses.filter(response => response.status === "fulfilled").forEach(response => {
-    (response.value.results || []).forEach(movie => rememberCandidate(movie, { source_endpoint: "/discover/movie" }));
+  catalogResponses.forEach((response, probeIndex) => {
+    if (response.status !== "fulfilled") return;
+    const targeted = mildScareCatalog && (probeIndex === 0 ? Boolean(mildScareKeyword) : catalogVariants[probeIndex].with_genres !== undefined);
+    (response.value.results || []).forEach((movie, index) => rememberCandidate(movie, {
+      source_endpoint: "/discover/movie",
+      match_reasons: targeted && index < 6 ? [`Mild-scare retrieval: ${probeIndex === 0 ? `exact ${mildScareKeyword.name} keyword` : "comedy and spooky-genre overlap"}; intensity and audience fit still require validation.`] : [],
+    }));
   });
 
   const detailedCandidates = await fetchStructuredMoviesByIds(Array.from(candidateMap.keys()), {

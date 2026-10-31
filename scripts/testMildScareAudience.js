@@ -59,3 +59,25 @@ for (const prompt of ['Nothing scary', 'A comedy, not scary', 'Something without
 const noHorror = parseReelbotIntent('A little scary, but no horror, under 100 minutes');
 assert.ok(noHorror.hard_filters.exclude_genre_ids.includes(27));
 assert.equal(noHorror.hard_filters.max_runtime_minutes, 99);
+
+const { getMildScareProfile } = require('../ai/mildScareProfile');
+const { buildPickDecisionPrompts } = require('../ai/promptBuilders/homepagePick');
+for (const prompt of ['Halloween-y movie but not too scary, but not too childlike','Something just a little scary']) {
+  assert.equal(getMildScareProfile(prompt).active,true);
+  const prompts=buildPickDecisionPrompts({preferences:{prompt},intent:parseReelbotIntent(prompt),candidates:[]});
+  assert.match(prompts.systemPrompt,/central viewing experience for the primary AND every backup/);
+  assert.match(prompts.systemPrompt,/not enough/);
+  if(prompt.includes('Halloween')) {
+    assert.match(prompts.systemPrompt,/story need not literally take place on Halloween/);
+    assert.match(prompts.systemPrompt,/not a ban on animation/);
+  }
+}
+for(const prompt of ['A comedy','Nothing scary','I hate scary movies','The scariest horror movie']) {
+  assert.equal(getMildScareProfile(prompt).active,false,prompt);
+  assert.doesNotMatch(buildPickDecisionPrompts({preferences:{prompt},intent:parseReelbotIntent(prompt),candidates:[]}).systemPrompt,/This request wants a genuinely mild-scary/);
+}
+for (const prompt of ['Something a little scary for my 5-year-old', 'A family-friendly Halloween movie, not too scary', 'Something a little scary for tweens', 'Something a little scary for the whole family']) {
+  const intent = parseReelbotIntent(prompt);
+  assert.equal(buildRecommendationRetrievalPlan(intent).family_safe_bias, true, prompt);
+  assert.doesNotMatch(buildPickDecisionPrompts({preferences:{prompt},intent,candidates:[]}).systemPrompt,/This request wants a genuinely mild-scary/);
+}
