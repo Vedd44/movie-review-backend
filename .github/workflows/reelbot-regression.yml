@@ -19,6 +19,7 @@ jobs:
       - run: npm ci
       - run: npm run test:tmdb-cache
       - run: npm run test:intent
+      - run: npm run test:mild-scare
       - run: npm run test:strict-intent
       - run: npm run test:ask-intent
       - run: npm run test:ask-route-journey

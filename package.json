@@ -23,7 +23,8 @@
     "test:continuity-regressions": "node scripts/testAskContinuityReliability.js && node scripts/testSimilarityExclusions.js && node scripts/testCandidateRetrieval.js && node scripts/testSemanticRecallMechanisms.js && node scripts/testMovieIdentification.js && node scripts/testSemanticKeywordRetrieval.js && node scripts/testSemanticRequestPresentation.js && node scripts/testSemanticRecallCache.js",
     "test:tmdb-cache": "node --test scripts/testTmdbRequestCoalescing.js",
     "test:catalog-protection": "node --test src/http/catalogProtection.test.js && node scripts/testCatalogMetadata.js",
-    "test:movie-news": "node --test scripts/testMovieNews.js && node scripts/testMovieNewsSql.js"
+    "test:movie-news": "node --test scripts/testMovieNews.js && node scripts/testMovieNewsSql.js",
+    "test:mild-scare": "node scripts/testMildScareAudience.js && node scripts/testIntentSnapshotAudience.js && node --test scripts/testMildScarePickJourney.js"
   },
   "keywords": [],
   "author": "",
