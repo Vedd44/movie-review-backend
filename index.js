@@ -15,6 +15,7 @@ const cors = require("cors");
 const compression = require("compression");
 const { createCatalogProtection } = require("./src/http/catalogProtection");
 const { parseReelbotIntent, isIntentSnapshotValid, detectTimeConstraint } = require("./ai/intentParser");
+const { repairLegacyAudienceSnapshot } = require("./ai/intentSnapshotAudience");
 const { applyTimeConstraintFilterToPool, TIME_CONSTRAINT_MIN_STRICT_CANDIDATES } = require("./ai/timeConstraints");
 const { hasChildFamilyGuardrails, passesAudienceGuardrails, getAudienceContextFitScore } = require("./ai/audienceSignals");
 const { detectStructuredQuery } = require("./ai/queryInterpreter");
@@ -1255,7 +1256,7 @@ const hydrateResolvedIntent = async (preferences = {}, rawPreferences = {}) => {
   const refinement = normalizePickRefinement(rawPreferences.refinement);
 
   if (canReuseIntentSnapshot(rawPreferences, preferences.prompt) && isIntentSnapshotValid(rawPreferences.intent_snapshot)) {
-    const snapshot = rawPreferences.intent_snapshot;
+    const snapshot = repairLegacyAudienceSnapshot(rawPreferences.intent_snapshot, applyRefinementToIntent);
     const hydratedSnapshot = snapshot.query_type ? snapshot : { ...snapshot, query_type: getIntentQueryType(snapshot) };
     return applyRefinementToIntent(hydratedSnapshot, refinement);
   }

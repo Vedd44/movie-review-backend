@@ -3,8 +3,9 @@ const { getCuratedTitleSignals } = require("./curatedRecommendationSignals");
 const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim();
 const lower = (value = "") => compact(value).toLowerCase();
 
-const YOUNG_CHILD_PATTERN = /\btoddler|toddlers|preschool(?:er)?s?|little kid|little kids|young child|young children|young kid|young kids\b/i;
-const CHILD_PATTERN = /\bkid|kids|child|children\b/i;
+const YOUNG_CHILD_PATTERN = /\b(?:toddlers?|preschool(?:er)?s?|little kids?|young children|young child|young kids?)\b/i;
+// Audience nouns must be whole words: "not too childlike" is not a child viewer.
+const CHILD_PATTERN = /\b(?:kids?|child|children)\b/i;
 const FAMILY_PATTERN = /\bfamily movie|family-friendly|family friendly|movie for the family|watch with the family\b/i;
 const YOUNG_CHILD_RELATION_PATTERN = /\b(my\s+)?(young|little|small)\s+(daughter|son)\b/i;
 const SICK_DAY_PATTERN = /\bhome sick|sick day|sick kid|sick child|home from school|home sick from school\b/i;

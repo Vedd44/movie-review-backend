@@ -73,6 +73,14 @@ const inferPreferredGenreIds = (prompt = "") => {
   if (/sci-?fi|science fiction|space/i.test(normalizedPrompt)) addUnique(genreIds, [878]);
   if (/mystery|whodunit|detective|keep (?:me|us|you) guessing|twists? and turns|unpredictable/i.test(normalizedPrompt)) addUnique(genreIds, [9648]);
   if (/thriller|tense|suspense/i.test(normalizedPrompt)) addUnique(genreIds, [53]);
+  // An explicitly spooky experience needs a relevant retrieval lane, not only
+  // the general highest-rated feed. These remain soft, overlapping genres:
+  // the complete request still decides intensity and final eligibility.
+  const hasPositiveScareCue = normalizedPrompt.replace(/[-–—]/g, " ")
+    .split(/[.;!?]|\b(?:but|however|yet)\b/)
+    .some(clause => [...clause.matchAll(/\b(?:scary|spooky|eerie|frightening|halloween)\b/g)]
+      .some(match => !/\b(?:nothing|not|no|without|avoid(?:ing)?|exclud(?:e|ing)|except|hate|dislike|don[’\']?t|isn[’\']?t|aren[’\']?t|non)\b/.test(clause.slice(0, match.index))));
+  if (hasPositiveScareCue) addUnique(genreIds, [27, 53, 9648, 14]);
   if (/drama|emotional|moving|heavy|serious/i.test(normalizedPrompt)) addUnique(genreIds, [18]);
   if (/comedy|funny|funnier|laugh|stupid/i.test(normalizedPrompt)) addUnique(genreIds, [35]);
   if (/romance|romantic|date-night|date night/i.test(normalizedPrompt)) addUnique(genreIds, [10749]);
@@ -80,7 +88,7 @@ const inferPreferredGenreIds = (prompt = "") => {
   if (/fantasy/i.test(normalizedPrompt)) addUnique(genreIds, [14]);
   if (/animation|animated/i.test(normalizedPrompt)) addUnique(genreIds, [16]);
   if (/family|kids/i.test(normalizedPrompt)) addUnique(genreIds, [10751]);
-  if (/toddler|child|children|kid|kids|young child|young kid|family movie|family-friendly|family friendly/i.test(normalizedPrompt)) {
+  if (/\b(?:toddler|child|children|kid|kids|young child|young kid|family movie|family-friendly|family friendly)\b/i.test(normalizedPrompt)) {
     addUnique(genreIds, [16, 10751, 35, 12]);
   }
   if (/crime|heist|gangster/i.test(normalizedPrompt)) addUnique(genreIds, [80]);
@@ -106,7 +114,7 @@ const inferAvoidGenreIds = (prompt = "") => {
   }
   if (/\b(?:no|not) horror\b/i.test(normalizedPrompt)) addUnique(genreIds, [27]);
   if (/\bno violence\b/i.test(normalizedPrompt)) addUnique(genreIds, [28, 10752]);
-  if (/toddler|child|children|kid|kids|young child|young kid|family movie|family-friendly|family friendly|home sick|sick kid|sick child/i.test(normalizedPrompt)) {
+  if (/\b(?:toddler|child|children|kid|kids|young child|young kid|family movie|family-friendly|family friendly|home sick|sick kid|sick child)\b/i.test(normalizedPrompt)) {
     addUnique(genreIds, [27, 53, 80, 10752]);
   }
 

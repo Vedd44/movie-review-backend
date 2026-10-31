@@ -108,7 +108,11 @@ const RUBRICS = {
 const getMatchedRubricKeys = (prompt = "") => {
   const normalizedPrompt = String(prompt || "").toLowerCase();
   return Object.entries(RUBRICS)
-    .filter(([, rubric]) => rubric.keywords.some((keyword) => normalizedPrompt.includes(keyword)))
+    .filter(([key, rubric]) => rubric.keywords.some((keyword) => key === "family_comfort"
+      // The family rubric must not turn "childlike" or "childish" into a
+      // young audience after audience parsing has correctly rejected that.
+      ? new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(normalizedPrompt)
+      : normalizedPrompt.includes(keyword)))
     .map(([key]) => key);
 };
 

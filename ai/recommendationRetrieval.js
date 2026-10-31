@@ -77,6 +77,11 @@ const buildRecommendationRetrievalPlan = (intent = {}) => {
       ? intent.soft_preferences.preference_signals
       : [];
   const historicalSweepBias = softPreferences.some((signal) => ["historical_sweep", "nature_scale"].includes(signal));
+  // Lower scare tolerance does not imply children or a family-night request.
+  // Keep content_safety for selection; only explicit audience context should
+  // introduce the family-only retrieval genres, rating cap and score bias.
+  const familySafeBias = Boolean(intent.guardrails?.child_family_safe)
+    || ["toddler", "preschool", "young_kids", "older_kids", "tweens", "broad_family"].includes(intent.audience_age);
   const queryExpansion = intent.query_expansion || buildQueryExpansion({
     prompt: intent.raw_prompt,
     audienceAge: intent.audience_age,
@@ -104,10 +109,10 @@ const buildRecommendationRetrievalPlan = (intent = {}) => {
     discover_genre_ids: uniqueStrings([
       ...(Array.isArray(intent.soft_preferences?.boost_genre_ids) ? intent.soft_preferences.boost_genre_ids : []),
       ...(Array.isArray(intent.preferred_genre_ids) ? intent.preferred_genre_ids : []),
-      ...(intent.content_safety === "very_safe" || intent.content_safety === "safe" ? FAMILY_DISCOVER_GENRES : []),
+      ...(familySafeBias ? FAMILY_DISCOVER_GENRES : []),
       ...(historicalSweepBias ? SWEEPING_EPIC_GENRES : []),
     ]).map((value) => Number(value)).filter(Boolean),
-    family_safe_bias: intent.content_safety === "very_safe" || intent.content_safety === "safe" || Boolean(intent.guardrails?.child_family_safe),
+    family_safe_bias: familySafeBias,
     historical_sweep_bias: historicalSweepBias,
     lesser_known: softPreferences.includes("lesser_known"),
     keyword_only_mode: Boolean(intent.subject_entities?.length),
