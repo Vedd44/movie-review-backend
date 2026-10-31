@@ -13,7 +13,7 @@ const { test } = require('node:test');
 // not HTTP middleware, frontend, or live-model quality/latency QA.
 // Synthetic film and model evidence tests objective orchestration guarantees;
 // it makes no claim about subjective cinematic fit or generated prose quality.
-function harness(movies, { returnNoMatch = false } = {}) {
+function harness(movies, { returnNoMatch = false, initialRankAbstains = false, discoveryFilms = [], hiddenIds = [] } = {}) {
   const routes = new Map();
   const calls = [];
   const errors = [];
@@ -23,6 +23,7 @@ function harness(movies, { returnNoMatch = false } = {}) {
   const express = Object.assign(() => app, { json: () => () => {} });
   const middleware = () => () => {};
   let failRanking = false;
+  let decisionCalls = 0;
   const transport = {
     async get(url) {
       calls.push({ method: 'GET', url });
@@ -30,8 +31,9 @@ function harness(movies, { returnNoMatch = false } = {}) {
       assert.equal(parsed.hostname, 'api.themoviedb.org');
       const match = parsed.pathname.match(/^\/3\/movie\/(\d+)$/);
       if (match && movies[match[1]]) return { data: movies[match[1]] };
-      if (/^\/3\/search\/(movie|person|keyword|collection)$/.test(parsed.pathname)) return { data: { results: [] } };
-      if (parsed.pathname === '/3/discover/movie' || /^\/3\/movie\/(popular|now_playing|upcoming|top_rated)$/.test(parsed.pathname) || parsed.pathname === '/3/trending/movie/week') return { data: { results: Object.values(movies), page: 1, total_pages: 1 } };
+      if (parsed.pathname === '/3/search/movie') return { data: { results: Object.values(movies).filter(movie=>movie.title===parsed.searchParams.get('query')) } };
+      if (/^\/3\/search\/(person|keyword|collection)$/.test(parsed.pathname)) return { data: { results: [] } };
+      if (parsed.pathname === '/3/discover/movie' || /^\/3\/movie\/(popular|now_playing|upcoming|top_rated)$/.test(parsed.pathname) || parsed.pathname === '/3/trending/movie/week') return { data: { results: Object.values(movies).filter(movie=>!hiddenIds.includes(movie.id)), page: 1, total_pages: 1 } };
       unexpected.push(url);
       throw new Error(`Unexpected offline GET: ${url}`);
     },
@@ -40,9 +42,10 @@ function harness(movies, { returnNoMatch = false } = {}) {
       assert.equal(url, 'https://api.openai.com/v1/responses');
       const schema = body.text.format.name;
       if (schema === 'reelbot_contextual_answer_v1') return response({ answer: 'The director is Fixture Director.', confidence: 'high', follow_ups: [] });
-      if (schema === 'movie_identification_queries') return response({films:[],keyword_terms:[]});
+      if (schema === 'movie_identification_queries') return response({films:discoveryFilms,keyword_terms:[]});
       assert.equal(schema, 'reelbot_pick_decision_v6');
-      if (returnNoMatch) return response({primary:null,backups:[]});
+      decisionCalls += 1;
+      if (returnNoMatch || (initialRankAbstains && decisionCalls===1)) return response({primary:null,backups:[]});
       if (failRanking) throw new Error('Synthetic provider outage');
       const userText = body.input[1].content[0].text;
       const candidates = userText.split('\n').filter(line => line.startsWith('{') && line.includes('"id":')).map(line => JSON.parse(line));
@@ -141,4 +144,43 @@ test('a semantic rejection is not replaced by a loosely related local-scoring wi
   assert.equal(result.status,200); assert.equal(result.payload.primary,null);
   assert.equal(result.payload.no_pick_reason,'no_suitable_candidate');
   assert.equal(h.calls.filter(c=>c.method==='POST'&&c.body.text.format.name==='movie_identification_queries').length,1,'Existing single semantic retry budget remains');
+  const discovery = h.calls.find(c=>c.method==='POST'&&c.body.text.format.name==='movie_identification_queries');
+  assert.equal(discovery.body.tools,undefined,'Pure mild-spooky mood fallback does not force a web tool');
+  assert.equal(discovery.body.tool_choice,undefined);
+  assert.ok(Number.isFinite(result.payload.performance.stages.semantic_discovery),'The formerly hidden fallback phase has its own timing');
+});
+
+test('factual plot discovery retains web verification even when the request is mildly scary', async()=>{
+  const h=harness({1:movie(1)},{returnNoMatch:true});
+  await h.pick('Something just a little scary where the hero dies at the end');
+  const discoveries=h.calls.filter(c=>c.method==='POST'&&c.body.text.format.name==='movie_identification_queries');
+  assert.ok(discoveries.length>0);
+  assert.ok(discoveries.every(c=>c.body.tool_choice?.type==='web_search'),'Mood words cannot disable factual plot verification');
+});
+
+test('known-film mood fallback validates real title identity and never invents retrieved evidence', async()=>{
+  const prompt='Halloween-y movie but not too scary, but not too childlike';
+  const h=harness({1:movie(1),4:movie(4)},{initialRankAbstains:true,hiddenIds:[4],discoveryFilms:[
+    {title:'Nonexistent fabricated hypothesis',release_year:1990,facts:'Fabricated evidence',source_urls:['https://example.invalid/fake']},
+    {title:'Spooky Fixture 4',release_year:1990,facts:'Fabricated evidence',source_urls:['https://example.invalid/fake']},
+  ]});
+  const result=await h.pick(prompt,null,{include_debug:true});
+  assert.equal(result.status,200);
+  assert.equal(result.payload.primary.id,4,'Only the real catalogue identity can survive the fallback');
+  assert.equal(result.payload.resolved_intent.raw_prompt,prompt);
+  assert.deepEqual(result.payload.debug_trace.discovery_evidence,[],'Model-written sources are not retrieved evidence');
+  const posts=h.calls.filter(call=>call.method==='POST');
+  assert.equal(posts.length,3,'One initial decision, one title-hypothesis call, one final decision; no extra retries');
+  assert.equal(posts[1].body.tools,undefined);
+  assert.ok(posts[2].body.input[1].content[0].text.includes(prompt),'Final decision retains complete original brief');
+});
+
+test('non-text current or factual viewing controls retain existing web discovery', async()=>{
+  for (const extra of [{view:'now_playing'},{runtime:'under_two_hours'},{include_theatrical:true},{company:'pair'}]) {
+    const h=harness({1:movie(1)},{returnNoMatch:true});
+    await h.pick('Something just a little scary',null,extra);
+    const discoveries=h.calls.filter(c=>c.method==='POST'&&c.body.text.format.name==='movie_identification_queries');
+    assert.ok(discoveries.length>0,JSON.stringify(extra));
+    assert.ok(discoveries.every(c=>c.body.tool_choice?.type==='web_search'),JSON.stringify(extra));
+  }
 });
