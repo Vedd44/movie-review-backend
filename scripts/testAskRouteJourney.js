@@ -13,7 +13,7 @@ const { test } = require('node:test');
 // not HTTP/middleware, frontend, unbounded discovery, or live-model quality QA.
 // Synthetic film and model evidence tests objective orchestration guarantees;
 // it makes no claim about subjective cinematic fit or generated prose quality.
-function harness(movies) {
+function harness(movies, fixtures = {}) {
   const routes = new Map();
   const calls = [];
   const errors = [];
@@ -30,6 +30,9 @@ function harness(movies) {
       assert.equal(parsed.hostname, 'api.themoviedb.org');
       const match = parsed.pathname.match(/^\/3\/movie\/(\d+)$/);
       if (match && movies[match[1]]) return { data: movies[match[1]] };
+      const personMatch = parsed.pathname.match(/^\/3\/person\/(\d+)(\/movie_credits)?$/);
+      if (personMatch && fixtures.person?.id === Number(personMatch[1])) return {data:personMatch[2] ? fixtures.credits : fixtures.person};
+      if (parsed.pathname === '/3/search/movie' && fixtures.titleSearch) return {data:{results:fixtures.titleSearch(parsed.searchParams.get('query'))}};
       if (/^\/3\/search\/(movie|person|keyword|collection)$/.test(parsed.pathname)) return { data: { results: [] } };
       unexpected.push(url);
       throw new Error(`Unexpected offline GET: ${url}`);
@@ -82,8 +85,11 @@ function harness(movies) {
   return {
     calls, errors, unexpected, failRanking() { failRanking = true; },
     async ask(prompt, conversation_state = {}, ids = Object.keys(movies).map(Number)) {
+      return this.askRaw({ prompt, trigger: 'user_click', conversation_state, page_context: { page: 'browse', visibleMovieIds: ids } });
+    },
+    async askRaw(body) {
       let payload; let status = 200;
-      const req = { body: { prompt, trigger: 'user_click', conversation_state, page_context: { page: 'browse', visibleMovieIds: ids } }, get: () => 'user_click' };
+      const req = { body, get: () => body.trigger };
       const res = { set() {}, status(value) { status = value; return this; }, json(value) { payload = value; return this; } };
       const handlers = routes.get('/reelbot/ask');
       assert.equal(handlers.length, 2, 'Harness must invoke every registered route handler');
@@ -192,4 +198,90 @@ test('actual Ask route tries bounded model fallback then returns retryable 503 o
   assert.deepEqual(h.unexpected, []);
   assert.equal(h.errors.length, 1);
   assert.match(h.errors[0][1], /Synthetic provider outage/);
+});
+
+test('seen feedback replaces the film, but compound questions answer without changing the search', async () => {
+  const h = harness({1: movie(1,95),2:movie(2,85),3:movie(3,80,[878,53,27]),4:movie(4,120)});
+  const first=await h.ask('An adult sci-fi thriller under 100 minutes, no horror');
+  assert.equal(first.status,200);
+  for(const prompt of ["I've seen it. Who directed it?",'I watched this, can you explain the ending?']) {
+    const answer=await h.ask(prompt,first.payload.conversation_state);
+    assert.equal(answer.status,200);
+    assert.equal(answer.payload.intent,'CURRENT_MOVIE_QUESTION');
+    assert.equal(answer.payload.kind,'answer');
+    assert.equal(answer.payload.movie_id,first.payload.recommendation.primary.id);
+    assert.deepEqual(answer.payload.conversation_state.recommendationHistory,first.payload.conversation_state.recommendationHistory);
+    assert.equal(answer.payload.conversation_state.activeRequest,first.payload.conversation_state.activeRequest);
+  }
+  const next=await h.ask('I already watched this',first.payload.conversation_state);
+  assert.equal(next.status,200);
+  assert.equal(next.payload.intent,'REFINE_RECOMMENDATION');
+  assert.notEqual(next.payload.recommendation.primary.id,first.payload.recommendation.primary.id);
+  assert.ok(next.payload.recommendation.primary.runtime<100);
+  assert.ok(!next.payload.recommendation.primary.genre_names.includes('Horror'));
+  assert.deepEqual(h.unexpected,[]);
+});
+
+
+test('raw My Movies context keeps seen feedback in saved films and preserves explicit watched-library requests', async () => {
+  const movies = {1:movie(1,95),2:movie(2,85),3:movie(3,80,[878,53,27]),4:movie(4,120)};
+  const activeRequest = 'An adult sci-fi thriller under 100 minutes, no horror';
+  const conversation_state = {activeRequest,activeIntent:'GENERAL_RECOMMENDATION',anchorMovie:{id:1,title:'Fixture 1'},recommendationHistory:[{id:1,title:'Fixture 1',status:'recommended'}]};
+  const page_context = {page:'my_movies',savedMovieIds:[2,3,4],watchedMovieIds:[1]};
+  for (const prompt of ["I've seen it",'I already watched this',"I've seen it. Could you give me another movie?"]) {
+    const h=harness(movies);
+    const result=await h.askRaw({prompt,trigger:'user_click',conversation_state,page_context});
+    assert.equal(result.status,200);
+    assert.equal(result.payload.intent,'REFINE_RECOMMENDATION');
+    assert.equal(result.payload.recommendation.primary.id,2);
+    assert.equal(result.payload.conversation_state.activeRequest,activeRequest);
+    assert.equal(result.payload.conversation_state.recommendationHistory[0].status,'rejected');
+    assert.deepEqual(h.unexpected,[]);
+    assert.deepEqual(h.errors,[]);
+  }
+  for (const prompt of ['Recommend a movie I have seen','Recommend something I have watched before','Recommend a movie to rewatch']) {
+    const h=harness(movies);
+    const result=await h.askRaw({prompt,trigger:'user_click',page_context});
+    assert.equal(result.status,200);
+    assert.equal(result.payload.recommendation.primary.id,1, prompt);
+    assert.deepEqual(h.unexpected,[]);
+    assert.deepEqual(h.errors,[]);
+  }
+});
+
+
+for (const department of ['Acting','Directing']) {
+  test(`raw ${department} filmography preserves constraints and rejects only the seen anchor`, async () => {
+    const movies={1:movie(1,95),2:movie(2,85),3:movie(3,80,[878,53,27]),4:movie(4,120),5:movie(5,90)};
+    const credits=Object.values(movies).filter(m=>m.id!==5).map(m=>({...m,order:1,character:'Scientist',job:'Director',department:'Directing'}));
+    const h=harness(movies,{person:{id:101,name:'Fixture Person',known_for_department:department},credits:department==='Acting'?{cast:credits,crew:[]}:{cast:[],crew:credits}});
+    const activeRequest='An adult sci-fi thriller under 100 minutes, no horror';
+    const page_context={page:'person',personId:101,visibleMovieIds:[1,2,3,4,5]};
+    const conversation_state={activeRequest,activeIntent:'CURRENT_SET_RECOMMENDATION',anchorMovie:{id:1,title:'Fixture 1'},recommendationHistory:[{id:1,title:'Fixture 1',status:'recommended'}]};
+    const result=await h.askRaw({prompt:'I already watched this',trigger:'user_click',page_context,conversation_state});
+    assert.equal(result.status,200);
+    assert.equal(result.payload.intent,'REFINE_RECOMMENDATION');
+    assert.equal(result.payload.recommendation.primary.id,2);
+    assert.equal(result.payload.conversation_state.activeRequest,activeRequest);
+    assert.equal(result.payload.conversation_state.recommendationHistory[0].status,'rejected');
+    assert.ok(!result.payload.recommendation.candidate_pool_ids.includes(5),'Visible non-credit film must not enter person pool');
+    const answer=await h.askRaw({prompt:"I've seen it. Who directed it?",trigger:'user_click',page_context,conversation_state:result.payload.conversation_state});
+    assert.equal(answer.payload.intent,'CURRENT_MOVIE_QUESTION');
+    assert.equal(answer.payload.movie_id,2);
+    assert.deepEqual(answer.payload.conversation_state.recommendationHistory,result.payload.conversation_state.recommendationHistory);
+    assert.equal(answer.payload.conversation_state.activeRequest,activeRequest);
+    assert.deepEqual(h.unexpected,[]);assert.deepEqual(h.errors,[]);
+  });
+}
+
+test('raw named-title It question resolves title metadata rather than pronoun seen feedback', async () => {
+  const it={...movie(10,95),title:'It'};
+  const h=harness({10:it},{titleSearch:query=>query.toLowerCase()==='it'?[it]:[]});
+  const result=await h.askRaw({prompt:'Is It scary?',trigger:'user_click',page_context:{page:'movie_detail'}});
+  assert.equal(result.status,200);assert.equal(result.payload.intent,'CURRENT_MOVIE_QUESTION');
+  assert.equal(result.payload.movie_id,10);
+  assert.deepEqual(result.payload.conversation_state.recommendationHistory,[]);
+  const call=h.calls.find(c=>c.body?.text?.format?.name==='reelbot_contextual_answer_v1');
+  assert.match(call.body.input[1].content[0].text, /"title":"It"/);
+  assert.deepEqual(h.unexpected,[]);assert.deepEqual(h.errors,[]);
 });
