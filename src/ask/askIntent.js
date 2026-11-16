@@ -1,3 +1,4 @@
+const {parseSeenFeedback}=require('./seenFeedback');
 const {normalizeCluePrompt}=require('./plotClues');
 const ASK_INTENTS = Object.freeze({
   CURRENT_MOVIE_QUESTION: "CURRENT_MOVIE_QUESTION",
@@ -41,6 +42,10 @@ const classifyAskIntent = ({ prompt, context = {}, conversation = {} } = {}) => 
 
   if (!normalizedPrompt) return ASK_INTENTS.UNKNOWN;
   if (/\b(?:new topic|start fresh|start over|forget (?:that|the previous|my previous)(?: request)?|change (?:the )?topic)\b/i.test(normalizedPrompt)) return ASK_INTENTS.GENERAL_RECOMMENDATION;
+  const seenFeedback = parseSeenFeedback(normalizedPrompt);
+  if (seenFeedback.followUp) return classifyAskIntent({ prompt: seenFeedback.followUp, context, conversation });
+  if (seenFeedback.question && (hasAnchor || context.currentPick?.id)) return ASK_INTENTS.CURRENT_MOVIE_QUESTION;
+  if (seenFeedback.seen && (hasRecommendation || hasAnchor || context.currentPick?.id)) return ASK_INTENTS.REFINE_RECOMMENDATION;
   if (isMovieIdentificationFollowUp(prompt, conversation)) return ASK_INTENTS.MOVIE_IDENTIFICATION;
   // A description is a recommendation unless the user explicitly asks to identify a remembered film.
   if (MOVIE_IDENTIFICATION_PATTERN.test(normalizedPrompt)) return ASK_INTENTS.MOVIE_IDENTIFICATION;
