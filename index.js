@@ -49,6 +49,7 @@ const { createWatchmodeService } = require("./src/watchmode/service");
 const { installWatchmodeRoutes } = require("./src/watchmode/routes");
 const { createSupabaseTakeStore } = require("./src/takes/supabaseTakeStore");
 const { resolveProgressiveSourcePage } = require("./src/discovery/feedPagination");
+const { parseSeenFeedback } = require("./src/ask/seenFeedback");
 const { ASK_INTENTS, classifyAskIntent, isMovieIdentificationFollowUp } = require("./src/ask/askIntent");
 const {getCommittedPrompt,canReuseIntentSnapshot}=require("./src/ask/requestContinuity");
 const {retrieveWithDiscovery,shouldRunSemanticFallback,isDiscoveryBounded,buildDiscoveryPrompt,untestedDiscoveryCandidates,retainContinuationDiscovery} = require("./src/ask/candidateRetrieval");
@@ -7428,7 +7429,7 @@ app.post("/reelbot/ask", timingMiddleware, async (req, res) => {
     const isNowPlaying = pageContext.page === "now_playing";
     const myMoviesPrompt = String(prompt || "").toLowerCase();
     const asksForWatchedSavedMovie = pageContext.page === "my_movies"
-      && (isExplicitRewatchRequest(myMoviesPrompt) || /\b(?:have|i['’]?ve|already)\s+(?:seen|watched)\b|\b(?:seen|watched)\s+(?:before|already)\b/.test(myMoviesPrompt))
+      && (isExplicitRewatchRequest(myMoviesPrompt) || (!parseSeenFeedback(myMoviesPrompt).seen && /\b(?:have|i['’]?ve|already)\s+(?:seen|watched)\b|\b(?:seen|watched)\s+(?:before|already)\b/.test(myMoviesPrompt)))
       && !/\b(?:not|haven['’]?t|have not|unseen|not watched|not seen)\b/.test(myMoviesPrompt);
     const savedIds = pageContext.savedMovieIds;
     let constrainedIds = pageContext.page === "my_movies"

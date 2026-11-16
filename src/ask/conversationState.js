@@ -1,3 +1,4 @@
+const {parseSeenFeedback}=require('./seenFeedback');
 const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim();
 const unique = (values = []) => [...new Set(values.filter(Boolean))];
 const {getRuntimeCommitment}=require('../../ai/intentParser');
@@ -56,10 +57,16 @@ const updateConversationForPrompt = (stateValue = {}, prompt = "", intent = "", 
   // Answers inspect the current film; they do not mutate the active search.
   if (!/RECOMMENDATION/.test(intent)) return { ...state, activeIntent: intent || state.activeIntent, lastUserMessage: compact(prompt) };
   const correction = intent === "REFINE_RECOMMENDATION";
-  const rejectsLast = /\b(?:not that one|skip that|not that|i(?:[’']ve| have) (?:already )?seen (?:that|this|it))\b/i.test(prompt);
-  const recommendationHistory = rejectsLast
-    ? state.recommendationHistory.map((entry, index, list) => index === list.length - 1 ? { ...entry, status: "rejected" } : entry)
+  const seenCurrent = parseSeenFeedback(prompt).seen;
+  const rejectsLast = /\b(?:not that one|skip that|not that)\b/i.test(prompt);
+  const feedbackId = state.anchorMovie?.id;
+  const matchesFeedback = (entry, index, list) => seenCurrent && feedbackId ? entry.id === feedbackId : index === list.length - 1;
+  const recommendationHistory = seenCurrent || rejectsLast
+    ? state.recommendationHistory.map((entry, index, list) => matchesFeedback(entry, index, list) ? { ...entry, status: "rejected" } : entry)
     : state.recommendationHistory;
+  if (seenCurrent && feedbackId && !recommendationHistory.some(entry => entry.id === feedbackId)) {
+    recommendationHistory.push({ id: feedbackId, title: state.anchorMovie.title, status: "rejected" });
+  }
   const mutation = extractConstraintMutation(prompt);
   const continuation = /REFINE_RECOMMENDATION|NEXT_RECOMMENDATION/.test(intent);
   const previous = continuation ? (state.activeConstraints || {}) : {};
