@@ -51,3 +51,13 @@ assert.equal(
 );
 
 console.log("Ask ReelBot intent routing checks passed.");
+
+// An explicit new plan resets the search; ordinary corrections must still refine it.
+const priorSearch = { activeIntent: ASK_INTENTS.CURRENT_MOVIE_QUESTION, activeTask: ASK_INTENTS.GENERAL_RECOMMENDATION, activeRequest: 'A funny movie under 100 minutes', anchorMovie: { id: 4951 } };
+for (const prompt of ['Actually change of plan: a serious political thriller from the 1970s, no comedy.', 'Change of plans: a long drama', 'Actually, new plan: a horror film']) {
+  assert.equal(classifyAskIntent({ prompt, context: { page: 'browse' }, conversation: priorSearch }), ASK_INTENTS.GENERAL_RECOMMENDATION, prompt);
+}
+for (const prompt of ['Actually, make it shorter', 'Actually under 90 minutes', 'Another one, same restrictions']) {
+  assert.equal(classifyAskIntent({ prompt, context: { page: 'browse' }, conversation: priorSearch }), ASK_INTENTS.REFINE_RECOMMENDATION, prompt);
+}
+assert.equal(classifyAskIntent({ prompt: 'Why does the character have a change of plan?', context: moviePage('Heat'), conversation: priorSearch }), ASK_INTENTS.CURRENT_MOVIE_QUESTION);

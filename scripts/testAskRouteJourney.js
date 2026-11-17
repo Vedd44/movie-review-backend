@@ -285,3 +285,20 @@ test('raw named-title It question resolves title metadata rather than pronoun se
   assert.match(call.body.input[1].content[0].text, /"title":"It"/);
   assert.deepEqual(h.unexpected,[]);assert.deepEqual(h.errors,[]);
 });
+
+test('explicit change of plan discards old constraints after a film question', async () => {
+  const h = harness({1:movie(1,95,[35]),2:movie(2,135,[53])});
+  const prior = { activeIntent:'CURRENT_MOVIE_QUESTION',activeTask:'GENERAL_RECOMMENDATION',activeRequest:'A funny movie under 100 minutes, no horror',anchorMovie:{id:1,title:'Fixture 1',runtime:95}, activeConstraints:{maxRuntime:99,preferences:['funny'],hardExclusions:['runtime_cap','no_horror']},recommendationHistory:[{id:1,status:'recommended'}],userCorrections:['shorter'] };
+  const prompt='Actually change of plan: a serious thriller, no comedy.';
+  const result=await h.ask(prompt,prior);
+  assert.equal(result.status,200);
+  assert.equal(result.payload.intent,'GENERAL_RECOMMENDATION');
+  assert.equal(result.payload.conversation_state.activeRequest,prompt);
+  assert.ok(!result.payload.conversation_state.activeConstraints.maxRuntime);
+  assert.ok(!result.payload.conversation_state.activeConstraints.preferences.includes('funny'));
+  assert.ok(!result.payload.conversation_state.activeConstraints.hardExclusions.includes('no_horror'));
+  assert.deepEqual(result.payload.conversation_state.userCorrections,[]);
+  assert.equal(result.payload.recommendation.primary.id,2);
+  assert.equal(result.payload.recommendation.primary.runtime,135);
+  assert.deepEqual(h.unexpected,[]);assert.deepEqual(h.errors,[]);
+});

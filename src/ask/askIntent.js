@@ -41,7 +41,10 @@ const classifyAskIntent = ({ prompt, context = {}, conversation = {} } = {}) => 
   const hasRecommendation = /recommendation/.test(activeIntent) || (Boolean(conversation.activeRequest) && normalize(conversation.activeTask || activeIntent) !== 'movie_identification');
 
   if (!normalizedPrompt) return ASK_INTENTS.UNKNOWN;
-  if (/\b(?:new topic|start fresh|start over|forget (?:that|the previous|my previous)(?: request)?|change (?:the )?topic)\b/i.test(normalizedPrompt)) return ASK_INTENTS.GENERAL_RECOMMENDATION;
+  // Recognize an explicit new plan before the generic "actually" refinement.
+  // Anchor this phrasing so questions about a character changing plans stay factual.
+  if (/^(?:actually[,:]?\s+)?(?:change of plans?|new plan)\b/i.test(normalizedPrompt)
+    || /\b(?:new topic|start fresh|start over|forget (?:that|the previous|my previous)(?: request)?|change (?:the )?topic)\b/i.test(normalizedPrompt)) return ASK_INTENTS.GENERAL_RECOMMENDATION;
   const seenFeedback = parseSeenFeedback(normalizedPrompt);
   if (seenFeedback.followUp) return classifyAskIntent({ prompt: seenFeedback.followUp, context, conversation });
   if (seenFeedback.question && (hasAnchor || context.currentPick?.id)) return ASK_INTENTS.CURRENT_MOVIE_QUESTION;
@@ -58,8 +61,6 @@ const classifyAskIntent = ({ prompt, context = {}, conversation = {} } = {}) => 
   if (page === "home" && HOME_DISCOVERY_PATTERN.test(normalizedPrompt)) {
     return ASK_INTENTS.GENERAL_RECOMMENDATION;
   }
-  // Explicit topic changes override correction prefixes and old movie anchors.
-  if (/\b(?:new topic|start fresh|start over|forget (?:that|the previous|my previous)(?: request)?|change (?:the )?topic)\b/i.test(normalizedPrompt)) return ASK_INTENTS.GENERAL_RECOMMENDATION;
   if (hasAnchor && /^(?:is|was|does|do|how|who|why|what)\b/i.test(normalizedPrompt) && QUESTION_PATTERN.test(normalizedPrompt) && !RECOMMENDATION_PATTERN.test(normalizedPrompt)) return ASK_INTENTS.CURRENT_MOVIE_QUESTION;
   if (REFINEMENT_PATTERN.test(normalizedPrompt) && hasRecommendation) return ASK_INTENTS.REFINE_RECOMMENDATION;
   if (hasRecommendation && hasAnchor && /^(?:why|is|was|does|how|what).*(?:this|that|it|one|pick)/i.test(normalizedPrompt)) return ASK_INTENTS.CURRENT_MOVIE_QUESTION;
