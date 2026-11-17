@@ -138,6 +138,7 @@ const buildRecommendationStructuredScore = (movie = {}, plan = {}, matchReasons 
   // Preserve a small representative set from the request-specific probes
   // through metadata/shortlist truncation. This is retrieval relevance only;
   // the semantic decision must still validate intensity and the whole request.
+  if (matchReasons.some(reason => reason.startsWith("Targeted theme retrieval:"))) score += 24;
   if (plan.mild_scare_profile?.active && matchReasons.some(reason => reason.startsWith("Mild-scare retrieval:"))) score += 24;
 
   if (plan.lesser_known && Number(movie.vote_count) >= 50 && Number(movie.vote_count) <= 1500 && Number(movie.vote_average) >= 6.5) {
@@ -367,6 +368,35 @@ const resolveExpandedRecommendationCandidates = async ({
       { sort_by: "vote_count.desc", ...(canUseComplement ? { with_genres: complementaryGenres.join(",") } : {}) },
     ];
   }
+  // Narrow opt-in catalogue enrichment. Never marks a candidate as validated
+  // or plot-discovered: downstream constraints and model evidence still apply.
+  const targetedIds = [];
+  const targetedMovies = [];
+
+  const targetedProbe = (async () => {
+  if (process.env.REELBOT_TARGETED_THEME_RETRIEVAL === "true"
+      && /\bpolitical\s+thrillers?\b/i.test(plan.prompt)
+      && !/\b(?:no|not|without|avoid|exclude)\s+(?:any\s+)?political\s+thrillers?\b/i.test(plan.prompt)
+      && !plan.family_safe_bias) {
+    try {
+      const taxonomy = await fetchTmdb("/search/keyword", { query: "political thriller", page: 1 });
+      const exact = (taxonomy.results || []).find(item => Number(item.id) > 0 && lower(item.name) === "political thriller");
+      if (exact) {
+        const payload = await fetchTmdb("/discover/movie", {
+          ...broadParams, with_keywords: exact.id, sort_by: "vote_count.desc", page: 1,
+        });
+        for (const movie of (payload.results || []).slice(0, 6)) {
+          if (!movie?.id) continue;
+          targetedIds.push(movie.id);
+          targetedMovies.push(movie);
+        }
+      }
+    } catch (error) {
+      // Fail open to existing retrieval, not to a relaxed recommendation.
+      console.error("Targeted theme retrieval unavailable:", error.message);
+    }
+  }
+  })();
   const catalogResponses = await Promise.allSettled(catalogVariants.map(variant =>
     fetchTmdb("/discover/movie", { ...broadParams, ...variant, page: 1 })
   ));
@@ -379,7 +409,17 @@ const resolveExpandedRecommendationCandidates = async ({
     }));
   });
 
-  const detailedCandidates = await fetchStructuredMoviesByIds(Array.from(candidateMap.keys()), {
+  const detailBudget = candidateMap.size;
+  await targetedProbe;
+  for (const movie of targetedMovies) rememberCandidate(movie, { source_endpoint: "/discover/movie", match_reasons: [
+    "Targeted theme retrieval: exact political thriller taxonomy; full request still requires validation.",
+  ] });
+  // Targeted identities displace the broad tail; an empty/short broad pool
+  // receives at most six identities. Metadata expansion remains bounded.
+  const detailIds = targetedIds.length
+    ? [...new Set([...targetedIds, ...candidateMap.keys()])].slice(0, Math.max(6, detailBudget))
+    : Array.from(candidateMap.keys());
+  const detailedCandidates = await fetchStructuredMoviesByIds(detailIds, {
     source_type: "semantic_prompt_search",
     source_endpoint: "/discover/movie",
   });
